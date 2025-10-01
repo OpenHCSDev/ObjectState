@@ -1,7 +1,8 @@
 """
-Global configuration context management for OpenHCS.
+Generic global configuration context management.
 
-Simplified thread-local storage for non-UI usage. UI components use explicit context providers.
+Provides thread-local storage for global configuration state.
+This is used as the base context for all lazy configuration resolution.
 """
 
 import threading
