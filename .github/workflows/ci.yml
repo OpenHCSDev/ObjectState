@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, claude/**]
   pull_request:
     branches: [main, master]
   workflow_dispatch:
@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12"]
         os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
@@ -71,3 +71,31 @@ jobs:
       - name: Run mypy (type checking)
         run: |
           mypy src/ --ignore-missing-imports
+
+  # Documentation build check
+  docs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[docs]"
+
+      - name: Build documentation
+        run: |
+          cd docs
+          make html
+
+      - name: Check for build warnings
+        run: |
+          cd docs
+          make html SPHINXOPTS="-W --keep-going"
