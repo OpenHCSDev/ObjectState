@@ -1,7 +1,7 @@
 API Reference
 =============
 
-This section contains the complete API documentation for lazy-config.
+This section contains the complete API documentation for hieraconf.
 
 Core Modules
 ------------
@@ -10,69 +10,69 @@ Core Modules
    :toctree: generated
    :recursive:
 
-   lazy_config.config
-   lazy_config.lazy_factory
-   lazy_config.context_manager
-   lazy_config.dual_axis_resolver
-   lazy_config.global_config
-   lazy_config.placeholder
-   lazy_config.cache_warming
+   hieraconf.config
+   hieraconf.lazy_factory
+   hieraconf.context_manager
+   hieraconf.dual_axis_resolver
+   hieraconf.global_config
+   hieraconf.placeholder
+   hieraconf.cache_warming
 
 Module Documentation
 --------------------
 
-lazy_config.config
+hieraconf.config
 ~~~~~~~~~~~~~~~~~~
 
-.. automodule:: lazy_config.config
+.. automodule:: hieraconf.config
    :members:
    :undoc-members:
    :show-inheritance:
 
-lazy_config.lazy_factory
+hieraconf.lazy_factory
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. automodule:: lazy_config.lazy_factory
+.. automodule:: hieraconf.lazy_factory
    :members:
    :undoc-members:
    :show-inheritance:
 
-lazy_config.context_manager
+hieraconf.context_manager
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. automodule:: lazy_config.context_manager
+.. automodule:: hieraconf.context_manager
    :members:
    :undoc-members:
    :show-inheritance:
 
-lazy_config.dual_axis_resolver
+hieraconf.dual_axis_resolver
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. automodule:: lazy_config.dual_axis_resolver
+.. automodule:: hieraconf.dual_axis_resolver
    :members:
    :undoc-members:
    :show-inheritance:
 
-lazy_config.global_config
+hieraconf.global_config
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. automodule:: lazy_config.global_config
+.. automodule:: hieraconf.global_config
    :members:
    :undoc-members:
    :show-inheritance:
 
-lazy_config.placeholder
+hieraconf.placeholder
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. automodule:: lazy_config.placeholder
+.. automodule:: hieraconf.placeholder
    :members:
    :undoc-members:
    :show-inheritance:
 
-lazy_config.cache_warming
+hieraconf.cache_warming
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. automodule:: lazy_config.cache_warming
+.. automodule:: hieraconf.cache_warming
    :members:
    :undoc-members:
    :show-inheritance:

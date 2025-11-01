@@ -2,7 +2,7 @@
 import pytest
 from dataclasses import dataclass
 
-from lazy_config import (
+from hieraconf import (
     LazyDefaultPlaceholderService,
     LazyDataclassFactory,
     config_context,
@@ -32,7 +32,7 @@ def test_placeholder_text_generation():
 
         # Try to get placeholder text
         if hasattr(service, 'get_placeholder_text'):
-            from lazy_config.context_manager import extract_all_configs, get_current_temp_global
+            from hieraconf.context_manager import extract_all_configs, get_current_temp_global
             current = get_current_temp_global()
             available_configs = extract_all_configs(current)
 

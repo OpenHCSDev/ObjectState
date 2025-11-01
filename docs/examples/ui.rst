@@ -1,7 +1,7 @@
 UI Integration
 ==============
 
-Examples of integrating lazy-config with user interfaces.
+Examples of integrating hieraconf with user interfaces.
 
 Placeholder Service
 -------------------
@@ -11,7 +11,7 @@ The ``LazyDefaultPlaceholderService`` helps generate placeholder text for UI for
 .. code-block:: python
 
    from dataclasses import dataclass
-   from lazy_config import (
+   from hieraconf import (
        LazyDataclassFactory,
        LazyDefaultPlaceholderService,
        config_context,
@@ -64,7 +64,7 @@ Generate form fields with inherited value hints:
 .. code-block:: python
 
    from dataclasses import dataclass, fields
-   from lazy_config import LazyDataclassFactory, config_context
+   from hieraconf import LazyDataclassFactory, config_context
 
    @dataclass
    class FormConfig:
@@ -115,7 +115,7 @@ Build a configuration editor that shows inheritance:
 .. code-block:: python
 
    from dataclasses import dataclass, fields
-   from lazy_config import LazyDataclassFactory, config_context
+   from hieraconf import LazyDataclassFactory, config_context
 
    @dataclass
    class AppSettings:
@@ -135,8 +135,8 @@ Build a configuration editor that shows inheritance:
    class ConfigEditor:
        """Simple configuration editor."""
 
-       def __init__(self, lazy_config):
-           self.config = lazy_config
+       def __init__(self, hieraconf):
+           self.config = hieraconf
 
        def display_settings(self):
            """Display all settings with their sources."""
@@ -185,7 +185,7 @@ Validate configuration and provide UI feedback:
 
    from dataclasses import dataclass
    from typing import List, Tuple
-   from lazy_config import LazyDataclassFactory, config_context
+   from hieraconf import LazyDataclassFactory, config_context
 
    @dataclass
    class ServerConfig:
@@ -247,7 +247,7 @@ Use the ``ui_hidden`` parameter to hide intermediate configs from the UI while k
 .. code-block:: python
 
    from dataclasses import dataclass
-   from lazy_config import auto_create_decorator
+   from hieraconf import auto_create_decorator
 
    # Create global config
    @auto_create_decorator

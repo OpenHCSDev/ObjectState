@@ -19,7 +19,7 @@ Context hierarchy allows nested contexts to override outer contexts:
 .. code-block:: python
 
    from dataclasses import dataclass
-   from lazy_config import LazyDataclassFactory, config_context
+   from hieraconf import LazyDataclassFactory, config_context
 
    @dataclass
    class GlobalConfig:
@@ -80,7 +80,7 @@ Class inheritance allows child classes to inherit and override parent fields:
 .. code-block:: python
 
    from dataclasses import dataclass
-   from lazy_config import LazyDataclassFactory, config_context
+   from hieraconf import LazyDataclassFactory, config_context
 
    @dataclass
    class BaseProcessConfig:
@@ -135,7 +135,7 @@ Using None to enable inheritance from parent contexts:
 .. code-block:: python
 
    from dataclasses import dataclass
-   from lazy_config import LazyDataclassFactory, config_context
+   from hieraconf import LazyDataclassFactory, config_context
 
    @dataclass
    class GlobalConfig:
@@ -185,7 +185,7 @@ The ``inherit_as_none`` parameter enables proper dual-axis inheritance when usin
 .. code-block:: python
 
    from dataclasses import dataclass
-   from lazy_config import auto_create_decorator
+   from hieraconf import auto_create_decorator
 
    # Create global config with decorator
    @auto_create_decorator
@@ -239,7 +239,7 @@ This enables polymorphic access to inherited fields without type-specific attrib
 
 .. code-block:: python
 
-   from lazy_config import config_context
+   from hieraconf import config_context
 
    # Create a base config with values
    base_config = StepWellFilterConfig(

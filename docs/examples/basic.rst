@@ -1,17 +1,17 @@
 Basic Usage
 ===========
 
-This page provides basic examples of using lazy-config.
+This page provides basic examples of using hieraconf.
 
 Simple Configuration
 --------------------
 
-The most basic usage of lazy-config:
+The most basic usage of hieraconf:
 
 .. code-block:: python
 
    from dataclasses import dataclass
-   from lazy_config import (
+   from hieraconf import (
        set_base_config_type,
        LazyDataclassFactory,
        config_context,
@@ -48,7 +48,7 @@ Managing multiple configuration types:
 .. code-block:: python
 
    from dataclasses import dataclass
-   from lazy_config import LazyDataclassFactory, config_context
+   from hieraconf import LazyDataclassFactory, config_context
 
    @dataclass
    class DatabaseConfig:
@@ -95,7 +95,7 @@ Using lazy configs with functions:
 .. code-block:: python
 
    from dataclasses import dataclass
-   from lazy_config import LazyDataclassFactory, config_context
+   from hieraconf import LazyDataclassFactory, config_context
 
    @dataclass
    class ProcessConfig:
@@ -133,7 +133,7 @@ Explicitly override context values:
 .. code-block:: python
 
    from dataclasses import dataclass
-   from lazy_config import LazyDataclassFactory, config_context
+   from hieraconf import LazyDataclassFactory, config_context
 
    @dataclass
    class ServerConfig:
@@ -174,7 +174,7 @@ Using the decorator pattern for automatic field injection and lazy class generat
 .. code-block:: python
 
    from dataclasses import dataclass
-   from lazy_config import auto_create_decorator, ensure_global_config_context
+   from hieraconf import auto_create_decorator, ensure_global_config_context
 
    # Create global config with auto_create_decorator
    @auto_create_decorator
@@ -234,7 +234,7 @@ The framework automatically converts nested dataclass fields to lazy versions:
 .. code-block:: python
 
    from dataclasses import dataclass
-   from lazy_config import LazyDataclassFactory, config_context
+   from hieraconf import LazyDataclassFactory, config_context
 
    @dataclass
    class LoggingConfig:

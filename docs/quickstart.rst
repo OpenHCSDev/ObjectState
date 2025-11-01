@@ -1,16 +1,16 @@
 Quick Start Guide
 ==================
 
-This guide will help you get started with lazy-config in minutes.
+This guide will help you get started with hieraconf in minutes.
 
 Installation
 ------------
 
-Install lazy-config using pip:
+Install hieraconf using pip:
 
 .. code-block:: bash
 
-   pip install lazy-config
+   pip install hieraconf
 
 Basic Setup
 -----------
@@ -38,7 +38,7 @@ Set the base configuration type for your application:
 
 .. code-block:: python
 
-   from lazy_config import set_base_config_type
+   from hieraconf import set_base_config_type
 
    set_base_config_type(GlobalConfig)
 
@@ -52,7 +52,7 @@ Create a lazy version of your configuration:
 
 .. code-block:: python
 
-   from lazy_config import LazyDataclassFactory
+   from hieraconf import LazyDataclassFactory
 
    LazyGlobalConfig = LazyDataclassFactory.make_lazy_simple(GlobalConfig)
 
@@ -63,7 +63,7 @@ Use your configuration with context managers:
 
 .. code-block:: python
 
-   from lazy_config import config_context
+   from hieraconf import config_context
 
    # Create concrete configuration
    global_cfg = GlobalConfig(
@@ -151,7 +151,7 @@ When using the decorator pattern with ``auto_create_decorator``, you need to est
 
 .. code-block:: python
 
-   from lazy_config import (
+   from hieraconf import (
        auto_create_decorator,
        ensure_global_config_context,
    )
@@ -190,7 +190,7 @@ Here's a complete example putting it all together:
 .. code-block:: python
 
    from dataclasses import dataclass
-   from lazy_config import (
+   from hieraconf import (
        set_base_config_type,
        LazyDataclassFactory,
        config_context,

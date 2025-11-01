@@ -2,7 +2,7 @@
 import pytest
 from dataclasses import dataclass
 
-from lazy_config import (
+from hieraconf import (
     resolve_field_inheritance,
     LazyDataclassFactory,
     config_context,

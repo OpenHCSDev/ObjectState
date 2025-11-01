@@ -2,7 +2,7 @@
 import pytest
 from dataclasses import dataclass
 
-from lazy_config import (
+from hieraconf import (
     config_context,
     get_current_temp_global,
     set_current_temp_global,

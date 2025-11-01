@@ -1,1 +1,1 @@
-"""Tests for lazy-config package."""
+"""Tests for hieraconf package."""

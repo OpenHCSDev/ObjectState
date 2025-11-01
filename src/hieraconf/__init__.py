@@ -1,5 +1,5 @@
 """
-lazy-config: Generic lazy dataclass configuration framework.
+hieraconf: Generic lazy dataclass configuration framework.
 
 This package provides a complete system for hierarchical configuration management
 with lazy resolution, dual-axis inheritance, and UI integration.

@@ -1,8 +1,8 @@
-# lazy-config
+# hieraconf
 
 **Generic lazy dataclass configuration framework with dual-axis inheritance**
 
-[![PyPI version](https://badge.fury.io/py/lazy-config.svg)](https://badge.fury.io/py/lazy-config)
+[![PyPI version](https://badge.fury.io/py/hieraconf.svg)](https://badge.fury.io/py/hieraconf)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -24,7 +24,7 @@
 
 ```python
 from dataclasses import dataclass
-from lazy_config import LazyDataclassFactory, config_context, set_base_config_type
+from hieraconf import LazyDataclassFactory, config_context, set_base_config_type
 
 # Define your base configuration
 @dataclass
@@ -54,7 +54,7 @@ with config_context(concrete_config):
 When using the decorator pattern with `auto_create_decorator`, you need to establish the global configuration context for lazy resolution:
 
 ```python
-from lazy_config import ensure_global_config_context
+from hieraconf import ensure_global_config_context
 
 # After creating your global config instance
 global_config = GlobalPipelineConfig(
@@ -76,7 +76,7 @@ ensure_global_config_context(GlobalPipelineConfig, global_config)
 ## Installation
 
 ```bash
-pip install lazy-config
+pip install hieraconf
 ```
 
 ## Automatic Lazy Config Generation with Decorators
@@ -85,7 +85,7 @@ For more complex applications with multiple config types, use the `auto_create_d
 
 ```python
 from dataclasses import dataclass
-from lazy_config import auto_create_decorator, config_context
+from hieraconf import auto_create_decorator, config_context
 
 # Step 1: Create a global config class with "Global" prefix and apply auto_create_decorator
 @auto_create_decorator
@@ -130,7 +130,7 @@ When you use the generated decorator (e.g., `@global_pipeline_config`), the deco
 
 ```python
 from dataclasses import dataclass
-from lazy_config import auto_create_decorator
+from hieraconf import auto_create_decorator
 
 # Create global config with auto_create_decorator
 @auto_create_decorator
@@ -214,7 +214,7 @@ When creating a lazy dataclass, **nested dataclass fields are automatically conv
 
 ```python
 from dataclasses import dataclass
-from lazy_config import LazyDataclassFactory
+from hieraconf import LazyDataclassFactory
 
 @dataclass
 class DatabaseConfig:
@@ -239,7 +239,7 @@ LazyAppConfig = LazyDataclassFactory.make_lazy_simple(AppConfig)
 - Creates default factories for Optional dataclass fields
 - Uses `register_lazy_type_mapping()` internally
 
-## Why lazy-config?
+## Why hieraconf?
 
 **Before** (Manual parameter passing):
 ```python
@@ -253,7 +253,7 @@ def sub_process(data, output_dir, num_workers, debug, ...):
     ...
 ```
 
-**After** (lazy-config):
+**After** (hieraconf):
 ```python
 @dataclass
 class StepConfig:
@@ -278,7 +278,7 @@ with config_context(global_config):
     with config_context(pipeline_config):
         with config_context(step_config):
             # Resolves: step → pipeline → global → defaults
-            value = lazy_config.some_field
+            value = hieraconf.some_field
 
 # Y-Axis: Sibling inheritance (MRO-based)
 @dataclass
@@ -295,13 +295,13 @@ class SpecializedConfig(BaseConfig):
 ### Placeholder Generation for UI
 
 ```python
-from lazy_config import LazyDefaultPlaceholderService
+from hieraconf import LazyDefaultPlaceholderService
 
 service = LazyDefaultPlaceholderService()
 
 # Generate placeholder text showing inherited values
 placeholder = service.get_placeholder_text(
-    lazy_config,
+    hieraconf,
     "output_dir",
     available_configs
 )
@@ -311,7 +311,7 @@ placeholder = service.get_placeholder_text(
 ### Cache Warming
 
 ```python
-from lazy_config import prewarm_config_analysis_cache
+from hieraconf import prewarm_config_analysis_cache
 
 # Pre-warm caches for faster runtime resolution
 prewarm_config_analysis_cache([GlobalConfig, PipelineConfig, StepConfig])
@@ -341,7 +341,7 @@ Most specific class → Least specific class (following Python's MRO)
 
 ## Documentation
 
-Full documentation available at [lazy-config.readthedocs.io](https://lazy-config.readthedocs.io)
+Full documentation available at [hieraconf.readthedocs.io](https://hieraconf.readthedocs.io)
 
 ## Requirements
 
