@@ -20,35 +20,30 @@
 
 ## Quick Start
 
+### Simple Usage (Manual Factory)
+
 ```python
 from dataclasses import dataclass
-from lazy_config import (
-    set_base_config_type,
-    LazyDataclassFactory,
-    config_context,
-)
+from lazy_config import LazyDataclassFactory, config_context
 
 # Define your base configuration
 @dataclass
-class GlobalConfig:
+class MyConfig:
     output_dir: str = "/tmp"
     num_workers: int = 4
     debug: bool = False
 
-# Initialize framework
-set_base_config_type(GlobalConfig)
-
-# Create lazy version
-factory = LazyDataclassFactory()
-LazyGlobalConfig = factory.make_lazy_simple(GlobalConfig)
+# Create lazy version manually
+LazyMyConfig = LazyDataclassFactory.make_lazy_simple(MyConfig)
 
 # Use with context
-global_cfg = GlobalConfig(output_dir="/data", num_workers=8)
+concrete_config = MyConfig(output_dir="/data", num_workers=8)
 
-with config_context(global_cfg):
-    lazy_cfg = LazyGlobalConfig()
+with config_context(concrete_config):
+    lazy_cfg = LazyMyConfig()
     print(lazy_cfg.output_dir)  # "/data" (resolved from context)
-    print(lazy_cfg.debug)       # False (inherited from defaults)
+    print(lazy_cfg.num_workers)  # 8 (resolved from context)
+    print(lazy_cfg.debug)        # False (inherited from defaults)
 ```
 
 ## Installation
@@ -56,6 +51,68 @@ with config_context(global_cfg):
 ```bash
 pip install lazy-config
 ```
+
+## Automatic Lazy Config Generation with Decorators
+
+For more complex applications with multiple config types, use the `auto_create_decorator` pattern to automatically generate lazy versions and inject them into a global config:
+
+```python
+from dataclasses import dataclass
+from lazy_config import auto_create_decorator, config_context
+
+# Step 1: Create a global config class with "Global" prefix
+@dataclass
+class GlobalPipelineConfig:
+    base_output_dir: str = "/tmp"
+    verbose: bool = False
+
+# Step 2: Apply auto_create_decorator to generate a decorator and lazy version
+@auto_create_decorator
+@dataclass
+class GlobalPipelineConfig:
+    base_output_dir: str = "/tmp"
+    verbose: bool = False
+
+# This automatically creates:
+# - A decorator named `global_pipeline_config` (snake_case of class name)
+# - A lazy class `PipelineConfig` (removes "Global" prefix)
+
+# Step 3: Use the generated decorator on other config classes
+@global_pipeline_config  # Automatically creates LazyStepConfig and injects into GlobalPipelineConfig
+@dataclass
+class StepConfig:
+    step_name: str = "default_step"
+    iterations: int = 100
+
+@global_pipeline_config  # Automatically creates LazyDatabaseConfig and injects into GlobalPipelineConfig
+@dataclass
+class DatabaseConfig:
+    host: str = "localhost"
+    port: int = 5432
+
+# Step 4: Use the configs with context
+global_cfg = GlobalPipelineConfig(base_output_dir="/data", verbose=True)
+
+# The decorator automatically added fields to GlobalPipelineConfig:
+# - step_config: StepConfig
+# - database_config: DatabaseConfig
+
+# Use with nested contexts for hierarchical resolution
+with config_context(global_cfg):
+    # Access via the lazy PipelineConfig
+    lazy_cfg = PipelineConfig()
+    print(lazy_cfg.base_output_dir)  # "/data" from global context
+    
+    # Lazy configs resolve through the hierarchy
+    lazy_step = LazyStepConfig()
+    print(lazy_step.step_name)  # Resolves from context
+```
+
+**Key Benefits:**
+- **Automatic injection**: Decorated configs are automatically added as fields to the global config
+- **Lazy versions**: Each decorated config gets a lazy version (e.g., `StepConfig` → `LazyStepConfig`)
+- **Global lazy config**: The global config itself gets a lazy version without the "Global" prefix
+- **Type-safe**: All generated classes are proper dataclasses with full IDE support
 
 ## Why lazy-config?
 

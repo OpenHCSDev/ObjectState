@@ -358,6 +358,9 @@ class LazyDataclassFactory:
             not has_inherit_as_none_marker
         )
 
+        # Determine if base class is frozen to avoid frozen/non-frozen conflicts
+        base_is_frozen = base_class.__dataclass_params__.frozen if hasattr(base_class, '__dataclass_params__') else False
+        
         if has_unsafe_metaclass:
             # Base class has unsafe custom metaclass - don't inherit, just copy interface
             print(f"🔧 LAZY FACTORY: {base_class.__name__} has custom metaclass {base_metaclass.__name__}, avoiding inheritance")
@@ -367,7 +370,7 @@ class LazyDataclassFactory:
                     base_class, debug_template, global_config_type, parent_field_path, parent_instance_provider
                 ),
                 bases=(),  # No inheritance to avoid metaclass conflicts
-                frozen=True
+                frozen=base_is_frozen  # Match base class frozen state
             )
         else:
             # Safe to inherit from regular dataclass
@@ -377,7 +380,7 @@ class LazyDataclassFactory:
                     base_class, debug_template, global_config_type, parent_field_path, parent_instance_provider
                 ),
                 bases=(base_class,),
-                frozen=True
+                frozen=base_is_frozen  # Match base class frozen state
             )
 
         # Add constructor parameter tracking to detect user-set fields
