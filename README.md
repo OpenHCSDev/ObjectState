@@ -24,7 +24,7 @@
 
 ```python
 from dataclasses import dataclass
-from lazy_config import LazyDataclassFactory, config_context
+from lazy_config import LazyDataclassFactory, config_context, set_base_config_type
 
 # Define your base configuration
 @dataclass
@@ -32,6 +32,9 @@ class MyConfig:
     output_dir: str = "/tmp"
     num_workers: int = 4
     debug: bool = False
+
+# Initialize the framework with your base config type
+set_base_config_type(MyConfig)
 
 # Create lazy version manually
 LazyMyConfig = LazyDataclassFactory.make_lazy_simple(MyConfig)
@@ -54,19 +57,13 @@ pip install lazy-config
 
 ## Automatic Lazy Config Generation with Decorators
 
-For more complex applications with multiple config types, use the `auto_create_decorator` pattern to automatically generate lazy versions and inject them into a global config:
+For more complex applications with multiple config types, use the `auto_create_decorator` pattern to automatically generate lazy versions and field injection decorators:
 
 ```python
 from dataclasses import dataclass
 from lazy_config import auto_create_decorator, config_context
 
-# Step 1: Create a global config class with "Global" prefix
-@dataclass
-class GlobalPipelineConfig:
-    base_output_dir: str = "/tmp"
-    verbose: bool = False
-
-# Step 2: Apply auto_create_decorator to generate a decorator and lazy version
+# Step 1: Create a global config class with "Global" prefix and apply auto_create_decorator
 @auto_create_decorator
 @dataclass
 class GlobalPipelineConfig:
@@ -75,43 +72,32 @@ class GlobalPipelineConfig:
 
 # This automatically creates:
 # - A decorator named `global_pipeline_config` (snake_case of class name)
-# - A lazy class `PipelineConfig` (removes "Global" prefix)
+#   that you can use to decorate other config classes
+# - A lazy class `PipelineConfig` (removes "Global" prefix) for lazy resolution
 
-# Step 3: Use the generated decorator on other config classes
-@global_pipeline_config  # Automatically creates LazyStepConfig and injects into GlobalPipelineConfig
+# Step 2: Use the generated decorator on other config classes
+@global_pipeline_config  # Automatically creates LazyStepConfig
 @dataclass
 class StepConfig:
     step_name: str = "default_step"
     iterations: int = 100
 
-@global_pipeline_config  # Automatically creates LazyDatabaseConfig and injects into GlobalPipelineConfig
+@global_pipeline_config  # Automatically creates LazyDatabaseConfig  
 @dataclass
 class DatabaseConfig:
     host: str = "localhost"
     port: int = 5432
 
-# Step 4: Use the configs with context
-global_cfg = GlobalPipelineConfig(base_output_dir="/data", verbose=True)
-
-# The decorator automatically added fields to GlobalPipelineConfig:
-# - step_config: StepConfig
-# - database_config: DatabaseConfig
-
-# Use with nested contexts for hierarchical resolution
-with config_context(global_cfg):
-    # Access via the lazy PipelineConfig
-    lazy_cfg = PipelineConfig()
-    print(lazy_cfg.base_output_dir)  # "/data" from global context
-    
-    # Lazy configs resolve through the hierarchy
-    lazy_step = LazyStepConfig()
-    print(lazy_step.step_name)  # Resolves from context
+# The decorator automatically:
+# - Creates lazy versions: LazyStepConfig, LazyDatabaseConfig
+# - Registers them for potential field injection into GlobalPipelineConfig
+# - Makes them available in your module namespace
 ```
 
 **Key Benefits:**
-- **Automatic injection**: Decorated configs are automatically added as fields to the global config
-- **Lazy versions**: Each decorated config gets a lazy version (e.g., `StepConfig` → `LazyStepConfig`)
-- **Global lazy config**: The global config itself gets a lazy version without the "Global" prefix
+- **Auto-generated lazy classes**: Each decorated config automatically gets a lazy version
+- **Simplified imports**: Lazy classes are automatically added to your module
+- **Decorator factory**: `auto_create_decorator` generates a decorator specific to your global config
 - **Type-safe**: All generated classes are proper dataclasses with full IDE support
 
 ## Why lazy-config?
