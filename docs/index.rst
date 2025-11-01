@@ -53,8 +53,7 @@ Quick Example
    set_base_config_type(GlobalConfig)
 
    # Create lazy version
-   factory = LazyDataclassFactory()
-   LazyGlobalConfig = factory.make_lazy_simple(GlobalConfig)
+   LazyGlobalConfig = LazyDataclassFactory.make_lazy_simple(GlobalConfig)
 
    # Use with context
    global_cfg = GlobalConfig(output_dir="/data", num_workers=8)

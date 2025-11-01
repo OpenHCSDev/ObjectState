@@ -49,6 +49,30 @@ with config_context(concrete_config):
     print(lazy_cfg.debug)        # False (inherited from defaults)
 ```
 
+### Setting Up Global Config Context (For Advanced Usage)
+
+When using the decorator pattern with `auto_create_decorator`, you need to establish the global configuration context for lazy resolution:
+
+```python
+from lazy_config import ensure_global_config_context
+
+# After creating your global config instance
+global_config = GlobalPipelineConfig(
+    num_workers=8,
+    # ... other fields
+)
+
+# REQUIRED: Establish global config context for lazy resolution
+ensure_global_config_context(GlobalPipelineConfig, global_config)
+
+# Now lazy configs can resolve from the global context
+```
+
+**Key differences:**
+- `set_base_config_type(MyConfig)`: Sets the **type** (class) for the framework
+- `ensure_global_config_context(GlobalConfig, instance)`: Sets the **instance** (concrete values) for resolution
+- Call `ensure_global_config_context()` at application startup (GUI) or before pipeline execution
+
 ## Installation
 
 ```bash
@@ -99,6 +123,121 @@ class DatabaseConfig:
 - **Simplified imports**: Lazy classes are automatically added to your module
 - **Decorator factory**: `auto_create_decorator` generates a decorator specific to your global config
 - **Type-safe**: All generated classes are proper dataclasses with full IDE support
+
+### Field Injection Behavior
+
+When you use the generated decorator (e.g., `@global_pipeline_config`), the decorated class is automatically **injected as a field** into the global config class:
+
+```python
+from dataclasses import dataclass
+from lazy_config import auto_create_decorator
+
+# Create global config with auto_create_decorator
+@auto_create_decorator
+@dataclass
+class GlobalPipelineConfig:
+    num_workers: int = 1
+
+# This creates:
+# - A decorator named `global_pipeline_config`
+# - A lazy class named `PipelineConfig`
+
+# Use the decorator on a new config class
+@global_pipeline_config
+@dataclass
+class WellFilterConfig:
+    well_filter: str = None
+    mode: str = "include"
+
+# After module loading, GlobalPipelineConfig automatically has:
+# - well_filter_config: WellFilterConfig = WellFilterConfig()
+# And LazyWellFilterConfig is auto-created
+```
+
+**How it works:**
+- Decorated classes are injected as fields into `GlobalPipelineConfig`
+- Field name is snake_case of class name (e.g., `WellFilterConfig` → `well_filter_config`)
+- Lazy version is automatically created (e.g., `LazyWellFilterConfig`)
+- Injection happens at end of module loading via `_inject_all_pending_fields()`
+
+This enables a clean, modular configuration structure where each component's config is automatically part of the global configuration.
+
+### Decorator Parameters
+
+The generated decorator (e.g., `@global_pipeline_config`) supports optional parameters:
+
+#### `inherit_as_none` (Default: `True`)
+
+Sets all inherited fields from parent classes to `None` by default, enabling proper lazy resolution:
+
+```python
+@dataclass
+class BaseConfig:
+    timeout: int = 30
+    retries: int = 3
+
+@global_pipeline_config(inherit_as_none=True)  # Default behavior
+@dataclass
+class ServiceConfig(BaseConfig):
+    service_name: str = "my-service"
+    # timeout and retries automatically set to None for lazy inheritance
+
+# This allows ServiceConfig to inherit timeout/retries from context
+# rather than using the base class defaults
+```
+
+**Why this matters:**
+- Enables polymorphic access without type-specific attribute names
+- Critical for dual-axis inheritance with multiple inheritance
+- Uses `InheritAsNoneMeta` metaclass internally
+
+#### `ui_hidden` (Default: `False`)
+
+Hides configs from UI while still applying decorator behavior and keeping them in the resolution context:
+
+```python
+@global_pipeline_config(ui_hidden=True)
+@dataclass
+class InternalConfig:
+    internal_setting: str = "hidden"
+    # This config won't appear in UI but is still available for inheritance
+```
+
+**Use cases:**
+- Intermediate configs that are only inherited by other configs
+- Internal implementation details not meant for user configuration
+- Base classes that should never be directly instantiated in UI
+
+### Nested Dataclass Lazification
+
+When creating a lazy dataclass, **nested dataclass fields are automatically converted** to their lazy versions:
+
+```python
+from dataclasses import dataclass
+from lazy_config import LazyDataclassFactory
+
+@dataclass
+class DatabaseConfig:
+    host: str = "localhost"
+    port: int = 5432
+
+@dataclass
+class AppConfig:
+    db_config: DatabaseConfig = DatabaseConfig()
+    app_name: str = "MyApp"
+
+# Create lazy version - nested configs are automatically lazified
+LazyAppConfig = LazyDataclassFactory.make_lazy_simple(AppConfig)
+
+# The db_config field is automatically converted to LazyDatabaseConfig
+# You don't need to manually create LazyDatabaseConfig first!
+```
+
+**Benefits:**
+- No need to manually create lazy versions of nested configs
+- Preserves field metadata (e.g., `ui_hidden` flag)
+- Creates default factories for Optional dataclass fields
+- Uses `register_lazy_type_mapping()` internally
 
 ## Why lazy-config?
 

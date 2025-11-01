@@ -54,8 +54,7 @@ Create a lazy version of your configuration:
 
    from lazy_config import LazyDataclassFactory
 
-   factory = LazyDataclassFactory()
-   LazyGlobalConfig = factory.make_lazy_simple(GlobalConfig)
+   LazyGlobalConfig = LazyDataclassFactory.make_lazy_simple(GlobalConfig)
 
 4. Use with Context
 ~~~~~~~~~~~~~~~~~~~
@@ -109,8 +108,8 @@ One of the most powerful features is nested contexts:
        output_size: int = 64
 
    # Create lazy versions
-   LazyPipeline = LazyDataclassFactory().make_lazy_simple(PipelineConfig)
-   LazyStep = LazyDataclassFactory().make_lazy_simple(StepConfig)
+   LazyPipeline = LazyDataclassFactory.make_lazy_simple(PipelineConfig)
+   LazyStep = LazyDataclassFactory.make_lazy_simple(StepConfig)
 
    # Use nested contexts
    global_cfg = GlobalConfig(output_dir="/data", num_workers=8)
@@ -145,6 +144,44 @@ You can always override context values explicitly:
        print(lazy_cfg.output_dir)   # "/custom" (explicit override)
        print(lazy_cfg.num_workers)  # 8 (from context)
 
+Setting Up Global Config Context
+---------------------------------
+
+When using the decorator pattern with ``auto_create_decorator``, you need to establish the global configuration context for lazy resolution:
+
+.. code-block:: python
+
+   from lazy_config import (
+       auto_create_decorator,
+       ensure_global_config_context,
+   )
+   from dataclasses import dataclass
+
+   # Create global config with decorator
+   @auto_create_decorator
+   @dataclass
+   class GlobalPipelineConfig:
+       num_workers: int = 1
+       output_dir: str = "/tmp"
+
+   # Create instance
+   global_config = GlobalPipelineConfig(
+       num_workers=8,
+       output_dir="/data"
+   )
+
+   # REQUIRED: Establish global config context
+   ensure_global_config_context(GlobalPipelineConfig, global_config)
+
+   # Now lazy configs can resolve from the global context
+
+Understanding the Difference
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+* ``set_base_config_type(MyConfig)``: Sets the **type** (class) for the framework
+* ``ensure_global_config_context(GlobalConfig, instance)``: Sets the **instance** (concrete values) for resolution
+* Call ``ensure_global_config_context()`` at application startup (GUI) or before pipeline execution
+
 Complete Example
 ----------------
 
@@ -171,8 +208,7 @@ Here's a complete example putting it all together:
    set_base_config_type(AppConfig)
 
    # Step 3: Create lazy version
-   factory = LazyDataclassFactory()
-   LazyAppConfig = factory.make_lazy_simple(AppConfig)
+   LazyAppConfig = LazyDataclassFactory.make_lazy_simple(AppConfig)
 
    # Step 4: Use in your application
    def process_data(data, config: LazyAppConfig):

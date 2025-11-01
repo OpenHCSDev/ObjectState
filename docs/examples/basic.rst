@@ -25,8 +25,7 @@ The most basic usage of lazy-config:
 
    # Setup
    set_base_config_type(AppConfig)
-   factory = LazyDataclassFactory()
-   LazyAppConfig = factory.make_lazy_simple(AppConfig)
+   LazyAppConfig = LazyDataclassFactory.make_lazy_simple(AppConfig)
 
    # Create configuration
    config = AppConfig(
@@ -64,9 +63,8 @@ Managing multiple configuration types:
        max_size: int = 1000
 
    # Create lazy versions
-   factory = LazyDataclassFactory()
-   LazyDB = factory.make_lazy_simple(DatabaseConfig)
-   LazyCache = factory.make_lazy_simple(CacheConfig)
+   LazyDB = LazyDataclassFactory.make_lazy_simple(DatabaseConfig)
+   LazyCache = LazyDataclassFactory.make_lazy_simple(CacheConfig)
 
    # Setup configurations
    db_config = DatabaseConfig(
@@ -105,7 +103,7 @@ Using lazy configs with functions:
        parallel: bool = False
        log_level: str = "INFO"
 
-   LazyProcess = LazyDataclassFactory().make_lazy_simple(ProcessConfig)
+   LazyProcess = LazyDataclassFactory.make_lazy_simple(ProcessConfig)
 
    def process_items(items: list, config: LazyProcess):
        """Process items using configuration."""
@@ -143,7 +141,7 @@ Explicitly override context values:
        port: int = 8000
        workers: int = 4
 
-   LazyServer = LazyDataclassFactory().make_lazy_simple(ServerConfig)
+   LazyServer = LazyDataclassFactory.make_lazy_simple(ServerConfig)
 
    # Context provides defaults
    context_config = ServerConfig(
@@ -167,3 +165,109 @@ Explicitly override context values:
        server3 = LazyServer(host="localhost", port=8080, workers=1)
        print(f"Server 3: {server3.host}:{server3.port}, workers={server3.workers}")
        # Output: Server 3: localhost:8080, workers=1
+
+Automatic Field Injection with Decorators
+------------------------------------------
+
+Using the decorator pattern for automatic field injection and lazy class generation:
+
+.. code-block:: python
+
+   from dataclasses import dataclass
+   from lazy_config import auto_create_decorator, ensure_global_config_context
+
+   # Create global config with auto_create_decorator
+   @auto_create_decorator
+   @dataclass
+   class GlobalPipelineConfig:
+       num_workers: int = 4
+       verbose: bool = False
+
+   # This automatically creates:
+   # 1. A decorator named `global_pipeline_config`
+   # 2. A lazy class named `PipelineConfig`
+
+   # Use the decorator on other config classes
+   @global_pipeline_config
+   @dataclass
+   class DatabaseConfig:
+       host: str = "localhost"
+       port: int = 5432
+       pool_size: int = 10
+
+   @global_pipeline_config
+   @dataclass
+   class CacheConfig:
+       backend: str = "redis"
+       ttl: int = 300
+
+   # After module loading, GlobalPipelineConfig automatically has:
+   # - database_config: DatabaseConfig = DatabaseConfig()
+   # - cache_config: CacheConfig = CacheConfig()
+   # And lazy classes are created: LazyDatabaseConfig, LazyCacheConfig
+
+   # Create and set up global config instance
+   global_config = GlobalPipelineConfig(
+       num_workers=8,
+       verbose=True
+   )
+
+   # REQUIRED: Establish global context for lazy resolution
+   ensure_global_config_context(GlobalPipelineConfig, global_config)
+
+   # Now you can access injected configs
+   print(f"Database: {global_config.database_config.host}:{global_config.database_config.port}")
+   print(f"Cache: {global_config.cache_config.backend}, TTL={global_config.cache_config.ttl}")
+
+**Key Benefits:**
+
+* **Automatic injection**: Decorated configs become fields in the global config
+* **Lazy class generation**: Lazy versions are automatically created
+* **Modular structure**: Each component has its own config class
+* **Type-safe**: Full IDE support and type checking
+
+Nested Dataclass Auto-Lazification
+-----------------------------------
+
+The framework automatically converts nested dataclass fields to lazy versions:
+
+.. code-block:: python
+
+   from dataclasses import dataclass
+   from lazy_config import LazyDataclassFactory, config_context
+
+   @dataclass
+   class LoggingConfig:
+       level: str = "INFO"
+       format: str = "json"
+
+   @dataclass
+   class AppConfig:
+       app_name: str = "MyApp"
+       logging: LoggingConfig = LoggingConfig()
+       port: int = 8000
+
+   # Create lazy version - nested LoggingConfig is automatically lazified
+   LazyAppConfig = LazyDataclassFactory.make_lazy_simple(AppConfig)
+
+   # Use it
+   config = AppConfig(
+       app_name="ProductionApp",
+       logging=LoggingConfig(level="WARNING", format="text"),
+       port=443
+   )
+
+   with config_context(config):
+       lazy_app = LazyAppConfig()
+
+       # Access nested config - it's automatically lazy
+       print(f"App: {lazy_app.app_name}")
+       print(f"Log level: {lazy_app.logging.level}")
+       print(f"Log format: {lazy_app.logging.format}")
+       print(f"Port: {lazy_app.port}")
+
+**Benefits:**
+
+* No need to manually create ``LazyLoggingConfig``
+* Works recursively for deeply nested configs
+* Preserves all field properties and metadata
