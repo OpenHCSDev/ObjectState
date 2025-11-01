@@ -31,8 +31,7 @@ The ``LazyDefaultPlaceholderService`` helps generate placeholder text for UI for
        timeout: int = 60  # Override
 
    # Create lazy versions
-   factory = LazyDataclassFactory()
-   LazyService = factory.make_lazy_simple(ServiceConfig)
+   LazyService = LazyDataclassFactory.make_lazy_simple(ServiceConfig)
 
    # Create placeholder service
    placeholder_service = LazyDefaultPlaceholderService()
@@ -74,7 +73,7 @@ Generate form fields with inherited value hints:
        role: str = "user"
        active: bool = True
 
-   LazyForm = LazyDataclassFactory().make_lazy_simple(FormConfig)
+   LazyForm = LazyDataclassFactory.make_lazy_simple(FormConfig)
 
    def generate_form_fields(config_instance):
        """Generate form fields from config."""
@@ -131,7 +130,7 @@ Build a configuration editor that shows inheritance:
        theme: str = None  # Inherit from AppSettings
        notifications: bool = False  # Override
 
-   LazyUser = LazyDataclassFactory().make_lazy_simple(UserSettings)
+   LazyUser = LazyDataclassFactory.make_lazy_simple(UserSettings)
 
    class ConfigEditor:
        """Simple configuration editor."""
@@ -195,7 +194,7 @@ Validate configuration and provide UI feedback:
        workers: int = 4
        max_connections: int = 100
 
-   LazyServer = LazyDataclassFactory().make_lazy_simple(ServerConfig)
+   LazyServer = LazyDataclassFactory.make_lazy_simple(ServerConfig)
 
    def validate_config(config) -> List[Tuple[str, bool, str]]:
        """Validate configuration and return results."""
@@ -239,3 +238,131 @@ Validate configuration and provide UI feedback:
        for field, valid, message in validation_results:
            status = "✓" if valid else "✗"
            print(f"{status} {field}: {message}")
+
+Hiding Configs from UI with ui_hidden
+--------------------------------------
+
+Use the ``ui_hidden`` parameter to hide intermediate configs from the UI while keeping them available for inheritance:
+
+.. code-block:: python
+
+   from dataclasses import dataclass
+   from lazy_config import auto_create_decorator
+
+   # Create global config
+   @auto_create_decorator
+   @dataclass
+   class GlobalAppConfig:
+       app_name: str = "MyApp"
+       debug: bool = False
+
+   # Intermediate config - hidden from UI
+   @dataclass
+   class BaseDisplayConfig:
+       """Base display configuration - not meant for direct UI use."""
+       resolution: str = "1920x1080"
+       fullscreen: bool = False
+       vsync: bool = True
+
+   # Apply decorator with ui_hidden=True
+   # This config is only inherited by other display configs, so hide it
+   BaseDisplayConfig = global_app_config(ui_hidden=True)(BaseDisplayConfig)
+
+   # Concrete display configs - visible in UI
+   @global_app_config
+   @dataclass
+   class GameDisplayConfig(BaseDisplayConfig):
+       """Game-specific display settings."""
+       fps_limit: int = 60
+       anti_aliasing: str = "FXAA"
+
+   @global_app_config
+   @dataclass
+   class VideoDisplayConfig(BaseDisplayConfig):
+       """Video playback display settings."""
+       aspect_ratio: str = "16:9"
+       color_space: str = "sRGB"
+
+   # UI rendering logic
+   def render_config_ui(global_config):
+       """Render configuration UI, skipping hidden configs."""
+       from dataclasses import fields
+
+       for field in fields(global_config):
+           field_value = getattr(global_config, field.name)
+           field_type = type(field_value)
+
+           # Check if config should be hidden from UI
+           if hasattr(field_type, '_ui_hidden') and field_type._ui_hidden:
+               print(f"Skipping hidden config: {field.name}")
+               continue
+
+           # Render UI for visible config
+           print(f"Rendering UI for: {field.name}")
+           # ... actual UI rendering logic
+
+   # Check ui_hidden attribute
+   print(f"BaseDisplayConfig._ui_hidden: {BaseDisplayConfig._ui_hidden}")  # True
+   print(f"GameDisplayConfig._ui_hidden: {GameDisplayConfig._ui_hidden}")  # False
+   print(f"VideoDisplayConfig._ui_hidden: {VideoDisplayConfig._ui_hidden}")  # False
+
+**How it works:**
+
+* ``ui_hidden=True`` sets ``_ui_hidden = True`` on the config class
+* The config is still injected as a field in the global config
+* Lazy version is still created for inheritance
+* UI layer checks ``_ui_hidden`` attribute to skip rendering
+
+**Use cases:**
+
+* Abstract base classes with common fields
+* Intermediate configs only used for inheritance
+* Internal implementation details not meant for user configuration
+* Simplifying UI by hiding technical details
+
+Conditional UI Rendering
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Build a smart UI that respects the ``ui_hidden`` flag:
+
+.. code-block:: python
+
+   from dataclasses import dataclass, fields, is_dataclass
+
+   def generate_ui_tree(config, indent=0):
+       """Generate UI tree, respecting ui_hidden flags."""
+       prefix = "  " * indent
+
+       for field in fields(config):
+           field_value = getattr(config, field.name)
+
+           # Check if this is a dataclass config
+           if is_dataclass(type(field_value)):
+               field_type = type(field_value)
+
+               # Skip if hidden
+               if hasattr(field_type, '_ui_hidden') and field_type._ui_hidden:
+                   continue
+
+               # Render config section
+               print(f"{prefix}📁 {field.name}")
+               generate_ui_tree(field_value, indent + 1)
+           else:
+               # Render simple field
+               print(f"{prefix}📄 {field.name}: {field_value}")
+
+   # Example usage
+   global_config = GlobalAppConfig(app_name="MyGame", debug=True)
+
+   print("UI Configuration Tree:")
+   print("=" * 50)
+   generate_ui_tree(global_config)
+   # Output will show GameDisplayConfig and VideoDisplayConfig
+   # but NOT BaseDisplayConfig (it's hidden)
+
+**Benefits:**
+
+* Cleaner UI with only user-relevant configs
+* Reduces complexity for end users
+* Maintains flexibility for developers
+* Configs remain available for inheritance and lazy resolution
