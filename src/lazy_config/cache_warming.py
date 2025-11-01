@@ -11,15 +11,13 @@ from typing import Type, Set, Optional, get_args, get_origin, Callable
 
 # Optional introspection - install openhcs for full functionality
 try:
-    # Optional introspection - install openhcs for full functionality
-try:
     from openhcs.introspection.signature_analyzer import SignatureAnalyzer
-# Optional introspection - install openhcs for full functionality
-try:
-    # Optional introspection - install openhcs for full functionality
-try:
     from openhcs.introspection.unified_parameter_analyzer import UnifiedParameterAnalyzer
-from openhcs.ui.shared.parameter_form_service import ParameterFormService
+    from openhcs.ui.shared.parameter_form_service import ParameterFormService
+except ImportError:
+    SignatureAnalyzer = None
+    UnifiedParameterAnalyzer = None
+    ParameterFormService = None
 
 logger = logging.getLogger(__name__)
 
