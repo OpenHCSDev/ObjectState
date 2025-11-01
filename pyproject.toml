@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "lazy-config"
+name = "hieraconf"
 version = "0.1.0"
 description = "Generic lazy dataclass configuration framework with dual-axis inheritance and contextvars-based resolution"
 authors = [{name = "Tristan Simas", email = "tristan.simas@mail.mcgill.ca"}]
@@ -40,10 +40,10 @@ docs = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/trissim/lazy-config"
-Documentation = "https://lazy-config.readthedocs.io"
-Repository = "https://github.com/trissim/lazy-config"
-Issues = "https://github.com/trissim/lazy-config/issues"
+Homepage = "https://github.com/trissim/hieraconf"
+Documentation = "https://hieraconf.readthedocs.io"
+Repository = "https://github.com/trissim/hieraconf"
+Issues = "https://github.com/trissim/hieraconf/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lazy_config"]
