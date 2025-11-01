@@ -133,14 +133,7 @@ class LazyDefaultPlaceholderService:
             if hasattr(resolved_value, 'value') and hasattr(resolved_value, 'name'):  # Enum
                 try:
                     # Optional UI integration - install openhcs for full functionality
-try:
-    # Optional UI integration - install openhcs for full functionality
-try:
-    from openhcs.ui.shared.ui_utils import format_enum_display
-except ImportError:
-    format_enum_display = None
-except ImportError:
-    format_enum_display = None
+                    from openhcs.ui.shared.ui_utils import format_enum_display
                     value_text = format_enum_display(resolved_value)
                 except ImportError:
                     value_text = str(resolved_value)
@@ -179,14 +172,7 @@ except ImportError:
                 if hasattr(value, 'value') and hasattr(value, 'name'):  # Enum
                     try:
                         # Optional UI integration - install openhcs for full functionality
-try:
-    # Optional UI integration - install openhcs for full functionality
-try:
-    from openhcs.ui.shared.ui_utils import format_enum_display
-except ImportError:
-    format_enum_display = None
-except ImportError:
-    format_enum_display = None
+                        from openhcs.ui.shared.ui_utils import format_enum_display
                         formatted_value = format_enum_display(value)
                     except ImportError:
                         formatted_value = str(value)

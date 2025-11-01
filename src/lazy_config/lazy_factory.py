@@ -11,7 +11,21 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar, Un
 
 # OpenHCS imports
 from lazy_config.placeholder import LazyDefaultPlaceholderService
-from metaclass_registry import AutoRegisterMeta, RegistryConfig
+# Optional: metaclass_registry for context provider registration
+try:
+    from metaclass_registry import AutoRegisterMeta, RegistryConfig
+except ImportError:
+    # Provide minimal fallback implementations
+    class AutoRegisterMeta(type):
+        """Fallback metaclass when metaclass_registry is not available."""
+        def __new__(mcs, name, bases, attrs, registry_config=None):
+            return super().__new__(mcs, name, bases, attrs)
+    
+    class RegistryConfig:
+        """Fallback registry config when metaclass_registry is not available."""
+        def __init__(self, **kwargs):
+            pass
+
 # Note: dual_axis_resolver_recursive and lazy_placeholder imports kept inline to avoid circular imports
 
 
