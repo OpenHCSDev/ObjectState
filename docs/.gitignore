@@ -1,0 +1,8 @@
+# Sphinx build output
+_build/
+_autosummary/
+api/generated/
+
+# Compiled files
+*.pyc
+__pycache__/

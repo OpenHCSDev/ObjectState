@@ -34,9 +34,9 @@ dev = [
     "mypy>=1.0",
 ]
 docs = [
-    "mkdocs>=1.5",
-    "mkdocs-material>=9.0",
-    "mkdocstrings[python]>=0.24",
+    "sphinx>=7.0",
+    "sphinx-rtd-theme>=2.0",
+    "sphinx-autodoc-typehints>=1.25",
 ]
 
 [project.urls]
