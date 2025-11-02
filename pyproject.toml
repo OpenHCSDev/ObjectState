@@ -46,14 +46,14 @@ Repository = "https://github.com/trissim/hieraconf"
 Issues = "https://github.com/trissim/hieraconf/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/lazy_config"]
+packages = ["src/hieraconf"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "--cov=lazy_config --cov-report=term-missing --cov-report=html"
+addopts = "--cov=hieraconf --cov-report=term-missing --cov-report=html"
 
 [tool.black]
 line-length = 100

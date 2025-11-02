@@ -91,7 +91,7 @@ class LazyDefaultPlaceholderService:
     @staticmethod
     def _get_lazy_type_for_base(base_type: type) -> Optional[type]:
         """Get the lazy type for a base dataclass type (reverse lookup)."""
-        from lazy_config.lazy_factory import _lazy_type_registry
+        from hieraconf.lazy_factory import _lazy_type_registry
         
         for lazy_type, registered_base_type in _lazy_type_registry.items():
             if registered_base_type == base_type:

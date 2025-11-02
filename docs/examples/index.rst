@@ -1,7 +1,7 @@
 Examples
 ========
 
-This section provides practical examples of using lazy-config.
+This section provides practical examples of using hieraconf.
 
 .. toctree::
    :maxdepth: 2

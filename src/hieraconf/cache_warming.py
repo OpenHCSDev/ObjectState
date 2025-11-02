@@ -82,7 +82,7 @@ def prewarm_callable_analysis_cache(*callables: Callable) -> None:
 
     Example:
         >>> from openhcs.core.steps.abstract import AbstractStep
-        >>> from lazy_config import prewarm_callable_analysis_cache
+        >>> from hieraconf import prewarm_callable_analysis_cache
         >>> prewarm_callable_analysis_cache(AbstractStep.__init__)
     """
     for callable_obj in callables:
@@ -109,7 +109,7 @@ def prewarm_config_analysis_cache(base_config_type: Type) -> None:
 
     Example:
         >>> from myapp.config import GlobalConfig
-        >>> from lazy_config import prewarm_config_analysis_cache
+        >>> from hieraconf import prewarm_config_analysis_cache
         >>> prewarm_config_analysis_cache(GlobalConfig)
     """
     # Discover all dataclass types in the hierarchy using introspection

@@ -10,7 +10,7 @@ from dataclasses import dataclass, fields, is_dataclass, make_dataclass, MISSING
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar, Union
 
 # OpenHCS imports
-from lazy_config.placeholder import LazyDefaultPlaceholderService
+from hieraconf.placeholder import LazyDefaultPlaceholderService
 # Optional: metaclass_registry for context provider registration
 try:
     from metaclass_registry import AutoRegisterMeta, RegistryConfig
@@ -106,8 +106,8 @@ class LazyMethodBindings:
     @staticmethod
     def create_resolver() -> Callable[[Any, str], Any]:
         """Create field resolver method using new pure function interface."""
-        from lazy_config.dual_axis_resolver import resolve_field_inheritance
-        from lazy_config.context_manager import current_temp_global, extract_all_configs
+        from hieraconf.dual_axis_resolver import resolve_field_inheritance
+        from hieraconf.context_manager import current_temp_global, extract_all_configs
 
         def _resolve_field_value(self, field_name: str) -> Any:
             # Get current context from contextvars
@@ -128,8 +128,8 @@ class LazyMethodBindings:
     @staticmethod
     def create_getattribute() -> Callable[[Any, str], Any]:
         """Create lazy __getattribute__ method using new context system."""
-        from lazy_config.dual_axis_resolver import resolve_field_inheritance, _has_concrete_field_override
-        from lazy_config.context_manager import current_temp_global, extract_all_configs
+        from hieraconf.dual_axis_resolver import resolve_field_inheritance, _has_concrete_field_override
+        from hieraconf.context_manager import current_temp_global, extract_all_configs
 
         def _find_mro_concrete_value(base_class, name):
             """Extract common MRO traversal pattern."""
@@ -472,7 +472,7 @@ class LazyDataclassFactory:
 # Generic utility functions for clean thread-local storage management
 def ensure_global_config_context(global_config_type: Type, global_config_instance: Any) -> None:
     """Ensure proper thread-local storage setup for any global config type."""
-    from lazy_config.global_config import set_global_config_for_editing
+    from hieraconf.global_config import set_global_config_for_editing
     set_global_config_for_editing(global_config_type, global_config_instance)
 
 
@@ -528,7 +528,7 @@ def _detect_context_type(obj: Any) -> Optional[str]:
 
 
 
-def resolve_lazy_configurations_for_serialization(data: Any) -> Any:
+def resolve_hieraconfurations_for_serialization(data: Any) -> Any:
     """
     Recursively resolve lazy dataclass instances to concrete values for serialization.
 
@@ -543,7 +543,7 @@ def resolve_lazy_configurations_for_serialization(data: Any) -> Any:
     Example (from README.md):
         with config_context(orchestrator.pipeline_config):
             # Lazy resolution happens here via context
-            resolved_steps = resolve_lazy_configurations_for_serialization(steps)
+            resolved_steps = resolve_hieraconfurations_for_serialization(steps)
     """
     # Check if this is a lazy dataclass
     base_type = get_base_type_for_lazy(type(data))
@@ -583,7 +583,7 @@ def resolve_lazy_configurations_for_serialization(data: Any) -> Any:
                     attr_value = getattr(resolved_data, attr_name)
                     if not callable(attr_value):  # Skip methods
                         logger.debug(f"Resolving {type(resolved_data).__name__}.{attr_name} = {type(attr_value).__name__}")
-                        resolved_attrs[attr_name] = resolve_lazy_configurations_for_serialization(attr_value)
+                        resolved_attrs[attr_name] = resolve_hieraconfurations_for_serialization(attr_value)
                 except (AttributeError, Exception):
                     continue
 
@@ -629,7 +629,7 @@ def resolve_lazy_configurations_for_serialization(data: Any) -> Any:
             for f in fields(resolved_data):
                 field_value = getattr(resolved_data, f.name)
                 logger.debug(f"Resolving {type(resolved_data).__name__}.{f.name} = {type(field_value).__name__}")
-                resolved_fields[f.name] = resolve_lazy_configurations_for_serialization(field_value)
+                resolved_fields[f.name] = resolve_hieraconfurations_for_serialization(field_value)
             return type(resolved_data)(**resolved_fields)
         finally:
             if context_var_name in frame.f_locals:
@@ -639,13 +639,13 @@ def resolve_lazy_configurations_for_serialization(data: Any) -> Any:
     elif isinstance(resolved_data, dict):
         # Process dictionary values recursively
         return {
-            key: resolve_lazy_configurations_for_serialization(value)
+            key: resolve_hieraconfurations_for_serialization(value)
             for key, value in resolved_data.items()
         }
 
     elif isinstance(resolved_data, (list, tuple)):
         # Process sequence elements recursively
-        resolved_items = [resolve_lazy_configurations_for_serialization(item) for item in resolved_data]
+        resolved_items = [resolve_hieraconfurations_for_serialization(item) for item in resolved_data]
         return type(resolved_data)(resolved_items)
 
     else:
@@ -667,7 +667,7 @@ def create_dataclass_for_editing(dataclass_type: Type[T], source_config: Any, pr
         context_provider(source_config)
 
     # Mathematical simplification: Convert verbose loop to unified comprehension
-    from lazy_config.placeholder import LazyDefaultPlaceholderService
+    from hieraconf.placeholder import LazyDefaultPlaceholderService
     field_values = {
         f.name: (getattr(source_config, f.name) if preserve_values
                 else f.type() if is_dataclass(f.type) and LazyDefaultPlaceholderService.has_lazy_resolution(f.type)
@@ -681,8 +681,8 @@ def create_dataclass_for_editing(dataclass_type: Type[T], source_config: Any, pr
 
 
 
-def rebuild_lazy_config_with_new_global_reference(
-    existing_lazy_config: Any,
+def rebuild_hieraconf_with_new_global_reference(
+    existing_hieraconf: Any,
     new_global_config: Any,
     global_config_type: Optional[Type] = None
 ) -> Any:
@@ -696,14 +696,14 @@ def rebuild_lazy_config_with_new_global_reference(
     - The underlying global config reference is updated for None field resolution
 
     Args:
-        existing_lazy_config: Current lazy config instance
+        existing_hieraconf: Current lazy config instance
         new_global_config: New global config to reference for lazy resolution
         global_config_type: Type of the global config (defaults to type of new_global_config)
 
     Returns:
         New lazy config instance with preserved field states and updated global reference
     """
-    if existing_lazy_config is None:
+    if existing_hieraconf is None:
         return None
 
     # Determine global config type
@@ -715,7 +715,7 @@ def rebuild_lazy_config_with_new_global_reference(
 
     # Extract current field values without triggering lazy resolution - inline field processing pattern
     def process_field_value(field_obj):
-        raw_value = object.__getattribute__(existing_lazy_config, field_obj.name)
+        raw_value = object.__getattribute__(existing_hieraconf, field_obj.name)
 
         if raw_value is not None and hasattr(raw_value, '__dataclass_fields__'):
             try:
@@ -744,16 +744,16 @@ def rebuild_lazy_config_with_new_global_reference(
                         return lazy_type(**concrete_field_values)
 
                 # If already lazy or no lazy version available, rebuild recursively
-                nested_result = rebuild_lazy_config_with_new_global_reference(raw_value, new_global_config, global_config_type)
+                nested_result = rebuild_hieraconf_with_new_global_reference(raw_value, new_global_config, global_config_type)
                 return nested_result
             except Exception as e:
                 logger.debug(f"Failed to rebuild nested config {field_obj.name}: {e}")
                 return raw_value
         return raw_value
 
-    current_field_values = {f.name: process_field_value(f) for f in fields(existing_lazy_config)}
+    current_field_values = {f.name: process_field_value(f) for f in fields(existing_hieraconf)}
 
-    return type(existing_lazy_config)(**current_field_values)
+    return type(existing_hieraconf)(**current_field_values)
 
 
 # Declarative Global Config Field Injection System

@@ -30,7 +30,7 @@ def set_base_config_type(config_type: Type) -> None:
         
     Example:
         >>> from myapp.config import GlobalConfig
-        >>> from lazy_config.config import set_base_config_type
+        >>> from hieraconf.config import set_base_config_type
         >>> set_base_config_type(GlobalConfig)
     """
     global _base_config_type

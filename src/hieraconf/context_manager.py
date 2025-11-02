@@ -115,7 +115,7 @@ def config_context(obj, mask_with_none: bool = False):
     # Find matching fields between obj and base config type
     overrides = {}
     if obj is not None:
-        from lazy_config.config import get_base_config_type
+        from hieraconf.config import get_base_config_type
 
         base_config_type = get_base_config_type()
 
@@ -327,8 +327,8 @@ def get_base_global_config():
         Current global config instance or default instance of base config type
     """
     try:
-        from lazy_config.config import get_base_config_type
-        from lazy_config.global_config import get_current_global_config
+        from hieraconf.config import get_base_config_type
+        from hieraconf.global_config import get_current_global_config
 
         base_config_type = get_base_config_type()
 
@@ -551,7 +551,7 @@ def _is_compatible_config_type(value, expected_type) -> bool:
     # Check lazy-to-base type mapping
     if hasattr(value, 'to_base_config'):
         # This is a lazy config - check if its base type matches expected_type
-        from lazy_config.lazy_factory import _lazy_type_registry
+        from hieraconf.lazy_factory import _lazy_type_registry
         base_type = _lazy_type_registry.get(value_type)
         if base_type == expected_type:
             return True

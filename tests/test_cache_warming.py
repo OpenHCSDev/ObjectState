@@ -2,7 +2,7 @@
 import pytest
 from dataclasses import dataclass
 
-from lazy_config import (
+from hieraconf import (
     prewarm_config_analysis_cache,
     prewarm_callable_analysis_cache,
 )
