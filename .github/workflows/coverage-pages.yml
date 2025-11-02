@@ -36,7 +36,9 @@ jobs:
           pip install pytest==7.4.0 pytest-cov==4.1.0 coverage==7.3.2 genbadge[coverage]
 
       - name: Run tests with coverage
-        continue-on-error: true  # Continue workflow even if tests fail
+        # Continue even if tests fail - we still want coverage reports
+        # Test failures will be caught by the CI workflow
+        continue-on-error: true
         run: |
           mkdir -p site
           python -m pytest --cov=hieraconf \
@@ -89,8 +91,13 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add .github/badges/coverage.svg -f
-          git commit -m "chore: update coverage badge" || exit 0
-          git push
+          # Only commit if there are changes
+          if git diff --staged --quiet; then
+            echo "No changes to coverage badge"
+          else
+            git commit -m "chore: update coverage badge"
+            git push
+          fi
 
       - name: Check GitHub Pages status
         run: |
