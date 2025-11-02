@@ -36,8 +36,8 @@ jobs:
           pip install genbadge[coverage]
 
       - name: Run tests with coverage
-        # Continue even if tests fail - we still want coverage reports
-        # Test failures will be caught by the CI workflow
+        # Continue even if tests fail - we want coverage reports regardless
+        # This workflow is for reporting only; the CI workflow enforces test success
         continue-on-error: true
         run: |
           mkdir -p site
@@ -93,7 +93,7 @@ jobs:
           if git diff --staged --quiet; then
             echo "No changes to coverage badge"
           else
-            git commit -m "chore: update coverage badge"
+            git commit -m "chore: update coverage badge [skip ci]"
             git push
           fi
 
