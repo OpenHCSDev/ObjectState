@@ -290,6 +290,22 @@ When you use the generated decorator, the decorated class is automatically injec
 
 1. Decorated classes are registered for injection
 2. At module load completion, ``_inject_all_pending_fields()`` is called
+
+Important ordering note
+~~~~~~~~~~~~~~~~~~~~~~~
+
+When using the decorator-driven workflow the ordering is important:
+
+* Define your ``Global*`` dataclass and apply ``@auto_create_decorator``.
+* Decorate component dataclasses with the generated decorator (e.g., ``@global_pipeline_config``);
+    the decorator creates lazy classes immediately and registers the class for pending injection.
+* Call ``_inject_all_pending_fields()`` at the end of the module to perform the field injection into the
+    finalized Global dataclass.
+* Finally, call ``set_base_config_type(GlobalYourConfig)`` during application startup to register the
+    completed global config type with the framework.
+
+This ensures that lazy classes are available for import, and the global config contains the injected
+component fields before the framework starts resolving values at runtime.
 3. Field name is snake_case of class name (``WellFilterConfig`` → ``well_filter_config``)
 4. Lazy version is created (``LazyWellFilterConfig``)
 5. Both the field and lazy class are added to the global config

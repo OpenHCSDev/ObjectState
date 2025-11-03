@@ -31,30 +31,48 @@ Start by defining your configuration as a regular Python dataclass:
        debug: bool = False
        timeout: int = 30
 
-2. Initialize the Framework
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Set the base configuration type for your application:
+2. Initialize the Framework and prefer the decorator workflow
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For applications with multiple component configs, use the decorator-driven
+workflow which auto-generates lazy classes and supports automatic field
+injection into a `Global*` config type. The ordering matters:
+
+1. Define a `Global...` dataclass and apply ``@auto_create_decorator``.
+2. Decorate component dataclasses with the generated module-level decorator
+    (e.g., ``@global_pipeline_config``).
+3. Finalize pending injections by calling ``_inject_all_pending_fields()`` at
+    the end of the module where you defined the decorated classes.
+4. Call ``set_base_config_type(GlobalYourConfig)`` to register the finalized
+    global config type with the framework.
 
 .. code-block:: python
 
-   from hieraconf import set_base_config_type
+    from dataclasses import dataclass
+    from hieraconf import auto_create_decorator, config_context, set_base_config_type
+    from hieraconf.lazy_factory import _inject_all_pending_fields
 
-   set_base_config_type(GlobalConfig)
+    @auto_create_decorator
+    @dataclass
+    class GlobalConfig:
+         output_dir: str = "/tmp"
+         num_workers: int = 4
+
+    @global_config
+    @dataclass
+    class StepConfig:
+         step_name: str = "default"
+         num_workers: int | None = None
+
+    # Finalize injection (call at module end)
+    _inject_all_pending_fields()
+
+    # Register base config type
+    set_base_config_type(GlobalConfig)
 
 .. note::
-   You only need to call ``set_base_config_type()`` once at application startup.
-
-3. Create Lazy Version
-~~~~~~~~~~~~~~~~~~~~~~~
-
-Create a lazy version of your configuration:
-
-.. code-block:: python
-
-   from hieraconf import LazyDataclassFactory
-
-   LazyGlobalConfig = LazyDataclassFactory.make_lazy_simple(GlobalConfig)
+    You only need to call ``set_base_config_type()`` once at application startup.
 
 4. Use with Context
 ~~~~~~~~~~~~~~~~~~~

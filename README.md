@@ -1,54 +1,109 @@
 # hieraconf
 
-**Generic lazy dataclass configuration framework with dual-axis inheritance**
+### Preferred usage — decorator-driven (recommended)
 
-[![PyPI version](https://badge.fury.io/py/hieraconf.svg)](https://badge.fury.io/py/hieraconf)
-[![Documentation Status](https://readthedocs.org/projects/hieraconf/badge/?version=latest)](https://hieraconf.readthedocs.io/en/latest/?badge=latest)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Coverage](https://raw.githubusercontent.com/trissim/hieraconf/main/.github/badges/coverage.svg)](https://trissim.github.io/hieraconf/coverage/)
+In real applications (for example OpenHCS) the recommended workflow is to use the decorator-based API which
+automatically generates lazy classes and injects component configs into your global config. This is the
+pattern used throughout the examples and tests in production code.
 
-## Features
+```python
+from dataclasses import dataclass
+from hieraconf import auto_create_decorator, config_context, set_base_config_type
+from hieraconf.lazy_factory import _inject_all_pending_fields  # called at module end
 
-- **Lazy Dataclass Factory**: Dynamically create dataclasses with lazy field resolution
-- **Dual-Axis Inheritance**: 
-  - X-Axis: Context hierarchy (Step → Pipeline → Global)
-  - Y-Axis: Sibling inheritance within same context
-- **Contextvars-Based**: Uses Python's `contextvars` for clean context management
-- **UI Integration**: Placeholder text generation for configuration forms
-- **Thread-Safe**: Thread-local global configuration storage
-- **100% Generic**: No application-specific dependencies
-- **Pure Stdlib**: No external dependencies
+@auto_create_decorator
+@dataclass(frozen=True)
+class GlobalPipelineConfig:
+    output_dir: str = "/tmp"
+    num_workers: int = 4
 
-## Quick Start
+# The decorator above creates a module-level decorator named `global_pipeline_config`
 
-### Simple Usage (Manual Factory)
+@global_pipeline_config
+@dataclass(frozen=True)
+class StepConfig:
+    step_name: str = "default"
+    num_workers: int | None = None
+
+# Finalize injection at the end of the module so all decorated classes are injected
+_inject_all_pending_fields()
+
+# Tell hieraconf which type is the base config (after injection)
+set_base_config_type(GlobalPipelineConfig)
+
+# At runtime you can use the exported lazy class `LazyStepConfig`:
+with config_context(GlobalPipelineConfig(output_dir="/data", num_workers=8)):
+    from your_module import LazyStepConfig
+    lazy = LazyStepConfig()
+    print(lazy.num_workers)  # 8
+```
+
+Notes:
+- The decorator immediately creates `Lazy...` classes and exports them to the same module as the decorated class.
+- Calling `_inject_all_pending_fields()` at module end finalizes field injection into the `Global...` class.
+- Call `set_base_config_type()` after injection so the framework sees the final global config shape.
+
+### Manual / low-level factory (advanced)
+
+The low-level factory `LazyDataclassFactory.make_lazy_simple(...)` is still available as an escape hatch for
+programmatic creation of lazy classes, but the decorator-based flow is the recommended, higher-level API.
+
+### Setting Up Global Config Context (For Advanced Usage)
+
+When using the decorator pattern with `auto_create_decorator`, you need to establish the global configuration context for lazy resolution:
+
+@auto_create_decorator
+@dataclass(frozen=True)
+class GlobalPipelineConfig:
+    output_dir: str = "/tmp"
+    num_workers: int = 4
+
+# This creates a module-level decorator `global_pipeline_config`.
+
+@global_pipeline_config
+@dataclass(frozen=True)
+class StepConfig:
+    step_name: str = "default"
+    num_workers: int | None = None
+
+# When all decorated classes are defined, finalize injections at module end:
+_inject_all_pending_fields()
+
+# Tell hieraconf which class is the application's base config
+set_base_config_type(GlobalPipelineConfig)
+
+# At runtime, create a concrete global config and use nested contexts
+global_cfg = GlobalPipelineConfig(output_dir="/data", num_workers=8)
+
+with config_context(global_cfg):
+    from your_module import LazyStepConfig  # Lazy class auto-exported into module namespace
+    lazy = LazyStepConfig()
+    print(lazy.num_workers)  # resolves to 8 from global context
+```
+
+### Manual / low-level factory (escape hatch)
+
+If you need more direct control (for tests or tooling), the low-level factory can
+be used to create lazy dataclasses manually. This is not the typical application
+pattern but is still supported.
 
 ```python
 from dataclasses import dataclass
 from hieraconf import LazyDataclassFactory, config_context, set_base_config_type
 
-# Define your base configuration
 @dataclass
 class MyConfig:
     output_dir: str = "/tmp"
     num_workers: int = 4
-    debug: bool = False
 
-# Initialize the framework with your base config type
 set_base_config_type(MyConfig)
 
-# Create lazy version manually
+# Create lazy version manually (low-level)
 LazyMyConfig = LazyDataclassFactory.make_lazy_simple(MyConfig)
 
-# Use with context
-concrete_config = MyConfig(output_dir="/data", num_workers=8)
-
-with config_context(concrete_config):
+with config_context(MyConfig(output_dir="/data", num_workers=8)):
     lazy_cfg = LazyMyConfig()
-    print(lazy_cfg.output_dir)  # "/data" (resolved from context)
-    print(lazy_cfg.num_workers)  # 8 (resolved from context)
-    print(lazy_cfg.debug)        # False (inherited from defaults)
+    print(lazy_cfg.output_dir)
 ```
 
 ### Setting Up Global Config Context (For Advanced Usage)
