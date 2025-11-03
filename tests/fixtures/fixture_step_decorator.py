@@ -4,9 +4,10 @@ This mirrors using the generated decorator above @dataclass: create a plain
 class, apply @dataclass to it, then pass that to the generated decorator. The
 module exports the resulting LazyStepConfig for tests to import and inspect.
 """
+
 from dataclasses import dataclass
-from hieraconf import auto_create_decorator, set_base_config_type, config_context
-from hieraconf.lazy_factory import _inject_all_pending_fields
+
+from hieraconf import auto_create_decorator, set_base_config_type
 
 
 @auto_create_decorator

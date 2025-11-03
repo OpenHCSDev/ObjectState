@@ -1,12 +1,15 @@
 """Tests for config module."""
-import pytest
+
 from dataclasses import dataclass
 
-from hieraconf import set_base_config_type, get_base_config_type
+import pytest
+
+from hieraconf import get_base_config_type, set_base_config_type
 
 
 def test_set_and_get_base_config_type():
     """Test setting and getting base config type."""
+
     @dataclass
     class MyConfig:
         value: str = "test"
@@ -23,6 +26,7 @@ def test_get_base_config_type_not_set():
 
 def test_set_base_config_type_override():
     """Test that setting base config type can override previous value."""
+
     @dataclass
     class Config1:
         value: str = "test1"

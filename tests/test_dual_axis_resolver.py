@@ -1,19 +1,20 @@
 """Tests for dual-axis resolver module."""
-import pytest
+
 from dataclasses import dataclass
 
 from hieraconf import (
-    resolve_field_inheritance,
     LazyDataclassFactory,
     config_context,
     extract_all_configs,
     get_current_temp_global,
+    resolve_field_inheritance,
     set_base_config_type,
 )
 
 
 def test_resolve_field_inheritance_basic():
     """Test basic field inheritance resolution."""
+
     @dataclass
     class BaseConfig:
         value: str = "base"
@@ -40,6 +41,7 @@ def test_resolve_field_inheritance_basic():
 
 def test_resolve_field_inheritance_with_none():
     """Test that None values trigger inheritance resolution."""
+
     @dataclass
     class GlobalConfig:
         shared_value: str = "global"
@@ -70,6 +72,7 @@ def test_resolve_field_inheritance_with_none():
 
 def test_resolve_field_mro_traversal():
     """Test MRO-based field resolution (Y-axis)."""
+
     @dataclass
     class BaseConfig:
         base_field: str = "base"
@@ -85,11 +88,7 @@ def test_resolve_field_mro_traversal():
     set_base_config_type(ChildConfig)
     LazyChild = LazyDataclassFactory.make_lazy_simple(ChildConfig)
 
-    concrete = ChildConfig(
-        base_field="b",
-        middle_field="m",
-        child_field="c"
-    )
+    concrete = ChildConfig(base_field="b", middle_field="m", child_field="c")
 
     with config_context(concrete):
         lazy = LazyChild()
@@ -104,6 +103,7 @@ def test_resolve_field_mro_traversal():
 
 def test_context_hierarchy_resolution():
     """Test context hierarchy resolution (X-axis)."""
+
     @dataclass
     class GlobalConfig:
         global_field: str = "global_default"
@@ -117,10 +117,7 @@ def test_context_hierarchy_resolution():
     set_base_config_type(GlobalConfig)
     LazyLocal = LazyDataclassFactory.make_lazy_simple(LocalConfig)
 
-    global_cfg = GlobalConfig(
-        global_field="g1",
-        shared_field="shared_global"
-    )
+    global_cfg = GlobalConfig(global_field="g1", shared_field="shared_global")
 
     with config_context(global_cfg):
         local_cfg = LocalConfig(local_field="l1")

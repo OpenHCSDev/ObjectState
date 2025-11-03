@@ -3,10 +3,10 @@
 This is intentionally minimal and dependency-free so tests can import it
 and observe the decorator + injection behavior as it occurs at module import time.
 """
+
 from dataclasses import dataclass
 
-from hieraconf import auto_create_decorator
-from hieraconf import set_base_config_type
+from hieraconf import auto_create_decorator, set_base_config_type
 from hieraconf.lazy_factory import _inject_all_pending_fields
 
 
@@ -31,7 +31,6 @@ class OtherConfig:
 decorator = globals().get("global_test_config")
 if decorator is None:
     # Fallback: try importing from hieraconf.lazy_factory (shouldn't be necessary in normal import)
-    from hieraconf import auto_create_decorator as _tmp_deco
     decorator = globals().get("global_test_config")
 
 if decorator is not None:

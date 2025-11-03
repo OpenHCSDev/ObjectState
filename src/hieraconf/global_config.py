@@ -6,14 +6,15 @@ This is used as the base context for all lazy configuration resolution.
 """
 
 import threading
-from typing import Dict, Type, Optional, Any
-
+from typing import Any
 
 # Simplified thread-local storage for non-UI usage
-_global_config_contexts: Dict[Type, threading.local] = {}
+_global_config_contexts: dict[type, threading.local] = {}
 
 
-def set_current_global_config(config_type: Type, config_instance: Any, *, caller_context: str = None) -> None:
+def set_current_global_config(
+    config_type: type, config_instance: Any, *, caller_context: str = None
+) -> None:
     """Set current global config for any dataclass type.
 
     RESTRICTED USE: This should ONLY be called when actually editing the global config,
@@ -38,7 +39,7 @@ def set_current_global_config(config_type: Type, config_instance: Any, *, caller
     _global_config_contexts[config_type].value = config_instance
 
 
-def set_global_config_for_editing(config_type: Type, config_instance: Any) -> None:
+def set_global_config_for_editing(config_type: type, config_instance: Any) -> None:
     """Set global config specifically for editing scenarios.
 
     This is the ONLY function that should be used for legitimate global config modifications.
@@ -47,10 +48,12 @@ def set_global_config_for_editing(config_type: Type, config_instance: Any) -> No
     - Application startup is loading cached global config
     - Tests are setting up global config state
     """
-    set_current_global_config(config_type, config_instance, caller_context="LEGITIMATE_GLOBAL_CONFIG_EDITING")
+    set_current_global_config(
+        config_type, config_instance, caller_context="LEGITIMATE_GLOBAL_CONFIG_EDITING"
+    )
 
 
-def get_current_global_config(config_type: Type) -> Optional[Any]:
+def get_current_global_config(config_type: type) -> Any | None:
     """Get current global config for any dataclass type.
 
     Args:
@@ -60,4 +63,4 @@ def get_current_global_config(config_type: Type) -> Optional[Any]:
         Current config instance or None
     """
     context = _global_config_contexts.get(config_type)
-    return getattr(context, 'value', None) if context else None
+    return getattr(context, "value", None) if context else None

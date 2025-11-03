@@ -1,16 +1,17 @@
 """Integration tests for hieraconf."""
-import pytest
+
 from dataclasses import dataclass
 
 from hieraconf import (
-    set_base_config_type,
     LazyDataclassFactory,
     config_context,
+    set_base_config_type,
 )
 
 
 def test_readme_quick_start_example():
     """Test the quick start example from README."""
+
     @dataclass
     class GlobalConfig:
         output_dir: str = "/tmp"
@@ -21,8 +22,7 @@ def test_readme_quick_start_example():
     set_base_config_type(GlobalConfig)
 
     # Create lazy version
-    factory = LazyDataclassFactory()
-    LazyGlobalConfig = factory.make_lazy_simple(GlobalConfig)
+    LazyGlobalConfig = LazyDataclassFactory.make_lazy_simple(GlobalConfig)
 
     # Use with context
     global_cfg = GlobalConfig(output_dir="/data", num_workers=8)
@@ -35,6 +35,7 @@ def test_readme_quick_start_example():
 
 def test_dual_axis_inheritance():
     """Test dual-axis inheritance (X-axis and Y-axis)."""
+
     @dataclass
     class BaseConfig:
         base_field: str = "base"
@@ -52,15 +53,10 @@ def test_dual_axis_inheritance():
     set_base_config_type(GlobalConfig)
     LazySpecialized = LazyDataclassFactory.make_lazy_simple(SpecializedConfig)
 
-    global_cfg = GlobalConfig(
-        global_field="g1",
-        shared_field="from_global"
-    )
+    global_cfg = GlobalConfig(global_field="g1", shared_field="from_global")
 
     specialized_cfg = SpecializedConfig(
-        base_field="b1",
-        specialized_field="s1",
-        shared_field="from_specialized"
+        base_field="b1", specialized_field="s1", shared_field="from_specialized"
     )
 
     # Test context hierarchy
@@ -76,6 +72,7 @@ def test_dual_axis_inheritance():
 
 def test_nested_contexts():
     """Test nested configuration contexts."""
+
     @dataclass
     class GlobalConfig:
         level: str = "global"
@@ -110,6 +107,7 @@ def test_nested_contexts():
 
 def test_explicit_values_override_context():
     """Test that explicit values override context resolution."""
+
     @dataclass
     class MyConfig:
         field1: str = "default1"
@@ -132,6 +130,7 @@ def test_explicit_values_override_context():
 
 def test_no_context_fallback():
     """Test behavior when no context is available."""
+
     @dataclass
     class MyConfig:
         value: str = "default"
@@ -150,6 +149,7 @@ def test_no_context_fallback():
 
 def test_multiple_configs_in_context():
     """Test using multiple different config types in context."""
+
     @dataclass
     class DatabaseConfig:
         host: str = "localhost"
@@ -182,6 +182,7 @@ def test_multiple_configs_in_context():
 
 def test_partial_override():
     """Test partial field override in lazy config."""
+
     @dataclass
     class MyConfig:
         field1: str = "default1"
@@ -191,11 +192,7 @@ def test_partial_override():
     set_base_config_type(MyConfig)
     LazyConfig = LazyDataclassFactory.make_lazy_simple(MyConfig)
 
-    context_cfg = MyConfig(
-        field1="context1",
-        field2="context2",
-        field3="context3"
-    )
+    context_cfg = MyConfig(field1="context1", field2="context2", field3="context3")
 
     with config_context(context_cfg):
         # Override only field2

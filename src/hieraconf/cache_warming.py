@@ -7,7 +7,8 @@ configuration hierarchy, eliminating first-load penalties in UI forms.
 
 import dataclasses
 import logging
-from typing import Type, Set, Optional, get_args, get_origin, Callable
+from collections.abc import Callable
+from typing import get_args, get_origin
 
 # Optional introspection - install openhcs for full functionality
 try:
@@ -22,37 +23,37 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-def _extract_all_dataclass_types(base_type: Type, visited: Optional[Set[Type]] = None) -> Set[Type]:
+def _extract_all_dataclass_types(base_type: type, visited: set[type] | None = None) -> set[type]:
     """
     Recursively extract all dataclass types from a configuration hierarchy.
-    
+
     Uses type introspection to discover all nested dataclass fields automatically.
     This is fully generic and works for any dataclass hierarchy.
-    
+
     Args:
         base_type: Root dataclass type to analyze
         visited: Set of already-visited types (for cycle detection)
-    
+
     Returns:
         Set of all dataclass types found in the hierarchy
     """
     if visited is None:
         visited = set()
-    
+
     # Avoid infinite recursion on circular references
     if base_type in visited:
         return visited
-    
+
     # Only process dataclasses
     if not dataclasses.is_dataclass(base_type):
         return visited
-    
+
     visited.add(base_type)
-    
+
     # Introspect all fields to find nested dataclasses
     for field in dataclasses.fields(base_type):
         field_type = field.type
-        
+
         # Handle Optional[T] -> extract T
         origin = get_origin(field_type)
         if origin is not None:
@@ -66,7 +67,7 @@ def _extract_all_dataclass_types(base_type: Type, visited: Optional[Set[Type]] =
         elif dataclasses.is_dataclass(field_type):
             # Direct dataclass field
             _extract_all_dataclass_types(field_type, visited)
-    
+
     return visited
 
 
@@ -92,7 +93,7 @@ def prewarm_callable_analysis_cache(*callables: Callable) -> None:
     logger.debug(f"Pre-warmed analysis cache for {len(callables)} callables")
 
 
-def prewarm_config_analysis_cache(base_config_type: Type) -> None:
+def prewarm_config_analysis_cache(base_config_type: type) -> None:
     """
     Pre-warm analysis caches for all config types in a hierarchy.
 
@@ -120,6 +121,7 @@ def prewarm_config_analysis_cache(base_config_type: Type) -> None:
     lazy_name = base_config_type.__name__.replace("Global", "")
     if lazy_name != base_config_type.__name__:
         import importlib
+
         module = importlib.import_module(base_config_type.__module__)
         lazy_type = getattr(module, lazy_name, None)
 
@@ -149,11 +151,11 @@ def prewarm_config_analysis_cache(base_config_type: Type) -> None:
 
             # Analyze to warm the cache
             service.analyze_parameters(
-                params, param_types,
-                field_id='cache_warming',
+                params,
+                param_types,
+                field_id="cache_warming",
                 parameter_info=param_info,
-                parent_dataclass_type=config_type
+                parent_dataclass_type=config_type,
             )
 
     logger.debug(f"Pre-warmed analysis cache for {len(config_types)} config types")
-

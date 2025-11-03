@@ -10,9 +10,8 @@ Import this module in tests to observe module-level decoration/injection behavio
 """
 
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Optional, List
 from enum import Enum
+from pathlib import Path
 
 from hieraconf import auto_create_decorator, set_base_config_type
 from hieraconf.lazy_factory import _inject_all_pending_fields
@@ -32,6 +31,7 @@ class Compression(Enum):
 @dataclass(frozen=True)
 class GlobalPipelineConfig:
     """Root (global) configuration for a pipeline session."""
+
     num_workers: int = 2
     materialization_path: Path = field(default=Path("results"))
 
@@ -39,7 +39,8 @@ class GlobalPipelineConfig:
 @dataclass(frozen=True)
 class WellFilterConfig:
     """Mixin-like config providing well filtering options."""
-    well_filter: Optional[List[str]] = None
+
+    well_filter: list[str] | None = None
     well_filter_mode: WellFilterMode = WellFilterMode.INCLUDE
 
 
@@ -52,6 +53,7 @@ class ZarrConfig:
 @dataclass(frozen=True)
 class PathPlanningConfig(WellFilterConfig):
     """Config that inherits well-filtering behavior from WellFilterConfig."""
+
     output_dir: Path = field(default=Path("/data"))
     sub_dir: str = "pipeline"
 
@@ -64,6 +66,7 @@ class BaseDefaults:
 @dataclass(frozen=True)
 class ComponentConfig(BaseDefaults):
     """A component config that inherits defaults from BaseDefaults."""
+
     comp_value: int | None = None
 
 

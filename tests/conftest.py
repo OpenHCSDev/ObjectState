@@ -1,12 +1,14 @@
 """Pytest configuration and shared fixtures."""
-import pytest
+
 from dataclasses import dataclass
-from hieraconf import set_base_config_type
+
+import pytest
 
 
 @dataclass
 class TestGlobalConfig:
     """Test global configuration."""
+
     output_dir: str = "/tmp"
     num_workers: int = 4
     debug: bool = False
@@ -16,6 +18,7 @@ class TestGlobalConfig:
 @dataclass
 class TestPipelineConfig:
     """Test pipeline configuration."""
+
     batch_size: int = 32
     learning_rate: float = 0.001
     epochs: int = 10
@@ -24,6 +27,7 @@ class TestPipelineConfig:
 @dataclass
 class TestStepConfig:
     """Test step configuration."""
+
     input_size: int = 128
     output_size: int = 64
     dropout: float = 0.1

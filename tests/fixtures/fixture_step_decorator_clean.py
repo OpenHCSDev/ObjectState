@@ -7,6 +7,7 @@ module exports the resulting LazyStepConfig for tests to import and inspect.
 
 decorator = globals().get("global_step_config")
 from dataclasses import dataclass
+
 from hieraconf import auto_create_decorator, set_base_config_type
 from hieraconf.lazy_factory import LazyDataclassFactory
 
@@ -32,7 +33,9 @@ if decorator is not None:
     # may not export immediately). Create fallback lazy class if missing.
     lazy_name = f"Lazy{StepConfig.__name__}"
     if lazy_name not in globals():
-        LazyStepConfig = LazyDataclassFactory.make_lazy_simple(base_class=StepConfig, lazy_class_name=lazy_name)
+        LazyStepConfig = LazyDataclassFactory.make_lazy_simple(
+            base_class=StepConfig, lazy_class_name=lazy_name
+        )
         globals()[lazy_name] = LazyStepConfig
 
     # Register the base global config type for resolution

@@ -7,6 +7,7 @@ real import-time behavior without editing the original fixture files.
 """
 
 from dataclasses import dataclass
+
 from hieraconf import auto_create_decorator, set_base_config_type
 from hieraconf.lazy_factory import _inject_all_pending_fields
 

@@ -22,14 +22,14 @@ import dataclasses
 import inspect
 import logging
 from contextlib import contextmanager
-from typing import Any, Dict, Union
 from dataclasses import fields, is_dataclass
+from typing import Any, Union
 
 logger = logging.getLogger(__name__)
 
 # Core contextvar for current merged global config
 # This holds the current context state that resolution functions can access
-current_temp_global = contextvars.ContextVar('current_temp_global')
+current_temp_global = contextvars.ContextVar("current_temp_global")
 
 
 def _merge_nested_dataclass(base, override, mask_with_none: bool = False):
@@ -69,7 +69,9 @@ def _merge_nested_dataclass(base, override, mask_with_none: bool = False):
             # Recursively merge nested dataclass
             base_value = getattr(base, field_name, None)
             if base_value is not None and is_dataclass(base_value):
-                merge_values[field_name] = _merge_nested_dataclass(base_value, override_value, mask_with_none)
+                merge_values[field_name] = _merge_nested_dataclass(
+                    base_value, override_value, mask_with_none
+                )
             else:
                 merge_values[field_name] = override_value
         else:
@@ -137,7 +139,9 @@ def config_context(obj, mask_with_none: bool = False):
                             if is_dataclass(value):
                                 base_value = getattr(base_config, field_name, None)
                                 if base_value is not None and is_dataclass(base_value):
-                                    merged_nested = _merge_nested_dataclass(base_value, value, mask_with_none=True)
+                                    merged_nested = _merge_nested_dataclass(
+                                        base_value, value, mask_with_none=True
+                                    )
                                     overrides[field_name] = merged_nested
                                 else:
                                     overrides[field_name] = value
@@ -148,7 +152,7 @@ def config_context(obj, mask_with_none: bool = False):
                             # Check if value is compatible (handles lazy-to-base type mapping)
                             if _is_compatible_config_type(value, expected_type):
                                 # Convert lazy configs to base configs for context
-                                if hasattr(value, 'to_base_config'):
+                                if hasattr(value, "to_base_config"):
                                     value = value.to_base_config()
 
                                 # CRITICAL FIX: Recursively merge nested dataclass fields
@@ -159,7 +163,9 @@ def config_context(obj, mask_with_none: bool = False):
                                     if base_value is not None and is_dataclass(base_value):
                                         # Merge nested dataclass: base + overrides
                                         # Pass mask_with_none to recursive merge
-                                        merged_nested = _merge_nested_dataclass(base_value, value, mask_with_none=False)
+                                        merged_nested = _merge_nested_dataclass(
+                                            base_value, value, mask_with_none=False
+                                        )
                                         overrides[field_name] = merged_nested
                                     else:
                                         # No base value to merge with, use override as-is
@@ -174,7 +180,9 @@ def config_context(obj, mask_with_none: bool = False):
     if overrides:
         try:
             merged_config = dataclasses.replace(base_config, **overrides)
-            logger.debug(f"Creating config context with {len(overrides)} field overrides from {type(obj).__name__}")
+            logger.debug(
+                f"Creating config context with {len(overrides)} field overrides from {type(obj).__name__}"
+            )
         except Exception as e:
             logger.warning(f"Failed to merge config overrides from {type(obj).__name__}: {e}")
             merged_config = base_config
@@ -193,124 +201,124 @@ def config_context(obj, mask_with_none: bool = False):
 
 
 # UNUSED: Kept for compatibility but no longer used with field matching approach
-def extract_from_function_signature(func) -> Dict[str, Any]:
+def extract_from_function_signature(func) -> dict[str, Any]:
     """
     Get parameter defaults as config overrides.
-    
+
     This enables functions to provide config context through their parameter defaults.
     Useful for step functions that want to specify their own config values.
-    
+
     Args:
         func: Function to extract parameter defaults from
-        
+
     Returns:
         Dict of parameter_name -> default_value for parameters with defaults
     """
     try:
         sig = inspect.signature(func)
         overrides = {}
-        
+
         for name, param in sig.parameters.items():
             if param.default != inspect.Parameter.empty:
                 overrides[name] = param.default
-                
+
         logger.debug(f"Extracted {len(overrides)} overrides from function {func.__name__}")
         return overrides
-        
+
     except (ValueError, TypeError) as e:
         logger.debug(f"Could not extract signature from {func}: {e}")
         return {}
 
 
-def extract_from_dataclass_fields(obj) -> Dict[str, Any]:
+def extract_from_dataclass_fields(obj) -> dict[str, Any]:
     """
     Get non-None fields as config overrides.
-    
+
     This extracts concrete values from dataclass instances, ignoring None values
     which represent fields that should inherit from context.
-    
+
     Args:
         obj: Dataclass instance to extract field values from
-        
+
     Returns:
         Dict of field_name -> value for non-None fields
     """
     if not is_dataclass(obj):
         return {}
-        
+
     overrides = {}
-    
+
     for field in fields(obj):
         value = getattr(obj, field.name)
         if value is not None:
             overrides[field.name] = value
-            
+
     logger.debug(f"Extracted {len(overrides)} overrides from dataclass {type(obj).__name__}")
     return overrides
 
 
-def extract_from_object_attributes(obj) -> Dict[str, Any]:
+def extract_from_object_attributes(obj) -> dict[str, Any]:
     """
     Extract config attributes from step/pipeline objects.
-    
+
     This handles orchestrators, steps, and other objects that have *_config attributes.
     It flattens the config hierarchy into a single dict of field overrides.
-    
+
     Args:
         obj: Object to extract config attributes from
-        
+
     Returns:
         Dict of field_name -> value for all non-None config fields
     """
     overrides = {}
-    
+
     try:
         for attr_name in dir(obj):
-            if attr_name.endswith('_config'):
+            if attr_name.endswith("_config"):
                 attr_value = getattr(obj, attr_name)
                 if attr_value is not None and is_dataclass(attr_value):
                     # Extract all non-None fields from this config
                     config_overrides = extract_from_dataclass_fields(attr_value)
                     overrides.update(config_overrides)
-                    
+
         logger.debug(f"Extracted {len(overrides)} overrides from object {type(obj).__name__}")
-        
+
     except Exception as e:
         logger.debug(f"Error extracting from object {obj}: {e}")
-        
+
     return overrides
 
 
-def merge_configs(base, overrides: Dict[str, Any]):
+def merge_configs(base, overrides: dict[str, Any]):
     """
     Merge overrides into base config, creating new immutable instance.
-    
+
     This creates a new config instance with override values merged in,
     preserving immutability of the original base config.
-    
+
     Args:
         base: Base config instance (base config type)
         overrides: Dict of field_name -> value to override
-        
+
     Returns:
         New config instance with overrides applied
     """
     if not base or not overrides:
         return base
-        
+
     try:
         # Filter out None values - they should not override existing values
         filtered_overrides = {k: v for k, v in overrides.items() if v is not None}
-        
+
         if not filtered_overrides:
             return base
-            
+
         # Use dataclasses.replace to create new instance with overrides
         merged = dataclasses.replace(base, **filtered_overrides)
-        
+
         logger.debug(f"Merged {len(filtered_overrides)} overrides into {type(base).__name__}")
         return merged
-        
+
     except Exception as e:
         logger.warning(f"Failed to merge configs: {e}")
         return base
@@ -347,10 +355,10 @@ def get_base_global_config():
 def get_current_temp_global():
     """
     Get current context or None.
-    
+
     This is the primary interface for resolution functions to access
     the current context. Returns None if no context is active.
-    
+
     Returns:
         Current merged global config or None
     """
@@ -360,13 +368,13 @@ def get_current_temp_global():
 def set_current_temp_global(config):
     """
     Set current context (for testing/debugging).
-    
+
     This is primarily for testing purposes. Normal code should use
     config_context() manager instead.
-    
+
     Args:
         config: Global config instance to set as current context
-        
+
     Returns:
         Token for resetting the context
     """
@@ -376,7 +384,7 @@ def set_current_temp_global(config):
 def clear_current_temp_global():
     """
     Clear current context (for testing/debugging).
-    
+
     This removes any active context, causing resolution to fall back
     to default behavior.
     """
@@ -388,27 +396,31 @@ def clear_current_temp_global():
 
 # Utility functions for debugging and introspection
 
-def get_context_info() -> Dict[str, Any]:
+
+def get_context_info() -> dict[str, Any]:
     """
     Get information about current context for debugging.
-    
+
     Returns:
         Dict with context information including type, field count, etc.
     """
     current = get_current_temp_global()
     if current is None:
         return {"active": False}
-        
+
     return {
         "active": True,
         "type": type(current).__name__,
         "field_count": len(fields(current)) if is_dataclass(current) else 0,
-        "non_none_fields": sum(1 for f in fields(current) 
-                              if getattr(current, f.name) is not None) if is_dataclass(current) else 0
+        "non_none_fields": (
+            sum(1 for f in fields(current) if getattr(current, f.name) is not None)
+            if is_dataclass(current)
+            else 0
+        ),
     }
 
 
-def extract_all_configs_from_context() -> Dict[str, Any]:
+def extract_all_configs_from_context() -> dict[str, Any]:
     """
     Extract all *_config attributes from current context.
 
@@ -425,7 +437,7 @@ def extract_all_configs_from_context() -> Dict[str, Any]:
     return extract_all_configs(current)
 
 
-def extract_all_configs(context_obj) -> Dict[str, Any]:
+def extract_all_configs(context_obj) -> dict[str, Any]:
     """
     Extract all config instances from a context object using type-driven approach.
 
@@ -466,7 +478,9 @@ def extract_all_configs(context_obj) -> Dict[str, Any]:
                         instance_type = type(field_value)
                         configs[instance_type.__name__] = field_value
 
-                        logger.debug(f"Extracted config {instance_type.__name__} from field {field_name}")
+                        logger.debug(
+                            f"Extracted config {instance_type.__name__} from field {field_name}"
+                        )
 
                 except AttributeError:
                     # Field doesn't exist on instance (shouldn't happen with dataclasses)
@@ -488,7 +502,7 @@ def _unwrap_optional_type(field_type):
     This handles type annotations like Optional[ConfigType] -> ConfigType
     """
     # Handle typing.Optional and typing.Union
-    if hasattr(field_type, '__origin__'):
+    if hasattr(field_type, "__origin__"):
         if field_type.__origin__ is Union:
             # Get non-None types from Union
             non_none_types = [arg for arg in field_type.__args__ if arg is not type(None)]
@@ -498,7 +512,7 @@ def _unwrap_optional_type(field_type):
     return field_type
 
 
-def _extract_from_object_attributes_typed(obj, configs: Dict[str, Any]) -> None:
+def _extract_from_object_attributes_typed(obj, configs: dict[str, Any]) -> None:
     """
     Type-safe extraction from object attributes for non-dataclass objects.
 
@@ -508,14 +522,16 @@ def _extract_from_object_attributes_typed(obj, configs: Dict[str, Any]) -> None:
     try:
         # Get all attributes that are dataclass instances
         for attr_name in dir(obj):
-            if attr_name.startswith('_'):
+            if attr_name.startswith("_"):
                 continue
 
             try:
                 attr_value = getattr(obj, attr_name)
                 if attr_value is not None and is_dataclass(attr_value):
                     configs[type(attr_value).__name__] = attr_value
-                    logger.debug(f"Extracted config {type(attr_value).__name__} from attribute {attr_name}")
+                    logger.debug(
+                        f"Extracted config {type(attr_value).__name__} from attribute {attr_name}"
+                    )
 
             except (AttributeError, TypeError):
                 # Skip attributes that can't be accessed or aren't relevant
@@ -549,9 +565,10 @@ def _is_compatible_config_type(value, expected_type) -> bool:
         pass
 
     # Check lazy-to-base type mapping
-    if hasattr(value, 'to_base_config'):
+    if hasattr(value, "to_base_config"):
         # This is a lazy config - check if its base type matches expected_type
         from hieraconf.lazy_factory import _lazy_type_registry
+
         base_type = _lazy_type_registry.get(value_type)
         if base_type == expected_type:
             return True

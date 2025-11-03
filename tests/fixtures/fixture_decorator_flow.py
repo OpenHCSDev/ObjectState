@@ -5,7 +5,9 @@ scope, applies the generated decorator to the components, finalizes
 injection, and registers the base config type. Tests can import this module
 to observe the real import-time behavior.
 """
+
 from dataclasses import dataclass
+
 from hieraconf import auto_create_decorator, set_base_config_type
 from hieraconf.lazy_factory import _inject_all_pending_fields
 

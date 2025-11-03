@@ -1,18 +1,19 @@
 """Tests for lazy factory module."""
-import pytest
+
 from dataclasses import dataclass, fields
 
 from hieraconf import (
     LazyDataclassFactory,
-    register_lazy_type_mapping,
-    get_base_type_for_lazy,
     config_context,
+    get_base_type_for_lazy,
+    register_lazy_type_mapping,
     set_base_config_type,
 )
 
 
 def test_make_lazy_simple():
     """Test creating a simple lazy dataclass."""
+
     @dataclass
     class SimpleConfig:
         value: str = "default"
@@ -30,6 +31,7 @@ def test_make_lazy_simple():
 
 def test_lazy_dataclass_fields():
     """Test that lazy dataclass has same fields as base."""
+
     @dataclass
     class ConfigWithFields:
         field1: str = "default1"
@@ -48,6 +50,7 @@ def test_lazy_dataclass_fields():
 
 def test_lazy_resolution_with_context():
     """Test that lazy fields resolve from context."""
+
     @dataclass
     class MyConfig:
         value: str = "default"
@@ -69,6 +72,7 @@ def test_lazy_resolution_with_context():
 
 def test_lazy_resolution_without_context():
     """Test lazy resolution when no context is available."""
+
     @dataclass
     class MyConfig:
         value: str = "default"
@@ -86,6 +90,7 @@ def test_lazy_resolution_without_context():
 
 def test_lazy_explicit_values():
     """Test that explicitly set values override lazy resolution."""
+
     @dataclass
     class MyConfig:
         value: str = "default"
@@ -108,6 +113,7 @@ def test_lazy_explicit_values():
 
 def test_register_and_get_lazy_type_mapping():
     """Test lazy type mapping registration."""
+
     @dataclass
     class BaseConfig:
         value: str = "test"
@@ -125,6 +131,7 @@ def test_register_and_get_lazy_type_mapping():
 
 def test_nested_lazy_dataclass():
     """Test creating lazy dataclass with nested dataclass fields."""
+
     @dataclass
     class NestedConfig:
         nested_value: str = "nested"
@@ -143,6 +150,7 @@ def test_nested_lazy_dataclass():
 
 def test_lazy_to_base_config():
     """Test converting lazy config to base config."""
+
     @dataclass
     class MyConfig:
         value: str = "default"
@@ -153,7 +161,7 @@ def test_lazy_to_base_config():
     lazy = LazyConfig(value="test", number=100)
 
     # Convert to base config
-    if hasattr(lazy, 'to_base_config'):
+    if hasattr(lazy, "to_base_config"):
         base = lazy.to_base_config()
         assert isinstance(base, MyConfig)
         assert base.value == "test"

@@ -1,4 +1,5 @@
 """Sphinx configuration for hieraconf."""
+
 import os
 import sys
 

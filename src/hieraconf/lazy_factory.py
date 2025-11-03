@@ -6,11 +6,13 @@ import logging
 import re
 import sys
 from abc import ABCMeta
-from dataclasses import dataclass, fields, is_dataclass, make_dataclass, MISSING, field
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar, Union
+from collections.abc import Callable
+from dataclasses import MISSING, dataclass, field, fields, is_dataclass, make_dataclass
+from typing import Any, TypeVar, Union
 
 # OpenHCS imports
 from hieraconf.placeholder import LazyDefaultPlaceholderService
+
 # Optional: metaclass_registry for context provider registration
 try:
     from metaclass_registry import AutoRegisterMeta, RegistryConfig
@@ -18,41 +20,44 @@ except ImportError:
     # Provide minimal fallback implementations
     class AutoRegisterMeta(type):
         """Fallback metaclass when metaclass_registry is not available."""
+
         def __new__(mcs, name, bases, attrs, registry_config=None):
             return super().__new__(mcs, name, bases, attrs)
-    
+
     class RegistryConfig:
         """Fallback registry config when metaclass_registry is not available."""
+
         def __init__(self, **kwargs):
             pass
+
 
 # Note: dual_axis_resolver_recursive and lazy_placeholder imports kept inline to avoid circular imports
 
 
 # Type registry for lazy dataclass to base class mapping
-_lazy_type_registry: Dict[Type, Type] = {}
+_lazy_type_registry: dict[type, type] = {}
 
 # Cache for lazy classes to prevent duplicate creation
-_lazy_class_cache: Dict[str, Type] = {}
+_lazy_class_cache: dict[str, type] = {}
 
 
 # ContextEventCoordinator removed - replaced with contextvars-based context system
 
 
-
-
-def register_lazy_type_mapping(lazy_type: Type, base_type: Type) -> None:
+def register_lazy_type_mapping(lazy_type: type, base_type: type) -> None:
     """Register mapping between lazy dataclass type and its base type."""
     _lazy_type_registry[lazy_type] = base_type
 
 
-def get_base_type_for_lazy(lazy_type: Type) -> Optional[Type]:
+def get_base_type_for_lazy(lazy_type: type) -> type | None:
     """Get the base type for a lazy dataclass type."""
     return _lazy_type_registry.get(lazy_type)
+
 
 # Optional imports (handled gracefully)
 try:
     from PyQt6.QtWidgets import QApplication
+
     HAS_PYQT = True
 except ImportError:
     QApplication = None
@@ -106,8 +111,8 @@ class LazyMethodBindings:
     @staticmethod
     def create_resolver() -> Callable[[Any, str], Any]:
         """Create field resolver method using new pure function interface."""
-        from hieraconf.dual_axis_resolver import resolve_field_inheritance
         from hieraconf.context_manager import current_temp_global, extract_all_configs
+        from hieraconf.dual_axis_resolver import resolve_field_inheritance
 
         def _resolve_field_value(self, field_name: str) -> Any:
             # Get current context from contextvars
@@ -120,7 +125,9 @@ class LazyMethodBindings:
                 return resolve_field_inheritance(self, field_name, available_configs)
             except LookupError:
                 # No context available - return None (fail-loud approach)
-                logger.debug(f"No context available for resolving {type(self).__name__}.{field_name}")
+                logger.debug(
+                    f"No context available for resolving {type(self).__name__}.{field_name}"
+                )
                 return None
 
         return _resolve_field_value
@@ -128,17 +135,26 @@ class LazyMethodBindings:
     @staticmethod
     def create_getattribute() -> Callable[[Any, str], Any]:
         """Create lazy __getattribute__ method using new context system."""
-        from hieraconf.dual_axis_resolver import resolve_field_inheritance, _has_concrete_field_override
         from hieraconf.context_manager import current_temp_global, extract_all_configs
+        from hieraconf.dual_axis_resolver import (
+            _has_concrete_field_override,
+            resolve_field_inheritance,
+        )
 
         def _find_mro_concrete_value(base_class, name):
             """Extract common MRO traversal pattern."""
-            return next((getattr(cls, name) for cls in base_class.__mro__
-                        if _has_concrete_field_override(cls, name)), None)
+            return next(
+                (
+                    getattr(cls, name)
+                    for cls in base_class.__mro__
+                    if _has_concrete_field_override(cls, name)
+                ),
+                None,
+            )
 
         def _try_global_context_value(self, base_class, name):
             """Extract global context resolution logic using new pure function interface."""
-            if not hasattr(self, '_global_config_type'):
+            if not hasattr(self, "_global_config_type"):
                 return None
 
             # Get current context from contextvars
@@ -176,7 +192,7 @@ class LazyMethodBindings:
                 current_context = current_temp_global.get()
                 if current_context is not None:
                     # Get the config type name for this lazy class
-                    config_field_name = getattr(self, '_config_field_name', None)
+                    config_field_name = getattr(self, "_config_field_name", None)
                     if config_field_name:
                         try:
                             config_instance = getattr(current_context, config_field_name)
@@ -210,11 +226,13 @@ class LazyMethodBindings:
             except LookupError:
                 # No context available - fallback to MRO concrete values
                 return _find_mro_concrete_value(get_base_type_for_lazy(self.__class__), name)
+
         return __getattribute__
 
     @staticmethod
-    def create_to_base_config(base_class: Type) -> Callable[[Any], Any]:
+    def create_to_base_config(base_class: type) -> Callable[[Any], Any]:
         """Create base config converter method."""
+
         def to_base_config(self):
             # CRITICAL FIX: Use object.__getattribute__ to preserve raw None values
             # getattr() triggers lazy resolution, converting None to static defaults
@@ -227,26 +245,29 @@ class LazyMethodBindings:
             # and THEN resolution happens later with the properly built context.
             field_values = {f.name: object.__getattribute__(self, f.name) for f in fields(self)}
             return base_class(**field_values)
+
         return to_base_config
 
     @staticmethod
-    def create_class_methods() -> Dict[str, Any]:
+    def create_class_methods() -> dict[str, Any]:
         """Create class-level utility methods."""
         return {
             WITH_DEFAULTS_METHOD: classmethod(lambda cls: cls()),
-            WITH_OVERRIDES_METHOD: classmethod(lambda cls, **kwargs: cls(**kwargs))
+            WITH_OVERRIDES_METHOD: classmethod(lambda cls, **kwargs: cls(**kwargs)),
         }
 
 
 class LazyDataclassFactory:
     """Generic factory for creating lazy dataclasses with flexible resolution."""
 
-
-
-
-
     @staticmethod
-    def _introspect_dataclass_fields(base_class: Type, debug_template: str, global_config_type: Type = None, parent_field_path: str = None, parent_instance_provider: Optional[Callable[[], Any]] = None) -> List[Tuple[str, Type, None]]:
+    def _introspect_dataclass_fields(
+        base_class: type,
+        debug_template: str,
+        global_config_type: type = None,
+        parent_field_path: str = None,
+        parent_instance_provider: Callable[[], Any] | None = None,
+    ) -> list[tuple[str, type, None]]:
         """
         Introspect dataclass fields for lazy loading.
 
@@ -258,28 +279,31 @@ class LazyDataclassFactory:
 
         for field in base_fields:
             # Check if field already has Optional type
-            origin = getattr(field.type, '__origin__', None)
-            is_already_optional = (origin is Union and
-                                 type(None) in getattr(field.type, '__args__', ()))
+            origin = getattr(field.type, "__origin__", None)
+            is_already_optional = origin is Union and type(None) in getattr(
+                field.type, "__args__", ()
+            )
 
             # Check if field has default value or factory
-            has_default = (field.default is not MISSING or
-                         field.default_factory is not MISSING)
+            has_default = field.default is not MISSING or field.default_factory is not MISSING
 
             # Check if field type is a dataclass that should be made lazy
             field_type = field.type
             if is_dataclass(field.type):
                 # SIMPLIFIED: Create lazy version using simple factory
                 lazy_nested_type = LazyDataclassFactory.make_lazy_simple(
-                    base_class=field.type,
-                    lazy_class_name=f"Lazy{field.type.__name__}"
+                    base_class=field.type, lazy_class_name=f"Lazy{field.type.__name__}"
                 )
                 field_type = lazy_nested_type
-                logger.debug(f"Created lazy class for {field.name}: {field.type} -> {lazy_nested_type}")
+                logger.debug(
+                    f"Created lazy class for {field.name}: {field.type} -> {lazy_nested_type}"
+                )
 
             # Complex type logic: make Optional if no default, preserve existing Optional types
             if is_already_optional or not has_default:
-                final_field_type = Union[field_type, type(None)] if not is_already_optional else field_type
+                final_field_type = (
+                    Union[field_type, type(None)] if not is_already_optional else field_type
+                )
             else:
                 final_field_type = field_type
 
@@ -290,17 +314,35 @@ class LazyDataclassFactory:
                 # For Optional dataclass fields, create default factory that creates lazy instances
                 # This ensures the UI always has nested lazy instances to render recursively
                 # CRITICAL: field_type is already the lazy type, so use it directly
-                field_def = (field.name, final_field_type, dataclasses.field(default_factory=field_type, metadata=field.metadata))
+                field_def = (
+                    field.name,
+                    final_field_type,
+                    dataclasses.field(default_factory=field_type, metadata=field.metadata),
+                )
             elif field.metadata:
                 # For fields with metadata but no dataclass default factory, create a Field object to preserve metadata
                 # We need to replicate the original field's default behavior
                 if field.default is not MISSING:
-                    field_def = (field.name, final_field_type, dataclasses.field(default=field.default, metadata=field.metadata))
+                    field_def = (
+                        field.name,
+                        final_field_type,
+                        dataclasses.field(default=field.default, metadata=field.metadata),
+                    )
                 elif field.default_factory is not MISSING:
-                    field_def = (field.name, final_field_type, dataclasses.field(default_factory=field.default_factory, metadata=field.metadata))
+                    field_def = (
+                        field.name,
+                        final_field_type,
+                        dataclasses.field(
+                            default_factory=field.default_factory, metadata=field.metadata
+                        ),
+                    )
                 else:
                     # Field has metadata but no default - use MISSING to indicate required field
-                    field_def = (field.name, final_field_type, dataclasses.field(default=MISSING, metadata=field.metadata))
+                    field_def = (
+                        field.name,
+                        final_field_type,
+                        dataclasses.field(default=MISSING, metadata=field.metadata),
+                    )
             else:
                 # No metadata, no special handling needed
                 field_def = (field.name, final_field_type, None)
@@ -308,27 +350,29 @@ class LazyDataclassFactory:
             lazy_field_definitions.append(field_def)
 
             # Debug logging with provided template (reduced to DEBUG level to reduce log pollution)
-            logger.debug(debug_template.format(
-                field_name=field.name,
-                original_type=field.type,
-                has_default=has_default,
-                final_type=final_field_type
-            ))
+            logger.debug(
+                debug_template.format(
+                    field_name=field.name,
+                    original_type=field.type,
+                    has_default=has_default,
+                    final_type=final_field_type,
+                )
+            )
 
         return lazy_field_definitions
 
     @staticmethod
     def _create_lazy_dataclass_unified(
-        base_class: Type,
+        base_class: type,
         instance_provider: Callable[[], Any],
         lazy_class_name: str,
         debug_template: str,
         use_recursive_resolution: bool = False,
-        fallback_chain: Optional[List[Callable[[str], Any]]] = None,
-        global_config_type: Type = None,
+        fallback_chain: list[Callable[[str], Any]] | None = None,
+        global_config_type: type = None,
         parent_field_path: str = None,
-        parent_instance_provider: Optional[Callable[[], Any]] = None
-    ) -> Type:
+        parent_instance_provider: Callable[[], Any] | None = None,
+    ) -> type:
         """
         Create lazy dataclass with declarative configuration.
 
@@ -351,52 +395,71 @@ class LazyDataclassFactory:
         # Exception: InheritAsNoneMeta is safe to inherit from as it only modifies field defaults
         # Exception: Classes with _inherit_as_none marker are safe even with ABCMeta (processed by @global_pipeline_config)
         base_metaclass = type(base_class)
-        has_inherit_as_none_marker = hasattr(base_class, '_inherit_as_none') and base_class._inherit_as_none
+        has_inherit_as_none_marker = (
+            hasattr(base_class, "_inherit_as_none") and base_class._inherit_as_none
+        )
         has_unsafe_metaclass = (
-            (hasattr(base_class, '__metaclass__') or base_metaclass != type) and
-            base_metaclass != InheritAsNoneMeta and
-            not has_inherit_as_none_marker
+            (hasattr(base_class, "__metaclass__") or base_metaclass != type)
+            and base_metaclass != InheritAsNoneMeta
+            and not has_inherit_as_none_marker
         )
 
         # Determine if base class is frozen to avoid frozen/non-frozen conflicts
-        base_is_frozen = base_class.__dataclass_params__.frozen if hasattr(base_class, '__dataclass_params__') else False
-        
+        base_is_frozen = (
+            base_class.__dataclass_params__.frozen
+            if hasattr(base_class, "__dataclass_params__")
+            else False
+        )
+
         if has_unsafe_metaclass:
             # Base class has unsafe custom metaclass - don't inherit, just copy interface
-            print(f"🔧 LAZY FACTORY: {base_class.__name__} has custom metaclass {base_metaclass.__name__}, avoiding inheritance")
+            print(
+                f"🔧 LAZY FACTORY: {base_class.__name__} has custom metaclass {base_metaclass.__name__}, avoiding inheritance"
+            )
             lazy_class = make_dataclass(
                 lazy_class_name,
                 LazyDataclassFactory._introspect_dataclass_fields(
-                    base_class, debug_template, global_config_type, parent_field_path, parent_instance_provider
+                    base_class,
+                    debug_template,
+                    global_config_type,
+                    parent_field_path,
+                    parent_instance_provider,
                 ),
                 bases=(),  # No inheritance to avoid metaclass conflicts
-                frozen=base_is_frozen  # Match base class frozen state
+                frozen=base_is_frozen,  # Match base class frozen state
             )
         else:
             # Safe to inherit from regular dataclass
             lazy_class = make_dataclass(
                 lazy_class_name,
                 LazyDataclassFactory._introspect_dataclass_fields(
-                    base_class, debug_template, global_config_type, parent_field_path, parent_instance_provider
+                    base_class,
+                    debug_template,
+                    global_config_type,
+                    parent_field_path,
+                    parent_instance_provider,
                 ),
                 bases=(base_class,),
-                frozen=base_is_frozen  # Match base class frozen state
+                frozen=base_is_frozen,  # Match base class frozen state
             )
 
         # Add constructor parameter tracking to detect user-set fields
         original_init = lazy_class.__init__
+
         def __init_with_tracking__(self, **kwargs):
             # Track which fields were explicitly passed to constructor
-            object.__setattr__(self, '_explicitly_set_fields', set(kwargs.keys()))
+            object.__setattr__(self, "_explicitly_set_fields", set(kwargs.keys()))
             # Store the global config type for inheritance resolution
-            object.__setattr__(self, '_global_config_type', global_config_type)
+            object.__setattr__(self, "_global_config_type", global_config_type)
             # Store the config field name for simple field path lookup
             import re
+
             def _camel_to_snake_local(name: str) -> str:
-                s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
-                return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
+                s1 = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", name)
+                return re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
+
             config_field_name = _camel_to_snake_local(base_class.__name__)
-            object.__setattr__(self, '_config_field_name', config_field_name)
+            object.__setattr__(self, "_config_field_name", config_field_name)
             original_init(self, **kwargs)
 
         lazy_class.__init__ = __init_with_tracking__
@@ -406,7 +469,7 @@ class LazyDataclassFactory:
             RESOLVE_FIELD_VALUE_METHOD: LazyMethodBindings.create_resolver(),
             GET_ATTRIBUTE_METHOD: LazyMethodBindings.create_getattribute(),
             TO_BASE_CONFIG_METHOD: LazyMethodBindings.create_to_base_config(base_class),
-            **LazyMethodBindings.create_class_methods()
+            **LazyMethodBindings.create_class_methods(),
         }
         for method_name, method_impl in method_bindings.items():
             setattr(lazy_class, method_name, method_impl)
@@ -424,15 +487,8 @@ class LazyDataclassFactory:
 
         return lazy_class
 
-
-
-
-
     @staticmethod
-    def make_lazy_simple(
-        base_class: Type,
-        lazy_class_name: str = None
-    ) -> Type:
+    def make_lazy_simple(base_class: type, lazy_class_name: str = None) -> type:
         """
         Create lazy dataclass using new contextvars system.
 
@@ -463,16 +519,17 @@ class LazyDataclassFactory:
             fallback_chain=[],
             global_config_type=None,
             parent_field_path=None,
-            parent_instance_provider=None
+            parent_instance_provider=None,
         )
 
     # All legacy methods removed - use make_lazy_simple() for all use cases
 
 
 # Generic utility functions for clean thread-local storage management
-def ensure_global_config_context(global_config_type: Type, global_config_instance: Any) -> None:
+def ensure_global_config_context(global_config_type: type, global_config_instance: Any) -> None:
     """Ensure proper thread-local storage setup for any global config type."""
     from hieraconf.global_config import set_global_config_for_editing
+
     set_global_config_for_editing(global_config_type, global_config_instance)
 
 
@@ -483,12 +540,12 @@ CONTEXT_PROVIDERS = {}
 # Configuration for context provider registration
 _CONTEXT_PROVIDER_REGISTRY_CONFIG = RegistryConfig(
     registry_dict=CONTEXT_PROVIDERS,
-    key_attribute='_context_type',
+    key_attribute="_context_type",
     key_extractor=None,  # Requires explicit _context_type
     skip_if_no_key=True,  # Skip if no _context_type set
     secondary_registries=None,
     log_registration=True,
-    registry_name='context provider'
+    registry_name="context provider",
 )
 
 
@@ -496,23 +553,25 @@ class ContextProviderMeta(AutoRegisterMeta):
     """Metaclass for automatic registration of context provider classes."""
 
     def __new__(mcs, name, bases, attrs):
-        return super().__new__(mcs, name, bases, attrs,
-                              registry_config=_CONTEXT_PROVIDER_REGISTRY_CONFIG)
+        return super().__new__(
+            mcs, name, bases, attrs, registry_config=_CONTEXT_PROVIDER_REGISTRY_CONFIG
+        )
 
 
 class ContextProvider(metaclass=ContextProviderMeta):
     """Base class for objects that can provide context for lazy resolution."""
-    _context_type: Optional[str] = None  # Override in subclasses
+
+    _context_type: str | None = None  # Override in subclasses
 
 
-def _detect_context_type(obj: Any) -> Optional[str]:
+def _detect_context_type(obj: Any) -> str | None:
     """
     Detect what type of context object this is using registered providers.
 
     Returns the context type name or None if not a recognized context type.
     """
     # Check for functions first (simple callable check)
-    if callable(obj) and hasattr(obj, '__name__'):
+    if callable(obj) and hasattr(obj, "__name__"):
         return "function"
 
     # Check if object is an instance of any registered context provider
@@ -524,8 +583,6 @@ def _detect_context_type(obj: Any) -> Optional[str]:
 
 
 # ContextInjector removed - replaced with contextvars-based context system
-
-
 
 
 def resolve_hieraconfurations_for_serialization(data: Any) -> Any:
@@ -568,6 +625,7 @@ def resolve_hieraconfurations_for_serialization(data: Any) -> Any:
     if step_context_type:
         # This is a context object - inject it for its dataclass attributes
         import inspect
+
         frame = inspect.currentframe()
         context_var_name = f"__{step_context_type}_context__"
         frame.f_locals[context_var_name] = resolved_data
@@ -577,13 +635,17 @@ def resolve_hieraconfurations_for_serialization(data: Any) -> Any:
             # Process step attributes recursively
             resolved_attrs = {}
             for attr_name in dir(resolved_data):
-                if attr_name.startswith('_'):
+                if attr_name.startswith("_"):
                     continue
                 try:
                     attr_value = getattr(resolved_data, attr_name)
                     if not callable(attr_value):  # Skip methods
-                        logger.debug(f"Resolving {type(resolved_data).__name__}.{attr_name} = {type(attr_value).__name__}")
-                        resolved_attrs[attr_name] = resolve_hieraconfurations_for_serialization(attr_value)
+                        logger.debug(
+                            f"Resolving {type(resolved_data).__name__}.{attr_name} = {type(attr_value).__name__}"
+                        )
+                        resolved_attrs[attr_name] = resolve_hieraconfurations_for_serialization(
+                            attr_value
+                        )
                 except (AttributeError, Exception):
                     continue
 
@@ -598,7 +660,7 @@ def resolve_hieraconfurations_for_serialization(data: Any) -> Any:
             new_step = type(resolved_data).__new__(type(resolved_data))
 
             # Copy all attributes from the original object's __dict__
-            if hasattr(resolved_data, '__dict__'):
+            if hasattr(resolved_data, "__dict__"):
                 new_step.__dict__.update(resolved_data.__dict__)
 
             # Update with resolved config attributes (these override the originals)
@@ -614,21 +676,28 @@ def resolve_hieraconfurations_for_serialization(data: Any) -> Any:
     elif is_dataclass(resolved_data) and not isinstance(resolved_data, type):
         # Process dataclass fields recursively - inline field processing pattern
         # CRITICAL FIX: Inject parent object as context for sibling config inheritance
-        context_type = _detect_context_type(resolved_data) or "dataclass"  # Default to "dataclass" for generic dataclasses
+        context_type = (
+            _detect_context_type(resolved_data) or "dataclass"
+        )  # Default to "dataclass" for generic dataclasses
         import inspect
+
         frame = inspect.currentframe()
         context_var_name = f"__{context_type}_context__"
         frame.f_locals[context_var_name] = resolved_data
         logger.debug(f"Injected {context_var_name} = {type(resolved_data).__name__}")
 
         # Add debug to see which fields are being resolved
-        logger.debug(f"Resolving fields for {type(resolved_data).__name__}: {[f.name for f in fields(resolved_data)]}")
+        logger.debug(
+            f"Resolving fields for {type(resolved_data).__name__}: {[f.name for f in fields(resolved_data)]}"
+        )
 
         try:
             resolved_fields = {}
             for f in fields(resolved_data):
                 field_value = getattr(resolved_data, f.name)
-                logger.debug(f"Resolving {type(resolved_data).__name__}.{f.name} = {type(field_value).__name__}")
+                logger.debug(
+                    f"Resolving {type(resolved_data).__name__}.{f.name} = {type(field_value).__name__}"
+                )
                 resolved_fields[f.name] = resolve_hieraconfurations_for_serialization(field_value)
             return type(resolved_data)(**resolved_fields)
         finally:
@@ -645,7 +714,9 @@ def resolve_hieraconfurations_for_serialization(data: Any) -> Any:
 
     elif isinstance(resolved_data, (list, tuple)):
         # Process sequence elements recursively
-        resolved_items = [resolve_hieraconfurations_for_serialization(item) for item in resolved_data]
+        resolved_items = [
+            resolve_hieraconfurations_for_serialization(item) for item in resolved_data
+        ]
         return type(resolved_data)(resolved_items)
 
     else:
@@ -654,10 +725,15 @@ def resolve_hieraconfurations_for_serialization(data: Any) -> Any:
 
 
 # Generic dataclass editing with configurable value preservation
-T = TypeVar('T')
+T = TypeVar("T")
 
 
-def create_dataclass_for_editing(dataclass_type: Type[T], source_config: Any, preserve_values: bool = False, context_provider: Optional[Callable[[Any], None]] = None) -> T:
+def create_dataclass_for_editing(
+    dataclass_type: type[T],
+    source_config: Any,
+    preserve_values: bool = False,
+    context_provider: Callable[[Any], None] | None = None,
+) -> T:
     """Create dataclass for editing with configurable value preservation."""
     if not is_dataclass(dataclass_type):
         raise ValueError(f"{dataclass_type} must be a dataclass")
@@ -668,23 +744,26 @@ def create_dataclass_for_editing(dataclass_type: Type[T], source_config: Any, pr
 
     # Mathematical simplification: Convert verbose loop to unified comprehension
     from hieraconf.placeholder import LazyDefaultPlaceholderService
+
     field_values = {
-        f.name: (getattr(source_config, f.name) if preserve_values
-                else f.type() if is_dataclass(f.type) and LazyDefaultPlaceholderService.has_lazy_resolution(f.type)
-                else None)
+        f.name: (
+            getattr(source_config, f.name)
+            if preserve_values
+            else (
+                f.type()
+                if is_dataclass(f.type)
+                and LazyDefaultPlaceholderService.has_lazy_resolution(f.type)
+                else None
+            )
+        )
         for f in fields(dataclass_type)
     }
 
     return dataclass_type(**field_values)
 
 
-
-
-
 def rebuild_hieraconf_with_new_global_reference(
-    existing_hieraconf: Any,
-    new_global_config: Any,
-    global_config_type: Optional[Type] = None
+    existing_hieraconf: Any, new_global_config: Any, global_config_type: type | None = None
 ) -> Any:
     """
     Rebuild lazy config to reference new global config while preserving field states.
@@ -717,13 +796,15 @@ def rebuild_hieraconf_with_new_global_reference(
     def process_field_value(field_obj):
         raw_value = object.__getattribute__(existing_hieraconf, field_obj.name)
 
-        if raw_value is not None and hasattr(raw_value, '__dataclass_fields__'):
+        if raw_value is not None and hasattr(raw_value, "__dataclass_fields__"):
             try:
                 # Check if this is a concrete dataclass that should be converted to lazy
                 is_lazy = LazyDefaultPlaceholderService.has_lazy_resolution(type(raw_value))
 
                 if not is_lazy:
-                    lazy_type = LazyDefaultPlaceholderService._get_lazy_type_for_base(type(raw_value))
+                    lazy_type = LazyDefaultPlaceholderService._get_lazy_type_for_base(
+                        type(raw_value)
+                    )
 
                     if lazy_type:
                         # Convert concrete dataclass to lazy version while preserving ONLY non-default field values
@@ -740,11 +821,15 @@ def rebuild_hieraconf_with_new_global_reference(
                             if field_value != class_default:
                                 concrete_field_values[f.name] = field_value
 
-                        logger.debug(f"Converting concrete {type(raw_value).__name__} to lazy version {lazy_type.__name__} for placeholder resolution")
+                        logger.debug(
+                            f"Converting concrete {type(raw_value).__name__} to lazy version {lazy_type.__name__} for placeholder resolution"
+                        )
                         return lazy_type(**concrete_field_values)
 
                 # If already lazy or no lazy version available, rebuild recursively
-                nested_result = rebuild_hieraconf_with_new_global_reference(raw_value, new_global_config, global_config_type)
+                nested_result = rebuild_hieraconf_with_new_global_reference(
+                    raw_value, new_global_config, global_config_type
+                )
                 return nested_result
             except Exception as e:
                 logger.debug(f"Failed to rebuild nested config {field_obj.name}: {e}")
@@ -767,7 +852,6 @@ LAZY_CONFIG_PREFIX = "Lazy"
 _pending_injections = {}
 
 
-
 class InheritAsNoneMeta(ABCMeta):
     """
     Metaclass that applies inherit_as_none modifications during class creation.
@@ -781,20 +865,20 @@ class InheritAsNoneMeta(ABCMeta):
         cls = super().__new__(mcs, name, bases, namespace)
 
         # Check if this class should have inherit_as_none applied
-        if hasattr(cls, '_inherit_as_none') and cls._inherit_as_none:
+        if hasattr(cls, "_inherit_as_none") and cls._inherit_as_none:
             # Add multiprocessing safety marker
             cls._multiprocessing_safe = True
             # Get explicitly defined fields (in this class's namespace)
             explicitly_defined_fields = set()
-            if '__annotations__' in namespace:
-                for field_name in namespace['__annotations__']:
+            if "__annotations__" in namespace:
+                for field_name in namespace["__annotations__"]:
                     if field_name in namespace:
                         explicitly_defined_fields.add(field_name)
 
             # Process parent classes to find fields that need None overrides
             processed_fields = set()
             for base in bases:
-                if hasattr(base, '__annotations__'):
+                if hasattr(base, "__annotations__"):
                     for field_name, field_type in base.__annotations__.items():
                         if field_name in processed_fields:
                             continue
@@ -806,12 +890,15 @@ class InheritAsNoneMeta(ABCMeta):
                             parent_has_concrete_default = parent_value is not None
 
                         # Add None override if needed
-                        if (field_name not in explicitly_defined_fields and parent_has_concrete_default):
+                        if (
+                            field_name not in explicitly_defined_fields
+                            and parent_has_concrete_default
+                        ):
                             # Set the class attribute to None
                             setattr(cls, field_name, None)
 
                             # Ensure annotation exists
-                            if not hasattr(cls, '__annotations__'):
+                            if not hasattr(cls, "__annotations__"):
                                 cls.__annotations__ = {}
                             cls.__annotations__[field_name] = field_type
 
@@ -827,11 +914,11 @@ class InheritAsNoneMeta(ABCMeta):
         safe_dict = {}
         for key, value in cls.__dict__.items():
             # Skip descriptors that cause conflicts
-            if hasattr(value, '__get__') and hasattr(value, '__set__'):
+            if hasattr(value, "__get__") and hasattr(value, "__set__"):
                 continue  # Skip data descriptors
-            if hasattr(value, '__dict__') and hasattr(value, '__class__'):
+            if hasattr(value, "__dict__") and hasattr(value, "__class__"):
                 # Skip complex objects that might have descriptor conflicts
-                if 'descriptor' in str(type(value)).lower():
+                if "descriptor" in str(type(value)).lower():
                     continue
             # Include safe attributes
             safe_dict[key] = value
@@ -840,7 +927,7 @@ class InheritAsNoneMeta(ABCMeta):
         return (type, (cls.__name__, cls.__bases__, safe_dict))
 
 
-def create_global_default_decorator(target_config_class: Type):
+def create_global_default_decorator(target_config_class: type):
     """
     Create a decorator factory for a specific global config class.
 
@@ -850,11 +937,13 @@ def create_global_default_decorator(target_config_class: Type):
     target_class_name = target_config_class.__name__
     if target_class_name not in _pending_injections:
         _pending_injections[target_class_name] = {
-            'target_class': target_config_class,
-            'configs_to_inject': []
+            "target_class": target_config_class,
+            "configs_to_inject": [],
         }
 
-    def global_default_decorator(cls=None, *, optional: bool = False, inherit_as_none: bool = True, ui_hidden: bool = False):
+    def global_default_decorator(
+        cls=None, *, optional: bool = False, inherit_as_none: bool = True, ui_hidden: bool = False
+    ):
         """
         Decorator that can be used with or without parameters.
 
@@ -864,6 +953,7 @@ def create_global_default_decorator(target_config_class: Type):
             inherit_as_none: Whether to set all inherited fields to None by default (default: True)
             ui_hidden: Whether to hide from UI (apply decorator but don't inject into global config) (default: False)
         """
+
         def decorator(actual_cls):
             # Apply inherit_as_none by modifying class BEFORE @dataclass (multiprocessing-safe)
             if inherit_as_none:
@@ -873,7 +963,7 @@ def create_global_default_decorator(target_config_class: Type):
                 # Apply inherit_as_none logic by directly modifying the class definition
                 # This must happen BEFORE @dataclass processes the class
                 explicitly_defined_fields = set()
-                if hasattr(actual_cls, '__annotations__'):
+                if hasattr(actual_cls, "__annotations__"):
                     for field_name in actual_cls.__annotations__:
                         # Check if field has a concrete default value in THIS class definition (not inherited)
                         if field_name in actual_cls.__dict__:  # Only fields defined in THIS class
@@ -886,7 +976,7 @@ def create_global_default_decorator(target_config_class: Type):
                 processed_fields = set()
                 fields_set_to_none = set()  # Track which fields were actually set to None
                 for base in actual_cls.__bases__:
-                    if hasattr(base, '__annotations__'):
+                    if hasattr(base, "__annotations__"):
                         for field_name, field_type in base.__annotations__.items():
                             if field_name in processed_fields:
                                 continue
@@ -901,7 +991,7 @@ def create_global_default_decorator(target_config_class: Type):
                                 fields_set_to_none.add(field_name)
 
                                 # 2. Ensure annotation exists in THIS class
-                                if not hasattr(actual_cls, '__annotations__'):
+                                if not hasattr(actual_cls, "__annotations__"):
                                     actual_cls.__annotations__ = {}
                                 actual_cls.__annotations__[field_name] = field_type
 
@@ -928,27 +1018,30 @@ def create_global_default_decorator(target_config_class: Type):
             # Concrete subclasses of abstract classes should still be injected
             # We check for __abstractmethods__ attribute which exists even before @dataclass runs
             # (it's set by ABCMeta when the class is created)
-            is_abstract = hasattr(actual_cls, '__abstractmethods__') and len(actual_cls.__abstractmethods__) > 0
+            is_abstract = (
+                hasattr(actual_cls, "__abstractmethods__")
+                and len(actual_cls.__abstractmethods__) > 0
+            )
 
             # Add to pending injections for field injection
             # Skip injection for abstract classes (they can't be instantiated)
             # For concrete classes: inject even if ui_hidden (needed for lazy resolution context)
             if not is_abstract:
-                _pending_injections[target_class_name]['configs_to_inject'].append({
-                    'config_class': actual_cls,
-                    'field_name': field_name,
-                    'lazy_class_name': lazy_class_name,
-                    'optional': optional,  # Store the optional flag
-                    'inherit_as_none': inherit_as_none,  # Store the inherit_as_none flag
-                    'ui_hidden': ui_hidden  # Store the ui_hidden flag for field metadata
-                })
+                _pending_injections[target_class_name]["configs_to_inject"].append(
+                    {
+                        "config_class": actual_cls,
+                        "field_name": field_name,
+                        "lazy_class_name": lazy_class_name,
+                        "optional": optional,  # Store the optional flag
+                        "inherit_as_none": inherit_as_none,  # Store the inherit_as_none flag
+                        "ui_hidden": ui_hidden,  # Store the ui_hidden flag for field metadata
+                    }
+                )
 
             # Immediately create lazy version of this config (not dependent on injection)
 
-
             lazy_class = LazyDataclassFactory.make_lazy_simple(
-                base_class=actual_cls,
-                lazy_class_name=lazy_class_name
+                base_class=actual_cls, lazy_class_name=lazy_class_name
             )
 
             # Export lazy class to config module immediately
@@ -961,7 +1054,7 @@ def create_global_default_decorator(target_config_class: Type):
 
             # CRITICAL: Post-process dataclass fields after @dataclass has run
             # This fixes the constructor behavior for inherited fields that should be None
-            if inherit_as_none and hasattr(actual_cls, '__dataclass_fields__'):
+            if inherit_as_none and hasattr(actual_cls, "__dataclass_fields__"):
                 _fix_dataclass_field_defaults_post_processing(actual_cls, fields_set_to_none)
 
             return actual_cls
@@ -977,7 +1070,7 @@ def create_global_default_decorator(target_config_class: Type):
     return global_default_decorator
 
 
-def _fix_dataclass_field_defaults_post_processing(cls: Type, fields_set_to_none: set) -> None:
+def _fix_dataclass_field_defaults_post_processing(cls: type, fields_set_to_none: set) -> None:
     """
     Fix dataclass field defaults after @dataclass has processed the class.
 
@@ -1017,38 +1110,46 @@ def _fix_dataclass_field_defaults_post_processing(cls: Type, fields_set_to_none:
             setattr(cls, field_name, None)
 
 
-
 def _inject_all_pending_fields():
     """Inject all accumulated fields at once."""
     for target_name, injection_data in _pending_injections.items():
-        target_class = injection_data['target_class']
-        configs = injection_data['configs_to_inject']
+        target_class = injection_data["target_class"]
+        configs = injection_data["configs_to_inject"]
 
         if configs:  # Only inject if there are configs to inject
             _inject_multiple_fields_into_dataclass(target_class, configs)
 
+
 def _camel_to_snake(name: str) -> str:
     """Convert CamelCase to snake_case for field names."""
-    s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
-    return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
+    s1 = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", name)
+    return re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
-def _inject_multiple_fields_into_dataclass(target_class: Type, configs: List[Dict]) -> None:
+
+def _inject_multiple_fields_into_dataclass(target_class: type, configs: list[dict]) -> None:
     """Mathematical simplification: Batch field injection with direct dataclass recreation."""
     # Imports moved to top-level
 
     # Direct field reconstruction - guaranteed by dataclass contract
     existing_fields = [
-        (f.name, f.type, field(default_factory=f.default_factory) if f.default_factory != MISSING
-         else f.default if f.default != MISSING else f.type)
+        (
+            f.name,
+            f.type,
+            (
+                field(default_factory=f.default_factory)
+                if f.default_factory != MISSING
+                else f.default if f.default != MISSING else f.type
+            ),
+        )
         for f in fields(target_class)
     ]
 
     # Mathematical simplification: Unified field construction with algebraic common factors
     def create_field_definition(config):
         """Create field definition with optional and inherit_as_none support."""
-        field_type = config['config_class']
-        is_optional = config.get('optional', False)
-        is_ui_hidden = config.get('ui_hidden', False)
+        field_type = config["config_class"]
+        is_optional = config.get("optional", False)
+        is_ui_hidden = config.get("ui_hidden", False)
 
         # Algebraic simplification: factor out common default_value logic
         if is_optional:
@@ -1057,9 +1158,9 @@ def _inject_multiple_fields_into_dataclass(target_class: Type, configs: List[Dic
         else:
             # Both inherit_as_none and regular cases use same default factory
             # Add ui_hidden metadata to the field so UI layer can check it
-            default_value = field(default_factory=field_type, metadata={'ui_hidden': is_ui_hidden})
+            default_value = field(default_factory=field_type, metadata={"ui_hidden": is_ui_hidden})
 
-        return (config['field_name'], field_type, default_value)
+        return (config["field_name"], field_type, default_value)
 
     all_fields = existing_fields + [create_field_definition(config) for config in configs]
 
@@ -1068,7 +1169,7 @@ def _inject_multiple_fields_into_dataclass(target_class: Type, configs: List[Dic
         target_class.__name__,
         all_fields,
         bases=target_class.__bases__,
-        frozen=target_class.__dataclass_params__.frozen
+        frozen=target_class.__dataclass_params__.frozen,
     )
 
     # CRITICAL: Preserve original module for proper imports in generated code
@@ -1092,29 +1193,28 @@ def _inject_multiple_fields_into_dataclass(target_class: Type, configs: List[Dic
     # Create lazy classes and recreate PipelineConfig inline
     for config in configs:
         lazy_class = LazyDataclassFactory.make_lazy_simple(
-            base_class=config['config_class'],
-            lazy_class_name=config['lazy_class_name']
+            base_class=config["config_class"], lazy_class_name=config["lazy_class_name"]
         )
-        _register_lazy_class(lazy_class, config['lazy_class_name'], config['config_class'].__module__)
+        _register_lazy_class(
+            lazy_class, config["lazy_class_name"], config["config_class"].__module__
+        )
 
     # Create lazy version of the updated global config itself with proper naming
     # Global configs must start with GLOBAL_CONFIG_PREFIX - fail-loud if not
     if not target_class.__name__.startswith(GLOBAL_CONFIG_PREFIX):
-        raise ValueError(f"Target class '{target_class.__name__}' must start with '{GLOBAL_CONFIG_PREFIX}' prefix")
+        raise ValueError(
+            f"Target class '{target_class.__name__}' must start with '{GLOBAL_CONFIG_PREFIX}' prefix"
+        )
 
     # Remove global prefix (GlobalPipelineConfig → PipelineConfig)
-    lazy_global_class_name = target_class.__name__[len(GLOBAL_CONFIG_PREFIX):]
+    lazy_global_class_name = target_class.__name__[len(GLOBAL_CONFIG_PREFIX) :]
 
     lazy_global_class = LazyDataclassFactory.make_lazy_simple(
-        base_class=new_class,
-        lazy_class_name=lazy_global_class_name
+        base_class=new_class, lazy_class_name=lazy_global_class_name
     )
 
     # Use extracted helper for consistent registration
     _register_lazy_class(lazy_global_class, lazy_global_class_name, target_class.__module__)
-
-
-
 
 
 def auto_create_decorator(global_config_class):
@@ -1127,7 +1227,9 @@ def auto_create_decorator(global_config_class):
     """
     # Validate naming convention
     if not global_config_class.__name__.startswith(GLOBAL_CONFIG_PREFIX):
-        raise ValueError(f"Global config class '{global_config_class.__name__}' must start with '{GLOBAL_CONFIG_PREFIX}' prefix")
+        raise ValueError(
+            f"Global config class '{global_config_class.__name__}' must start with '{GLOBAL_CONFIG_PREFIX}' prefix"
+        )
 
     decorator_name = _camel_to_snake(global_config_class.__name__)
     decorator = create_global_default_decorator(global_config_class)
@@ -1139,10 +1241,3 @@ def auto_create_decorator(global_config_class):
     # Lazy global config will be created after field injection
 
     return global_config_class
-
-
-
-
-
-
-

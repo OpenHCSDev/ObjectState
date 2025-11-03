@@ -1,10 +1,10 @@
 """Tests for global config module."""
-import pytest
+
 from dataclasses import dataclass
 
 from hieraconf import (
-    set_current_global_config,
     get_current_global_config,
+    set_current_global_config,
     set_global_config_for_editing,
 )
 
@@ -12,6 +12,7 @@ from hieraconf import (
 def test_set_and_get_global_config(global_config):
     """Test setting and getting global config."""
     from tests.conftest import TestGlobalConfig
+
     set_current_global_config(TestGlobalConfig, global_config)
     result = get_current_global_config(TestGlobalConfig)
     assert result == global_config
@@ -19,7 +20,6 @@ def test_set_and_get_global_config(global_config):
 
 def test_set_global_config_for_editing(global_config):
     """Test setting global config for editing."""
-    from tests.conftest import TestGlobalConfig
 
     @dataclass
     class TestConfig:
@@ -34,6 +34,7 @@ def test_set_global_config_for_editing(global_config):
 
 def test_get_global_config_not_set():
     """Test getting global config when not set."""
+
     @dataclass
     class UnusedConfig:
         value: str = "test"
