@@ -8,6 +8,7 @@ from hieraconf import (
     config_context,
     extract_all_configs,
     get_current_temp_global,
+    set_base_config_type,
 )
 
 
@@ -22,6 +23,7 @@ def test_resolve_field_inheritance_basic():
     class ChildConfig(BaseConfig):
         value: str = "child"
 
+    set_base_config_type(ChildConfig)
     LazyChild = LazyDataclassFactory.make_lazy_simple(ChildConfig)
 
     concrete = ChildConfig(value="concrete", number=20)
@@ -47,6 +49,7 @@ def test_resolve_field_inheritance_with_none():
         shared_value: str = None
         local_value: int = 42
 
+    set_base_config_type(GlobalConfig)
     LazyLocal = LazyDataclassFactory.make_lazy_simple(LocalConfig)
 
     global_cfg = GlobalConfig(shared_value="from_global")
@@ -79,6 +82,7 @@ def test_resolve_field_mro_traversal():
     class ChildConfig(MiddleConfig):
         child_field: str = "child"
 
+    set_base_config_type(ChildConfig)
     LazyChild = LazyDataclassFactory.make_lazy_simple(ChildConfig)
 
     concrete = ChildConfig(
@@ -110,6 +114,7 @@ def test_context_hierarchy_resolution():
         local_field: str = "local_default"
         shared_field: str = None  # Should inherit from global
 
+    set_base_config_type(GlobalConfig)
     LazyLocal = LazyDataclassFactory.make_lazy_simple(LocalConfig)
 
     global_cfg = GlobalConfig(

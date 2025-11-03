@@ -6,6 +6,7 @@ from hieraconf import (
     LazyDefaultPlaceholderService,
     LazyDataclassFactory,
     config_context,
+    set_base_config_type,
 )
 
 
@@ -22,6 +23,7 @@ def test_placeholder_text_generation():
         value: str = "default"
         number: int = 42
 
+    set_base_config_type(MyConfig)
     LazyConfig = LazyDataclassFactory.make_lazy_simple(MyConfig)
 
     service = LazyDefaultPlaceholderService()

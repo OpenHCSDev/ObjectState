@@ -49,6 +49,7 @@ def test_dual_axis_inheritance():
         global_field: str = "global"
         shared_field: str = "global_shared"
 
+    set_base_config_type(GlobalConfig)
     LazySpecialized = LazyDataclassFactory.make_lazy_simple(SpecializedConfig)
 
     global_cfg = GlobalConfig(
@@ -90,6 +91,7 @@ def test_nested_contexts():
         level: str = "step"
         value: int = 3
 
+    set_base_config_type(GlobalConfig)
     LazyStep = LazyDataclassFactory.make_lazy_simple(StepConfig)
 
     global_cfg = GlobalConfig(level="g", value=10)
@@ -113,6 +115,7 @@ def test_explicit_values_override_context():
         field1: str = "default1"
         field2: str = "default2"
 
+    set_base_config_type(MyConfig)
     LazyConfig = LazyDataclassFactory.make_lazy_simple(MyConfig)
 
     context_cfg = MyConfig(field1="context1", field2="context2")
@@ -157,6 +160,7 @@ def test_multiple_configs_in_context():
         ttl: int = 300
         max_size: int = 1000
 
+    set_base_config_type(DatabaseConfig)
     LazyDB = LazyDataclassFactory.make_lazy_simple(DatabaseConfig)
     LazyCache = LazyDataclassFactory.make_lazy_simple(CacheConfig)
 
@@ -184,6 +188,7 @@ def test_partial_override():
         field2: str = "default2"
         field3: str = "default3"
 
+    set_base_config_type(MyConfig)
     LazyConfig = LazyDataclassFactory.make_lazy_simple(MyConfig)
 
     context_cfg = MyConfig(

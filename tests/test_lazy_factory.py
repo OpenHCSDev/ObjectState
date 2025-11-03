@@ -7,6 +7,7 @@ from hieraconf import (
     register_lazy_type_mapping,
     get_base_type_for_lazy,
     config_context,
+    set_base_config_type,
 )
 
 
@@ -52,6 +53,7 @@ def test_lazy_resolution_with_context():
         value: str = "default"
         number: int = 42
 
+    set_base_config_type(MyConfig)
     LazyConfig = LazyDataclassFactory.make_lazy_simple(MyConfig)
 
     # Create concrete config with custom values
@@ -89,6 +91,7 @@ def test_lazy_explicit_values():
         value: str = "default"
         number: int = 42
 
+    set_base_config_type(MyConfig)
     LazyConfig = LazyDataclassFactory.make_lazy_simple(MyConfig)
 
     concrete = MyConfig(value="context_value", number=100)

@@ -11,39 +11,34 @@ from hieraconf import (
 
 def test_set_and_get_global_config(global_config):
     """Test setting and getting global config."""
-    set_current_global_config(global_config)
-    result = get_current_global_config()
+    from tests.conftest import TestGlobalConfig
+    set_current_global_config(TestGlobalConfig, global_config)
+    result = get_current_global_config(TestGlobalConfig)
     assert result == global_config
 
 
 def test_set_global_config_for_editing(global_config):
     """Test setting global config for editing."""
+    from tests.conftest import TestGlobalConfig
+
     @dataclass
     class TestConfig:
         value: str = "test"
 
-    set_global_config_for_editing(TestConfig, global_config)
+    test_config = TestConfig(value="custom")
+    set_global_config_for_editing(TestConfig, test_config)
     # Should not raise an error
-    result = get_current_global_config()
-    assert result == global_config
+    result = get_current_global_config(TestConfig)
+    assert result == test_config
 
 
 def test_get_global_config_not_set():
     """Test getting global config when not set."""
-    # Clear any existing global config
-    import hieraconf.global_config as gc
-    original = gc._thread_local_storage.__dict__.copy()
+    @dataclass
+    class UnusedConfig:
+        value: str = "test"
 
-    try:
-        # Clear thread local storage
-        gc._thread_local_storage.__dict__.clear()
-
-        result = get_current_global_config()
-        # Should return None or raise error depending on implementation
-        assert result is None or isinstance(result, Exception)
-    except (RuntimeError, AttributeError):
-        # This is acceptable - no global config set
-        pass
-    finally:
-        # Restore original state
-        gc._thread_local_storage.__dict__.update(original)
+    # Get config for a type that was never set
+    result = get_current_global_config(UnusedConfig)
+    # Should return None when not set
+    assert result is None
