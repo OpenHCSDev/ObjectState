@@ -63,7 +63,6 @@ html_theme_options = {
     "canonical_url": "",
     "analytics_id": "",
     "logo_only": False,
-    "display_version": True,
     "prev_next_buttons_location": "bottom",
     "style_external_links": False,
     "collapse_navigation": True,
@@ -71,6 +70,7 @@ html_theme_options = {
     "navigation_depth": 4,
     "includehidden": True,
     "titles_only": False,
+    "display_version": True,
 }
 
 # Intersphinx mapping
@@ -79,7 +79,7 @@ intersphinx_mapping = {
 }
 
 # Source suffix
-source_suffix = ".rst"
+source_suffix = {".rst": "restructuredtext"}
 
 # Master doc
 master_doc = "index"

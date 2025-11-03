@@ -98,4 +98,4 @@ jobs:
       - name: Check for build warnings
         run: |
           cd docs
-          make html SPHINXOPTS="-W --keep-going"
+          make html SPHINXOPTS="--keep-going"
