@@ -8,9 +8,10 @@ PFM attaches to ObjectState when editor opens, detaches when closed.
 ObjectStateRegistry: Singleton registry of all ObjectState instances.
 Replaces LiveContextService._active_form_managers as the single source of truth.
 """
+from contextlib import contextmanager
 from dataclasses import is_dataclass, fields as dataclass_fields
 import logging
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING, Generator
 import copy
 
 from hieraconf.snapshot_model import Snapshot, StateSnapshot, Timeline
@@ -560,6 +561,10 @@ class ObjectStateRegistry:
     _max_history_size: int = 1000  # Max snapshots in DAG (increased since we don't truncate branches)
     _in_time_travel: bool = False  # Flag for PFM to know to refresh widget values
 
+    # Atomic operation state - when >0, snapshots are deferred until operation completes
+    _atomic_depth: int = 0
+    _atomic_label: Optional[str] = None  # Label for the coalesced snapshot
+
     # Limbo: ObjectStates temporarily removed during time-travel
     # When traveling to a snapshot, ObjectStates not in that snapshot are moved here.
     # When traveling forward or to head, they're restored from here.
@@ -575,6 +580,42 @@ class ObjectStateRegistry:
     # head_id always points to a valid key in _snapshots (guaranteed by construction)
     _timelines: Dict[str, Timeline] = {}
     _current_timeline: str = "main"
+
+    @classmethod
+    @contextmanager
+    def atomic(cls, label: str) -> Generator[None, None, None]:
+        """Context manager for atomic operations that should be a single undo step.
+
+        All ObjectState changes within this context are coalesced into a single
+        snapshot when the context exits. Nested atomic blocks are supported -
+        only the outermost block records the snapshot.
+
+        Example:
+            with ObjectStateRegistry.atomic("add step"):
+                # Register step ObjectState
+                ObjectStateRegistry.register(step_state)
+                # Update pipeline's step_scope_ids
+                pipeline_state.update_parameter("step_scope_ids", new_ids)
+                # Register function ObjectState
+                ObjectStateRegistry.register(func_state)
+            # Single snapshot recorded here with label "add step"
+
+        Args:
+            label: Human-readable label for the coalesced snapshot
+        """
+        cls._atomic_depth += 1
+        if cls._atomic_depth == 1:
+            cls._atomic_label = label
+
+        try:
+            yield
+        finally:
+            cls._atomic_depth -= 1
+            if cls._atomic_depth == 0:
+                # Outermost atomic block - record the coalesced snapshot
+                final_label = cls._atomic_label or label
+                cls._atomic_label = None
+                cls.record_snapshot(final_label)
 
     @classmethod
     def get_branch_history(cls, branch_name: Optional[str] = None) -> List[Snapshot]:
@@ -644,6 +685,12 @@ class ObjectStateRegistry:
 
         # CRITICAL: Don't record snapshots during time-travel
         if cls._in_time_travel:
+            return
+
+        # ATOMIC OPERATIONS: Defer snapshot until atomic block exits
+        # The atomic() context manager will call record_snapshot() when it completes
+        if cls._atomic_depth > 0:
+            logger.debug(f"⏱️ ATOMIC: Deferring snapshot '{label}' (depth={cls._atomic_depth})")
             return
 
         import time
@@ -864,12 +911,11 @@ class ObjectStateRegistry:
                         changed_param_keys.append((param_key, before, after))
                         has_param_change = True
 
-                # For CONTINUOUSLY EXISTING scopes: track param changes (user edits being undone/redone)
-                # For LIMBO-RESTORED scopes: don't use param changes (just initialization)
+                # Log param changes for debugging (but don't use to decide window opening)
+                # Only scopes with CONCRETE unsaved work should open windows (see below)
                 if has_param_change and not was_restored_from_limbo:
                     for pk, pv_before, pv_after in changed_param_keys:
                         logger.debug(f"⏱️ PARAM_CHANGE: {scope_key} param={pk} before={pv_before!r} after={pv_after!r}")
-                    scopes_needing_window.add(scope_key)
 
                 # RESTORE state (including saved_parameters for concrete dirty detection)
                 state._saved_resolved = copy.deepcopy(state_snap.saved_resolved)
@@ -1086,6 +1132,23 @@ class ObjectStateRegistry:
             True if switch succeeded
         """
         timeline = cls._timelines[name]  # KeyError if branch doesn't exist
+
+        # If we're back in time on current branch, preserve the old future as auto-branch
+        # before switching (same logic as diverge in record_snapshot)
+        if cls._current_head is not None and cls._current_timeline in cls._timelines:
+            old_head_id = cls._timelines[cls._current_timeline].head_id
+            if old_head_id != cls._current_head:
+                # There IS an old future to preserve
+                branch_name = f"auto-{old_head_id[:8]}"
+                if branch_name not in cls._timelines:
+                    cls._timelines[branch_name] = Timeline(
+                        name=branch_name,
+                        head_id=old_head_id,
+                        base_id=cls._current_head,
+                        description=f"Auto-saved before switch from {cls._current_timeline} at {cls._current_head[:8]}",
+                    )
+                    old_snapshot = cls._snapshots[old_head_id]
+                    logger.info(f"⏱️ AUTO-BRANCH: Created '{branch_name}' before branch switch (was {old_snapshot.label})")
 
         # Switch to branch and travel to its head
         cls._current_timeline = name
@@ -1682,6 +1745,10 @@ class ObjectState:
             value: New value
         """
         if param_name not in self.parameters:
+            logger.warning(
+                f"⚠️ update_parameter({param_name!r}) called on ObjectState(scope={self.scope_id!r}) "
+                f"but parameter does not exist. Available: {list(self.parameters.keys())[:5]}..."
+            )
             return
 
         # EARLY EXIT: No change, no invalidation, no flash
@@ -2551,7 +2618,12 @@ class ObjectState:
         else:
             # Non-dataclass class instance - shallow copy + setattr
             obj_copy = copy.copy(self.object_instance)
+            obj_type = type(self.object_instance)
             for field_name, field_value in field_updates.items():
+                # Skip read-only properties (those without setters)
+                prop = getattr(obj_type, field_name, None)
+                if isinstance(prop, property) and prop.fset is None:
+                    continue
                 setattr(obj_copy, field_name, field_value)
             self._cached_object = obj_copy
 
