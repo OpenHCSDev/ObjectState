@@ -112,6 +112,8 @@ Contents
 
    quickstart
    architecture
+   state_management
+   undo_redo
    examples/index
 
 .. toctree::

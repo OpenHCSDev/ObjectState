@@ -3,6 +3,7 @@ import pytest
 from dataclasses import dataclass
 
 from objectstate import set_base_config_type, get_base_config_type
+import objectstate.config as config_module
 
 
 def test_set_and_get_base_config_type():
@@ -16,9 +17,17 @@ def test_set_and_get_base_config_type():
 
 
 def test_get_base_config_type_not_set():
-    """Test getting base config type when not set."""
-    with pytest.raises(RuntimeError, match="Base config type not set"):
-        get_base_config_type()
+    """Test getting base config type when not set raises RuntimeError."""
+    # Temporarily clear the base config type
+    original = config_module._base_config_type
+    config_module._base_config_type = None
+
+    try:
+        with pytest.raises(RuntimeError, match="Base config type not set"):
+            get_base_config_type()
+    finally:
+        # Restore
+        config_module._base_config_type = original
 
 
 def test_set_base_config_type_override():

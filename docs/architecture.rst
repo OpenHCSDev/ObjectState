@@ -3,6 +3,8 @@ Architecture
 
 Understanding the architecture of objectstate helps you leverage its full power.
 
+For state lifecycles and the registry, see :doc:`state_management`.
+
 Dual-Axis Resolution
 ---------------------
 

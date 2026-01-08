@@ -29,7 +29,7 @@ def test_config_context_nested(global_config, pipeline_config):
 
         with config_context(pipeline_config):
             inner = get_current_temp_global()
-            # Should have both configs merged
+            # Should have both configs merged - inner context merges pipeline values
             assert hasattr(inner, 'output_dir')  # from global
             assert hasattr(inner, 'batch_size')  # from pipeline
 
@@ -62,11 +62,18 @@ def test_set_and_clear_current_temp_global(global_config):
         pass
 
 
-def test_merge_configs(global_config, pipeline_config):
-    """Test merging multiple configs."""
-    merged = merge_configs([global_config, pipeline_config])
-    assert hasattr(merged, 'output_dir')  # from global
-    assert hasattr(merged, 'batch_size')  # from pipeline
+def test_merge_configs(global_config):
+    """Test merging overrides into base config.
+
+    Current API: merge_configs(base, overrides_dict)
+    """
+    overrides = {'output_dir': '/overridden', 'num_workers': 16}
+    merged = merge_configs(global_config, overrides)
+
+    assert merged.output_dir == '/overridden'
+    assert merged.num_workers == 16
+    # Unchanged values remain
+    assert merged.debug == global_config.debug
 
 
 def test_extract_all_configs(global_config):

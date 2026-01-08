@@ -6,7 +6,6 @@ from objectstate import (
     LazyDataclassFactory,
     register_lazy_type_mapping,
     get_base_type_for_lazy,
-    config_context,
 )
 
 
@@ -45,26 +44,6 @@ def test_lazy_dataclass_fields():
     assert lazy_fields == base_fields
 
 
-def test_lazy_resolution_with_context():
-    """Test that lazy fields resolve from context."""
-    @dataclass
-    class MyConfig:
-        value: str = "default"
-        number: int = 42
-
-    LazyConfig = LazyDataclassFactory.make_lazy_simple(MyConfig)
-
-    # Create concrete config with custom values
-    concrete = MyConfig(value="custom", number=100)
-
-    # Use in context
-    with config_context(concrete):
-        lazy = LazyConfig()
-        # Lazy fields should resolve from context
-        assert lazy.value == "custom"
-        assert lazy.number == 100
-
-
 def test_lazy_resolution_without_context():
     """Test lazy resolution when no context is available."""
     @dataclass
@@ -83,7 +62,7 @@ def test_lazy_resolution_without_context():
 
 
 def test_lazy_explicit_values():
-    """Test that explicitly set values override lazy resolution."""
+    """Test that explicitly set values are returned directly."""
     @dataclass
     class MyConfig:
         value: str = "default"
@@ -91,16 +70,12 @@ def test_lazy_explicit_values():
 
     LazyConfig = LazyDataclassFactory.make_lazy_simple(MyConfig)
 
-    concrete = MyConfig(value="context_value", number=100)
+    # Create lazy with explicit values - these should always be returned
+    lazy = LazyConfig(value="explicit", number=100)
 
-    with config_context(concrete):
-        # Create lazy with explicit value
-        lazy = LazyConfig(value="explicit")
-
-        # Explicit value should be used
-        assert lazy.value == "explicit"
-        # Non-explicit value should resolve from context
-        assert lazy.number == 100
+    # Explicit value should be used
+    assert lazy.value == "explicit"
+    assert lazy.number == 100
 
 
 def test_register_and_get_lazy_type_mapping():

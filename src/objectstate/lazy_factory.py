@@ -641,6 +641,14 @@ class LazyDataclassFactory:
             # Safe to inherit from regular dataclass
             bases = (base_class, LazyDataclass)  # Inherit from both
 
+        # Check if base_class is frozen - must match to avoid inheritance error
+        # "cannot inherit frozen dataclass from a non-frozen one" and vice versa
+        base_is_frozen = (
+            is_dataclass(base_class) and
+            hasattr(base_class, '__dataclass_params__') and
+            base_class.__dataclass_params__.frozen
+        )
+
         # Single make_dataclass call - no duplication
         lazy_class = make_dataclass(
             lazy_class_name,
@@ -648,7 +656,7 @@ class LazyDataclassFactory:
                 base_class, debug_template, global_config_type, parent_field_path, parent_instance_provider
             ),
             bases=bases,
-            frozen=True
+            frozen=base_is_frozen  # Match base class frozen status
         )
 
         # Add constructor parameter tracking to detect user-set fields
