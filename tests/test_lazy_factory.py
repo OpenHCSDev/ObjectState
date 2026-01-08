@@ -2,7 +2,7 @@
 import pytest
 from dataclasses import dataclass, fields
 
-from hieraconf import (
+from objectstate import (
     LazyDataclassFactory,
     register_lazy_type_mapping,
     get_base_type_for_lazy,

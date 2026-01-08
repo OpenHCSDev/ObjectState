@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "hieraconf"
+name = "objectstate"
 version = "0.1.0"
 description = "Generic lazy dataclass configuration framework with dual-axis inheritance and contextvars-based resolution"
 authors = [{name = "Tristan Simas", email = "tristan.simas@mail.mcgill.ca"}]
@@ -46,14 +46,14 @@ Repository = "https://github.com/trissim/hieraconf"
 Issues = "https://github.com/trissim/hieraconf/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/hieraconf"]
+packages = ["src/objectstate"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "--cov=hieraconf --cov-report=term-missing --cov-report=html"
+addopts = "--cov=objectstate --cov-report=term-missing --cov-report=html"
 
 [tool.black]
 line-length = 100

@@ -2,7 +2,7 @@
 import pytest
 from dataclasses import dataclass
 
-from hieraconf import (
+from objectstate import (
     set_current_global_config,
     get_current_global_config,
     set_global_config_for_editing,
@@ -31,7 +31,7 @@ def test_set_global_config_for_editing(global_config):
 def test_get_global_config_not_set():
     """Test getting global config when not set."""
     # Clear any existing global config
-    import hieraconf.global_config as gc
+    import objectstate.global_config as gc
     original = gc._thread_local_storage.__dict__.copy()
 
     try:

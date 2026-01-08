@@ -1,8 +1,8 @@
-"""Integration tests for hieraconf."""
+"""Integration tests for objectstate."""
 import pytest
 from dataclasses import dataclass
 
-from hieraconf import (
+from objectstate import (
     set_base_config_type,
     LazyDataclassFactory,
     config_context,

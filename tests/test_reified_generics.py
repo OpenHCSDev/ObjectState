@@ -10,7 +10,7 @@ Tests cover:
 """
 
 import pytest
-from hieraconf.reified_generics import (
+from objectstate.reified_generics import (
     List, Dict, Set, Tuple,
     ReifiedMeta,
     is_reified, get_reified_args, get_reified_origin,

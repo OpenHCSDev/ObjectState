@@ -14,8 +14,8 @@ This service is completely generic and UI-agnostic:
 from typing import Any, Dict, Type, Optional, Tuple
 from dataclasses import is_dataclass
 
-from hieraconf.lazy_factory import replace_raw
-from hieraconf.context_manager import config_context
+from objectstate.lazy_factory import replace_raw
+from objectstate.context_manager import config_context
 import logging
 
 logger = logging.getLogger(__name__)

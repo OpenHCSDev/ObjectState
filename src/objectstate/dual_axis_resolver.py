@@ -49,7 +49,7 @@ def invalidate_mro_cache_for_field(changed_type: type, field_name: str) -> None:
     if not _mro_resolution_cache:
         return
 
-    from hieraconf.lazy_factory import get_base_type_for_lazy
+    from objectstate.lazy_factory import get_base_type_for_lazy
     base_changed = get_base_type_for_lazy(changed_type) or changed_type
 
     keys_to_remove = []
@@ -72,7 +72,7 @@ def _normalize_to_base(t: type) -> type:
     LazyWellFilterConfig -> WellFilterConfig
     WellFilterConfig -> WellFilterConfig
     """
-    from hieraconf.lazy_factory import get_base_type_for_lazy
+    from objectstate.lazy_factory import get_base_type_for_lazy
     return get_base_type_for_lazy(t) or t
 
 
@@ -210,7 +210,7 @@ def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any,
         due to MRO inheritance, e.g., PathPlanningConfig instead of WellFilterConfig).
         If no concrete value found, returns (None, None, None).
     """
-    from hieraconf.context_manager import get_context_layer_stack, extract_all_configs
+    from objectstate.context_manager import get_context_layer_stack, extract_all_configs
 
     layers = get_context_layer_stack()
     if not layers:

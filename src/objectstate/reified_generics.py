@@ -10,7 +10,7 @@ Core concepts:
 - Covariance: issubclass(List[int], List[object]) works correctly
 
 Usage:
-    from hieraconf.reified_generics import List, Dict
+    from objectstate.reified_generics import List, Dict
     
     x = List[int]([1, 2, 3])
     isinstance(x, List[int])   # True
@@ -18,7 +18,7 @@ Usage:
     type(x).__args__           # (int,)
 """
 
-from typing import Dict as TypingDict, Tuple, Any, TypeVar, get_args, get_origin
+from typing import Dict as TypingDict, Tuple, Any, TypeVar, get_args, get_origin, Optional as TypingOptional
 import weakref
 
 # =============================================================================
@@ -254,6 +254,7 @@ List = ReifiedList
 Dict = ReifiedDict
 Set = ReifiedSet
 Tuple = ReifiedTuple
+Optional = TypingOptional
 
 
 # =============================================================================
@@ -309,4 +310,3 @@ def reified(cls: type) -> type:
     cls.__reified__ = True
 
     return cls
-

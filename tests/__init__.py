@@ -1,1 +1,1 @@
-"""Tests for hieraconf package."""
+"""Tests for objectstate package."""

@@ -91,7 +91,7 @@ def _merge_nested_dataclass(base, override, mask_with_none: bool = False):
     # Merge with base using replace_raw to preserve None values
     # (dataclasses.replace triggers lazy resolution, baking in resolved values)
     if merge_values:
-        from hieraconf.lazy_factory import replace_raw
+        from objectstate.lazy_factory import replace_raw
         return replace_raw(base, **merge_values)
     else:
         return base
@@ -139,7 +139,7 @@ def config_context(obj, mask_with_none: bool = False, use_live_global: bool = Tr
     # Find matching fields between obj and base config type
     overrides = {}
     if obj is not None:
-        from hieraconf.config import get_base_config_type
+        from objectstate.config import get_base_config_type
 
         base_config_type = get_base_config_type()
 
@@ -203,7 +203,7 @@ def config_context(obj, mask_with_none: bool = False, use_live_global: bool = Tr
     # Use replace_raw to preserve None values (dataclasses.replace triggers lazy resolution)
     if overrides:
         try:
-            from hieraconf.lazy_factory import replace_raw
+            from objectstate.lazy_factory import replace_raw
             merged_config = replace_raw(base_config, **overrides)
             logger.debug(f"Creating config context with {len(overrides)} field overrides from {type(obj).__name__}")
         except Exception as e:
@@ -286,7 +286,7 @@ def _normalize_type(t):
     The actual get_base_type_for_lazy is imported lazily when needed.
     """
     try:
-        from hieraconf.lazy_factory import get_base_type_for_lazy
+        from objectstate.lazy_factory import get_base_type_for_lazy
         return get_base_type_for_lazy(t) or t
     except ImportError:
         return t
@@ -298,7 +298,7 @@ def _is_global_type(t):
     This function is defined here to avoid circular imports with lazy_factory.
     """
     try:
-        from hieraconf.lazy_factory import is_global_config_type
+        from objectstate.lazy_factory import is_global_config_type
         return is_global_config_type(t)
     except ImportError:
         return False
@@ -509,7 +509,7 @@ def is_ancestor_in_context(ancestor_type, descendant_type):
         True if ancestor_type is an ancestor of descendant_type,
         False otherwise.
     """
-    from hieraconf.lazy_factory import get_base_type_for_lazy
+    from objectstate.lazy_factory import get_base_type_for_lazy
 
     # Check 1: Is ancestor_type the lazy base of descendant_type?
     # This handles GlobalPipelineConfig → PipelineConfig relationship
@@ -637,7 +637,7 @@ def build_context_stack(
         ExitStack with all context layers entered. Caller must manage the stack lifecycle.
     """
     from contextlib import ExitStack
-    from hieraconf.lazy_factory import GlobalConfigBase
+    from objectstate.lazy_factory import GlobalConfigBase
 
     stack = ExitStack()
     obj_type = type(object_instance)
@@ -741,7 +741,7 @@ def _find_live_global(live_context: dict | None) -> object | None:
     if not live_context:
         return None
 
-    from hieraconf.lazy_factory import is_global_config_type
+    from objectstate.lazy_factory import is_global_config_type
 
     for config_type, config_values in live_context.items():
         if is_global_config_type(config_type):
@@ -925,7 +925,7 @@ def merge_configs(base, overrides: Dict[str, Any]):
             return base
 
         # Use replace_raw to preserve None values (dataclasses.replace triggers lazy resolution)
-        from hieraconf.lazy_factory import replace_raw
+        from objectstate.lazy_factory import replace_raw
         merged = replace_raw(base, **overrides)
 
         logger.debug(f"Merged {len(overrides)} overrides into {type(base).__name__}")
@@ -951,8 +951,8 @@ def get_base_global_config(use_live: bool = True):
         Current global config instance or default instance of base config type
     """
     try:
-        from hieraconf.config import get_base_config_type
-        from hieraconf.global_config import get_current_global_config
+        from objectstate.config import get_base_config_type
+        from objectstate.global_config import get_current_global_config
 
         base_config_type = get_base_config_type()
 
@@ -1106,7 +1106,7 @@ def extract_all_configs(context_obj) -> Dict[str, Any]:
                     if field_value is not None:
                         # CRITICAL: Use base type for lazy configs so MRO matching works
                         # LazyWellFilterConfig should be stored as WellFilterConfig
-                        from hieraconf.lazy_factory import get_base_type_for_lazy
+                        from objectstate.lazy_factory import get_base_type_for_lazy
                         instance_type = type(field_value)
                         base_type = get_base_type_for_lazy(instance_type) or instance_type
                         configs[base_type.__name__] = field_value
@@ -1164,7 +1164,7 @@ def _extract_from_object_attributes_typed(obj, configs: Dict[str, Any]) -> None:
                 attr_value = getattr(obj, attr_name)
                 if attr_value is not None and is_dataclass(attr_value):
                     # CRITICAL: Use base type for lazy configs so MRO matching works
-                    from hieraconf.lazy_factory import get_base_type_for_lazy
+                    from objectstate.lazy_factory import get_base_type_for_lazy
                     instance_type = type(attr_value)
                     base_type = get_base_type_for_lazy(instance_type) or instance_type
                     configs[base_type.__name__] = attr_value
@@ -1204,7 +1204,7 @@ def _is_compatible_config_type(value, expected_type) -> bool:
     # Check lazy-to-base type mapping
     if hasattr(value, 'to_base_config'):
         # This is a lazy config - check if its base type matches expected_type
-        from hieraconf.lazy_factory import _lazy_type_registry
+        from objectstate.lazy_factory import _lazy_type_registry
         base_type = _lazy_type_registry.get(value_type)
         if base_type == expected_type:
             return True

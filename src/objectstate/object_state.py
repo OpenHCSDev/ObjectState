@@ -14,7 +14,7 @@ import logging
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING, Generator
 import copy
 
-from hieraconf.snapshot_model import Snapshot, StateSnapshot, Timeline
+from objectstate.snapshot_model import Snapshot, StateSnapshot, Timeline
 
 if TYPE_CHECKING:
     pass  # Forward references if needed
@@ -436,8 +436,8 @@ class ObjectStateRegistry:
             field_name: The specific field that changed
             invalidate_saved: If True, also invalidate saved_resolved cache for descendants
         """
-        from hieraconf.lazy_factory import get_base_type_for_lazy
-        from hieraconf.dual_axis_resolver import invalidate_mro_cache_for_field
+        from objectstate.lazy_factory import get_base_type_for_lazy
+        from objectstate.dual_axis_resolver import invalidate_mro_cache_for_field
 
         # PERFORMANCE: Targeted cache invalidation - only clear entries for this field/type
         invalidate_mro_cache_for_field(changed_type, field_name)
@@ -501,7 +501,7 @@ class ObjectStateRegistry:
             field_name: Field to invalidate
             invalidate_saved: If True, also invalidate saved_resolved cache for this field
         """
-        from hieraconf.lazy_factory import get_base_type_for_lazy
+        from objectstate.lazy_factory import get_base_type_for_lazy
 
         invalidated_paths: set[str] = set()
 
@@ -1769,9 +1769,9 @@ class ObjectState:
         obj_type = type(self.object_instance)
         if getattr(obj_type, '_is_global_config', False):
             try:
-                from hieraconf.global_config import set_live_global_config, get_live_global_config
-                from hieraconf.context_manager import clear_current_temp_global
-                from hieraconf.lazy_factory import replace_raw
+                from objectstate.global_config import set_live_global_config, get_live_global_config
+                from objectstate.context_manager import clear_current_temp_global
+                from objectstate.lazy_factory import replace_raw
 
                 # Get current LIVE config
                 current_live = get_live_global_config(obj_type)
@@ -1914,7 +1914,7 @@ class ObjectState:
             Path prefix for the type, or None if not found.
             Returns "" (empty string) if type is the root object type.
         """
-        from hieraconf.lazy_factory import get_base_type_for_lazy
+        from objectstate.lazy_factory import get_base_type_for_lazy
 
         # Normalize the container_type for comparison
         container_base = get_base_type_for_lazy(container_type) or container_type
@@ -1990,7 +1990,7 @@ class ObjectState:
         Returns:
             Set of paths whose resolved values actually changed (for UI notification).
         """
-        from hieraconf.context_manager import build_context_stack
+        from objectstate.context_manager import build_context_stack
 
         changed_paths: Set[str] = set()
 
@@ -2032,7 +2032,7 @@ class ObjectState:
 
         # Inherited values: need context stack for lazy resolution + provenance
         if inherited_fields:
-            from hieraconf.dual_axis_resolver import resolve_with_provenance
+            from objectstate.dual_axis_resolver import resolve_with_provenance
 
             # Use _with_scopes version to enable provenance tracking via context_layer_stack
             ancestor_objects_with_scopes = ObjectStateRegistry.get_ancestor_objects_with_scopes(self.scope_id)
@@ -2218,8 +2218,8 @@ class ObjectState:
                        live state (to_object()). Used for computing _saved_resolved to ensure
                        saved baseline only depends on other saved baselines.
         """
-        from hieraconf.context_manager import build_context_stack
-        from hieraconf.dual_axis_resolver import resolve_with_provenance
+        from objectstate.context_manager import build_context_stack
+        from objectstate.dual_axis_resolver import resolve_with_provenance
 
         # Get ancestor objects WITH scope_ids for provenance tracking
         # use_saved=True returns object_instance (saved), False returns to_object() (live)
@@ -2613,7 +2613,7 @@ class ObjectState:
             # CRITICAL: Use replace_raw to preserve raw None values!
             # dataclasses.replace triggers lazy resolution via __getattribute__,
             # which resolves None -> concrete defaults and breaks inheritance.
-            from hieraconf.lazy_factory import replace_raw
+            from objectstate.lazy_factory import replace_raw
             self._cached_object = replace_raw(self.object_instance, **field_updates)
         else:
             # Non-dataclass class instance - shallow copy + setattr

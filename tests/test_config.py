@@ -2,7 +2,7 @@
 import pytest
 from dataclasses import dataclass
 
-from hieraconf import set_base_config_type, get_base_config_type
+from objectstate import set_base_config_type, get_base_config_type
 
 
 def test_set_and_get_base_config_type():

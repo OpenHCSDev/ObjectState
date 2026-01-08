@@ -40,7 +40,7 @@ class LazyDefaultPlaceholderService:
         - is_lazy_dataclass() → only LazyDataclass types
         - has_lazy_resolution() → any type that can resolve None via MRO
         """
-        from hieraconf.lazy_factory import is_lazy_dataclass
+        from objectstate.lazy_factory import is_lazy_dataclass
         # Check if it's a LazyDataclass OR has been bound with lazy resolution
         return is_lazy_dataclass(dataclass_type) or getattr(dataclass_type, '_has_lazy_resolution', False)
 

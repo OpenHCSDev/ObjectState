@@ -379,8 +379,8 @@ class LazyMethodBindings:
     @staticmethod
     def create_resolver() -> Callable[[Any, str], Any]:
         """Create field resolver method using new pure function interface."""
-        from hieraconf.dual_axis_resolver import resolve_field_inheritance
-        from hieraconf.context_manager import current_temp_global, extract_all_configs
+        from objectstate.dual_axis_resolver import resolve_field_inheritance
+        from objectstate.context_manager import current_temp_global, extract_all_configs
 
         def _resolve_field_value(self, field_name: str) -> Any:
             # Get current context from contextvars
@@ -401,8 +401,8 @@ class LazyMethodBindings:
     @staticmethod
     def create_getattribute() -> Callable[[Any, str], Any]:
         """Create lazy __getattribute__ method using new context system."""
-        from hieraconf.dual_axis_resolver import resolve_field_inheritance, _has_concrete_field_override
-        from hieraconf.context_manager import current_temp_global, extract_all_configs
+        from objectstate.dual_axis_resolver import resolve_field_inheritance, _has_concrete_field_override
+        from objectstate.context_manager import current_temp_global, extract_all_configs
 
         def _find_mro_concrete_value(base_class, name):
             """Extract common MRO traversal pattern."""
@@ -744,7 +744,7 @@ class LazyDataclassFactory:
 # Generic utility functions for clean thread-local storage management
 def ensure_global_config_context(global_config_type: Type, global_config_instance: Any) -> None:
     """Ensure proper thread-local storage setup for any global config type."""
-    from hieraconf.global_config import set_global_config_for_editing
+    from objectstate.global_config import set_global_config_for_editing
     set_global_config_for_editing(global_config_type, global_config_instance)
 
 
@@ -830,7 +830,7 @@ def create_dataclass_for_editing(dataclass_type: Type[T], source_config: Any, pr
         context_provider(source_config)
 
     # Mathematical simplification: Convert verbose loop to unified comprehension
-    from hieraconf.placeholder import LazyDefaultPlaceholderService
+    from objectstate.placeholder import LazyDefaultPlaceholderService
     field_values = {
         f.name: (getattr(source_config, f.name) if preserve_values
                 else f.type() if is_dataclass(f.type) and LazyDefaultPlaceholderService.has_lazy_resolution(f.type)

@@ -1,7 +1,7 @@
 """Pytest configuration and shared fixtures."""
 import pytest
 from dataclasses import dataclass
-from hieraconf import set_base_config_type
+from objectstate import set_base_config_type
 
 
 @dataclass
@@ -33,7 +33,7 @@ class TestStepConfig:
 def reset_base_config():
     """Reset base config type before each test."""
     # Import the module to access the global variable
-    import hieraconf.config as config_module
+    import objectstate.config as config_module
 
     # Store original value
     original = config_module._base_config_type

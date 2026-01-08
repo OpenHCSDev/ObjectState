@@ -10,7 +10,7 @@ Tests cover:
 """
 
 import pytest
-from hieraconf.parametric_axes import (
+from objectstate.parametric_axes import (
     axes_type, with_axes, AxesMeta,
     get_axes, get_axis, has_axis,
 )

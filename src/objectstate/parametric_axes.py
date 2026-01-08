@@ -10,7 +10,7 @@ Core concepts:
 - @with_axes: Decorator for class definitions
 
 Usage:
-    from hieraconf.parametric_axes import axes_type, with_axes
+    from objectstate.parametric_axes import axes_type, with_axes
     
     # Factory function approach
     MyStep = axes_type("MyStep", (Step,), {"process": fn},

@@ -12,7 +12,7 @@ Key Features:
 - Thread-local global configuration storage
 
 Quick Start:
-    >>> from hieraconf import (
+    >>> from objectstate import (
     ...     set_base_config_type,
     ...     LazyDataclassFactory,
     ...     config_context,
@@ -51,8 +51,40 @@ Modules:
     - config: Framework configuration (pluggable types and behaviors)
 """
 
+# Ensure openhcs.config_framework.* imports resolve to this package's modules
+import importlib
+import sys
+
+# Keep objectstate and openhcs.config_framework pointing to the same package instance
+_alias_prefix = 'openhcs.config_framework' if __name__ == 'objectstate' else 'objectstate'
+sys.modules[_alias_prefix] = sys.modules[__name__]
+
+_submodules = [
+    'lazy_factory',
+    'dual_axis_resolver',
+    'context_manager',
+    'placeholder',
+    'global_config',
+    'config',
+    'live_context_resolver',
+    'token_cache',
+    'object_state',
+    'snapshot_model',
+    'parametric_axes',
+    'reified_generics',
+]
+
+for _mod in _submodules:
+    try:
+        _module = importlib.import_module(f'{__name__}.{_mod}')
+    except Exception:
+        continue
+    # Ensure both namespaces resolve to the same submodule object
+    sys.modules[f'{_alias_prefix}.{_mod}'] = _module
+    setattr(sys.modules[_alias_prefix], _mod, _module)
+
 # Factory
-from hieraconf.lazy_factory import (
+from objectstate.lazy_factory import (
     LazyDataclassFactory,
     auto_create_decorator,
     register_lazy_type_mapping,
@@ -69,13 +101,13 @@ from hieraconf.lazy_factory import (
 )
 
 # Resolver
-from hieraconf.dual_axis_resolver import (
+from objectstate.dual_axis_resolver import (
     resolve_field_inheritance,
     _has_concrete_field_override,
 )
 
 # Context
-from hieraconf.context_manager import (
+from objectstate.context_manager import (
     config_context,
     get_current_temp_global,
     set_current_temp_global,
@@ -101,10 +133,10 @@ from hieraconf.context_manager import (
 )
 
 # Placeholder
-from hieraconf.placeholder import LazyDefaultPlaceholderService
+from objectstate.placeholder import LazyDefaultPlaceholderService
 
 # Global config
-from hieraconf.global_config import (
+from objectstate.global_config import (
     set_current_global_config,
     get_current_global_config,
     set_global_config_for_editing,
@@ -115,16 +147,16 @@ from hieraconf.global_config import (
 )
 
 # Configuration
-from hieraconf.config import (
+from objectstate.config import (
     set_base_config_type,
     get_base_config_type,
 )
 
 # Live context resolver
-from hieraconf.live_context_resolver import LiveContextResolver
+from objectstate.live_context_resolver import LiveContextResolver
 
 # Token cache
-from hieraconf.token_cache import TokenCache, SingleValueTokenCache, CacheKey
+from objectstate.token_cache import TokenCache, SingleValueTokenCache, CacheKey
 
 __all__ = [
     # Factory
@@ -177,16 +209,16 @@ __description__ = 'Generic configuration framework for lazy dataclass resolution
 
 
 # Object state management
-from hieraconf.object_state import ObjectState, ObjectStateRegistry
+from objectstate.object_state import ObjectState, ObjectStateRegistry
 
 # Snapshot model for time-travel
-from hieraconf.snapshot_model import Snapshot, StateSnapshot, Timeline
+from objectstate.snapshot_model import Snapshot, StateSnapshot, Timeline
 
 # Parametric axes
-from hieraconf.parametric_axes import axes_type, with_axes, get_axes
+from objectstate.parametric_axes import axes_type, with_axes, get_axes
 
 # Reified generics
-from hieraconf.reified_generics import List, Dict, Set, Tuple, Optional
+from objectstate.reified_generics import List, Dict, Set, Tuple, Optional
 
 # Update __all__
 __all__ += [
