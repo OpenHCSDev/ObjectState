@@ -341,6 +341,32 @@ Most specific class → Least specific class (following Python's MRO)
 3. For each MRO class, check if there's a config instance in `available_configs` with a concrete (non-None) value
 4. Return the first concrete value found
 
+## Parametric Axes Prototype (PEP Draft)
+
+The `parametric_axes` module demonstrates extending Python's type system with arbitrary semantic axes beyond `(B, S)`:
+
+```python
+from objectstate.parametric_axes import AxesBase
+
+class Step(AxesBase):
+    pass
+
+class MyStep(Step, axes={"scope": "/pipeline/step_0", "registry": "handlers"}):
+    pass
+
+MyStep.__axes__  # {'scope': '/pipeline/step_0', 'registry': 'handlers'}
+MyStep.__scope__  # '/pipeline/step_0' (convenience attribute)
+```
+
+This works TODAY via `__init_subclass__` (PEP 487) - no grammar changes required.
+
+**Three usage patterns:**
+- `AxesBase` inheritance: `class Foo(Base, axes={...})` (preferred)
+- Factory function: `axes_type("Foo", (Base,), {}, scope="...", registry="...")`
+- Decorator: `@with_axes(scope="...", registry="...")` (when base can't be modified)
+
+See `src/objectstate/parametric_axes.py` for full implementation and docstrings.
+
 ## Documentation
 
 Full documentation available at [objectstate.readthedocs.io](https://objectstate.readthedocs.io)
