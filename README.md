@@ -365,7 +365,107 @@ This works TODAY via `__init_subclass__` (PEP 487) - no grammar changes required
 - Factory function: `axes_type("Foo", (Base,), {}, scope="...", registry="...")`
 - Decorator: `@with_axes(scope="...", registry="...")` (when base can't be modified)
 
+### Try It Out
+
+Run the tests to see the prototype in action:
+
+```bash
+# Run all parametric axes tests
+python -m pytest tests/test_parametric_axes.py -v
+
+# Interactive exploration
+python -c "
+from objectstate.parametric_axes import AxesBase, axes_type, with_axes, get_axes
+
+# Pattern 1: Class statement syntax (preferred)
+class Step(AxesBase):
+    pass
+
+class ProcessingStep(Step, axes={'scope': '/pipeline/step_0', 'registry': 'processing'}):
+    def process(self):
+        return 'processed'
+
+print(f'ProcessingStep.__axes__ = {dict(ProcessingStep.__axes__)}')
+print(f'ProcessingStep.__scope__ = {ProcessingStep.__scope__}')
+
+# Pattern 2: Factory function (mimics extended type())
+Handler = axes_type('Handler', (), {}, format='imagexpress', version=2)
+print(f'Handler.__axes__ = {Handler.__axes__}')
+
+# Pattern 3: Decorator (when base can't be modified)
+@with_axes(scope='/decorated', priority=10)
+class DecoratedStep:
+    pass
+print(f'DecoratedStep.__axes__ = {DecoratedStep.__axes__}')
+
+# MRO-based axis resolution with multiple inheritance
+class A(AxesBase, axes={'x': 1, 'from_a': True}):
+    pass
+class B(AxesBase, axes={'x': 2, 'from_b': True}):
+    pass
+class C(A, B):  # x=1 from A (leftmost in MRO)
+    pass
+print(f'C.__axes__ = {dict(C.__axes__)}')  # x=1, from_a=True, from_b=True
+"
+```
+
 See `src/objectstate/parametric_axes.py` for full implementation and docstrings.
+
+## Reified Generics Prototype
+
+The `reified_generics` module provides runtime-accessible type parameters for generics:
+
+```python
+from objectstate.reified_generics import List, Dict
+
+# Type parameters are preserved at runtime
+IntList = List[int]
+StrDict = Dict[str, float]
+
+# Introspection works
+IntList.__args__      # (int,)
+IntList.__origin__    # list
+StrDict.__args__      # (str, float)
+
+# isinstance checks work with reified types
+my_list = IntList([1, 2, 3])
+isinstance(my_list, IntList)  # True
+isinstance(my_list, List[str])  # False - different type parameter!
+
+# Type caching ensures identity
+List[int] is List[int]  # True - same object
+```
+
+### Try It Out
+
+```bash
+# Run reified generics tests
+python -m pytest tests/test_reified_generics.py -v
+
+# Interactive exploration
+python -c "
+from objectstate.reified_generics import List, Dict, Set, Optional
+
+# Create reified types
+IntList = List[int]
+StrIntDict = Dict[str, int]
+
+print(f'IntList.__args__ = {IntList.__args__}')
+print(f'IntList.__origin__ = {IntList.__origin__}')
+print(f'StrIntDict.__args__ = {StrIntDict.__args__}')
+
+# Type identity (caching)
+print(f'List[int] is List[int]: {List[int] is List[int]}')
+print(f'List[int] is List[str]: {List[int] is List[str]}')
+
+# Create instances
+my_list = IntList([1, 2, 3])
+print(f'isinstance(my_list, IntList): {isinstance(my_list, IntList)}')
+print(f'isinstance(my_list, List[str]): {isinstance(my_list, List[str])}')
+"
+```
+
+See `src/objectstate/reified_generics.py` for full implementation.
 
 ## Documentation
 
