@@ -1,7 +1,7 @@
 Examples
 ========
 
-This section provides practical examples of using hieraconf.
+This section provides practical examples of using objectstate.
 
 .. toctree::
    :maxdepth: 2

@@ -1,4 +1,4 @@
-hieraconf
+objectstate
 ===========
 
 **Generic lazy dataclass configuration framework with dual-axis inheritance**
@@ -6,7 +6,7 @@ hieraconf
 Overview
 --------
 
-``hieraconf`` is a Python framework for managing hierarchical configuration using lazy dataclasses with dual-axis inheritance. It provides a clean, type-safe way to handle configuration across different contexts (global, pipeline, step) without manual parameter passing.
+``objectstate`` is a Python framework for managing hierarchical configuration using lazy dataclasses with dual-axis inheritance. It provides a clean, type-safe way to handle configuration across different contexts (global, pipeline, step) without manual parameter passing.
 
 Key Features
 ------------
@@ -28,7 +28,7 @@ Installation
 
 .. code-block:: bash
 
-   pip install hieraconf
+   pip install objectstate
 
 Quick Example
 -------------
@@ -36,7 +36,7 @@ Quick Example
 .. code-block:: python
 
    from dataclasses import dataclass
-   from hieraconf import (
+   from objectstate import (
        set_base_config_type,
        LazyDataclassFactory,
        config_context,
@@ -63,7 +63,7 @@ Quick Example
        print(lazy_cfg.output_dir)  # "/data" (resolved from context)
        print(lazy_cfg.debug)       # False (inherited from defaults)
 
-Why hieraconf?
+Why objectstate?
 ----------------
 
 Before (Manual parameter passing)
@@ -80,7 +80,7 @@ Before (Manual parameter passing)
        # Repeat parameter declarations everywhere
        ...
 
-After (hieraconf)
+After (objectstate)
 ~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: python

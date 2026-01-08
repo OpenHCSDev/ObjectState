@@ -1,16 +1,16 @@
 Quick Start Guide
 ==================
 
-This guide will help you get started with hieraconf in minutes.
+This guide will help you get started with objectstate in minutes.
 
 Installation
 ------------
 
-Install hieraconf using pip:
+Install objectstate using pip:
 
 .. code-block:: bash
 
-   pip install hieraconf
+   pip install objectstate
 
 Basic Setup
 -----------
@@ -38,7 +38,7 @@ Set the base configuration type for your application:
 
 .. code-block:: python
 
-   from hieraconf import set_base_config_type
+   from objectstate import set_base_config_type
 
    set_base_config_type(GlobalConfig)
 
@@ -52,7 +52,7 @@ Create a lazy version of your configuration:
 
 .. code-block:: python
 
-   from hieraconf import LazyDataclassFactory
+   from objectstate import LazyDataclassFactory
 
    LazyGlobalConfig = LazyDataclassFactory.make_lazy_simple(GlobalConfig)
 
@@ -63,7 +63,7 @@ Use your configuration with context managers:
 
 .. code-block:: python
 
-   from hieraconf import config_context
+   from objectstate import config_context
 
    # Create concrete configuration
    global_cfg = GlobalConfig(
@@ -151,7 +151,7 @@ When using the decorator pattern with ``auto_create_decorator``, you need to est
 
 .. code-block:: python
 
-   from hieraconf import (
+   from objectstate import (
        auto_create_decorator,
        ensure_global_config_context,
    )
@@ -190,7 +190,7 @@ Here's a complete example putting it all together:
 .. code-block:: python
 
    from dataclasses import dataclass
-   from hieraconf import (
+   from objectstate import (
        set_base_config_type,
        LazyDataclassFactory,
        config_context,

@@ -1,7 +1,7 @@
 API Reference
 =============
 
-This section contains the complete API documentation for hieraconf.
+This section contains the complete API documentation for objectstate.
 
 Core Modules
 ------------
@@ -10,69 +10,69 @@ Core Modules
    :toctree: generated
    :recursive:
 
-   hieraconf.config
-   hieraconf.lazy_factory
-   hieraconf.context_manager
-   hieraconf.dual_axis_resolver
-   hieraconf.global_config
-   hieraconf.placeholder
-   hieraconf.cache_warming
+   objectstate.config
+   objectstate.lazy_factory
+   objectstate.context_manager
+   objectstate.dual_axis_resolver
+   objectstate.global_config
+   objectstate.placeholder
+   objectstate.cache_warming
 
 Module Documentation
 --------------------
 
-hieraconf.config
+objectstate.config
 ~~~~~~~~~~~~~~~~~~
 
-.. automodule:: hieraconf.config
+.. automodule:: objectstate.config
    :members:
    :undoc-members:
    :show-inheritance:
 
-hieraconf.lazy_factory
+objectstate.lazy_factory
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. automodule:: hieraconf.lazy_factory
+.. automodule:: objectstate.lazy_factory
    :members:
    :undoc-members:
    :show-inheritance:
 
-hieraconf.context_manager
+objectstate.context_manager
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. automodule:: hieraconf.context_manager
+.. automodule:: objectstate.context_manager
    :members:
    :undoc-members:
    :show-inheritance:
 
-hieraconf.dual_axis_resolver
+objectstate.dual_axis_resolver
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. automodule:: hieraconf.dual_axis_resolver
+.. automodule:: objectstate.dual_axis_resolver
    :members:
    :undoc-members:
    :show-inheritance:
 
-hieraconf.global_config
+objectstate.global_config
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. automodule:: hieraconf.global_config
+.. automodule:: objectstate.global_config
    :members:
    :undoc-members:
    :show-inheritance:
 
-hieraconf.placeholder
+objectstate.placeholder
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. automodule:: hieraconf.placeholder
+.. automodule:: objectstate.placeholder
    :members:
    :undoc-members:
    :show-inheritance:
 
-hieraconf.cache_warming
+objectstate.cache_warming
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. automodule:: hieraconf.cache_warming
+.. automodule:: objectstate.cache_warming
    :members:
    :undoc-members:
    :show-inheritance:

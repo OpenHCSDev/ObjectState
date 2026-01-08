@@ -40,10 +40,10 @@ docs = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/trissim/hieraconf"
-Documentation = "https://hieraconf.readthedocs.io"
-Repository = "https://github.com/trissim/hieraconf"
-Issues = "https://github.com/trissim/hieraconf/issues"
+Homepage = "https://github.com/trissim/objectstate"
+Documentation = "https://objectstate.readthedocs.io"
+Repository = "https://github.com/trissim/objectstate"
+Issues = "https://github.com/trissim/objectstate/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/objectstate"]

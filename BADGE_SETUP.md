@@ -6,18 +6,18 @@ This document explains the badges added to the README and the manual setup steps
 
 ### 1. Read the Docs Badge
 ```markdown
-[![Documentation Status](https://readthedocs.org/projects/hieraconf/badge/?version=latest)](https://hieraconf.readthedocs.io/en/latest/?badge=latest)
+[![Documentation Status](https://readthedocs.org/projects/objectstate/badge/?version=latest)](https://objectstate.readthedocs.io/en/latest/?badge=latest)
 ```
-- **Status**: Should work automatically if hieraconf is registered on ReadTheDocs
-- **Link**: https://hieraconf.readthedocs.io
+- **Status**: Should work automatically if objectstate is registered on ReadTheDocs
+- **Link**: https://objectstate.readthedocs.io
 - **Configuration**: `.readthedocs.yaml` is already configured
 
 ### 2. Code Coverage Badge
 ```markdown
-[![Coverage](https://raw.githubusercontent.com/trissim/hieraconf/main/.github/badges/coverage.svg)](https://trissim.github.io/hieraconf/coverage/)
+[![Coverage](https://raw.githubusercontent.com/trissim/objectstate/main/.github/badges/coverage.svg)](https://trissim.github.io/objectstate/coverage/)
 ```
 - **Status**: Will be automatically updated by GitHub Actions workflow
-- **Link**: https://trissim.github.io/hieraconf/coverage/
+- **Link**: https://trissim.github.io/objectstate/coverage/
 - **Workflow**: `.github/workflows/coverage-pages.yml`
 
 ## Manual Setup Required
@@ -25,23 +25,23 @@ This document explains the badges added to the README and the manual setup steps
 ### 1. Enable GitHub Pages
 The coverage badge and reports require GitHub Pages to be enabled:
 
-1. Go to: https://github.com/trissim/hieraconf/settings/pages
+1. Go to: https://github.com/trissim/objectstate/settings/pages
 2. Under "Build and deployment":
    - **Source**: Select "GitHub Actions"
 3. Save the settings
 
 Once enabled, the coverage reports will be available at:
-- Badge SVG: https://raw.githubusercontent.com/trissim/hieraconf/main/.github/badges/coverage.svg
-- Coverage Report: https://trissim.github.io/hieraconf/coverage/
+- Badge SVG: https://raw.githubusercontent.com/trissim/objectstate/main/.github/badges/coverage.svg
+- Coverage Report: https://trissim.github.io/objectstate/coverage/
 
 ### 2. Update Repository Description (Optional but Recommended)
 To match the problem statement requirement:
 
-1. Go to: https://github.com/trissim/hieraconf
+1. Go to: https://github.com/trissim/objectstate
 2. Click the ⚙️ (settings) icon next to "About"
 3. Add or update:
    - **Description**: Generic lazy dataclass configuration framework with dual-axis inheritance
-   - **Website**: https://hieraconf.readthedocs.io
+   - **Website**: https://objectstate.readthedocs.io
    - **Topics**: Add relevant tags like `python`, `configuration`, `dataclass`, etc.
 4. Save changes
 
@@ -49,8 +49,8 @@ To match the problem statement requirement:
 Ensure the repository is properly linked to ReadTheDocs:
 
 1. Go to: https://readthedocs.org/dashboard/
-2. Verify `hieraconf` project exists
-3. Check webhook is configured at: https://github.com/trissim/hieraconf/settings/hooks
+2. Verify `objectstate` project exists
+3. Check webhook is configured at: https://github.com/trissim/objectstate/settings/hooks
 4. Trigger a build to ensure documentation is up to date
 
 ## How the Coverage Badge Works
@@ -75,7 +75,7 @@ After enabling GitHub Pages:
 2. Wait for the "Tests, Coverage and GitHub Pages" workflow to complete
 3. Check that:
    - The badge SVG was updated in `.github/badges/coverage.svg`
-   - The coverage report is available at https://trissim.github.io/hieraconf/coverage/
+   - The coverage report is available at https://trissim.github.io/objectstate/coverage/
    - The badge in README shows the correct coverage percentage
 
 ## Differences from Codecov

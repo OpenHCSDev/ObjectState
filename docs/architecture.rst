@@ -1,7 +1,7 @@
 Architecture
 ============
 
-Understanding the architecture of hieraconf helps you leverage its full power.
+Understanding the architecture of objectstate helps you leverage its full power.
 
 Dual-Axis Resolution
 ---------------------
@@ -96,7 +96,7 @@ For each field resolution, the framework:
 .. code-block:: text
 
    ┌─────────────────────────────────────────┐
-   │ Field Access: hieraconf.some_field    │
+   │ Field Access: objectstate.some_field    │
    └────────────────┬────────────────────────┘
                     │
                     ▼
@@ -168,7 +168,7 @@ Currently, fields are resolved on each access. For performance-critical applicat
 
    .. code-block:: python
 
-      from hieraconf import prewarm_config_analysis_cache
+      from objectstate import prewarm_config_analysis_cache
       prewarm_config_analysis_cache([Config1, Config2, Config3])
 
 2. **Convert to base config** once resolved:
@@ -250,7 +250,7 @@ How auto_create_decorator Works
 
 .. code-block:: python
 
-   from hieraconf import auto_create_decorator
+   from objectstate import auto_create_decorator
    from dataclasses import dataclass
 
    # Apply to a global config class
@@ -379,7 +379,7 @@ How It Works
 .. code-block:: python
 
    from dataclasses import dataclass
-   from hieraconf import LazyDataclassFactory
+   from objectstate import LazyDataclassFactory
 
    @dataclass
    class PathPlanningConfig:
@@ -428,7 +428,7 @@ Sets the **type** (class) for the framework:
 
 .. code-block:: python
 
-   from hieraconf import set_base_config_type
+   from objectstate import set_base_config_type
 
    set_base_config_type(GlobalPipelineConfig)
 
@@ -443,7 +443,7 @@ Sets the **instance** (concrete values) for resolution:
 
 .. code-block:: python
 
-   from hieraconf import ensure_global_config_context
+   from objectstate import ensure_global_config_context
 
    global_config = GlobalPipelineConfig(
        num_workers=8,

@@ -2,7 +2,7 @@
 
 **Source of Truth**: OpenHCS `docs/source/architecture/configuration_framework.rst` and actual usage in `openhcs/core/config.py`
 
-**Goal**: Fix inaccuracies in hieraconf documentation and add missing critical features
+**Goal**: Fix inaccuracies in objectstate documentation and add missing critical features
 
 ---
 

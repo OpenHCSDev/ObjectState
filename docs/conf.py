@@ -1,4 +1,4 @@
-"""Sphinx configuration for hieraconf."""
+"""Sphinx configuration for objectstate."""
 import os
 import sys
 
@@ -6,7 +6,7 @@ import sys
 sys.path.insert(0, os.path.abspath("../src"))
 
 # Project information
-project = "hieraconf"
+project = "objectstate"
 copyright = "2024, Tristan Simas"
 author = "Tristan Simas"
 version = "0.1.0"

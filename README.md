@@ -1,12 +1,12 @@
-# hieraconf
+# objectstate
 
 **Generic lazy dataclass configuration framework with dual-axis inheritance**
 
-[![PyPI version](https://badge.fury.io/py/hieraconf.svg)](https://badge.fury.io/py/hieraconf)
-[![Documentation Status](https://readthedocs.org/projects/hieraconf/badge/?version=latest)](https://hieraconf.readthedocs.io/en/latest/?badge=latest)
+[![PyPI version](https://badge.fury.io/py/objectstate.svg)](https://badge.fury.io/py/objectstate)
+[![Documentation Status](https://readthedocs.org/projects/objectstate/badge/?version=latest)](https://objectstate.readthedocs.io/en/latest/?badge=latest)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Coverage](https://raw.githubusercontent.com/trissim/hieraconf/main/.github/badges/coverage.svg)](https://trissim.github.io/hieraconf/coverage/)
+[![Coverage](https://raw.githubusercontent.com/trissim/objectstate/main/.github/badges/coverage.svg)](https://trissim.github.io/objectstate/coverage/)
 
 ## Features
 
@@ -26,7 +26,7 @@
 
 ```python
 from dataclasses import dataclass
-from hieraconf import LazyDataclassFactory, config_context, set_base_config_type
+from objectstate import LazyDataclassFactory, config_context, set_base_config_type
 
 # Define your base configuration
 @dataclass
@@ -56,7 +56,7 @@ with config_context(concrete_config):
 When using the decorator pattern with `auto_create_decorator`, you need to establish the global configuration context for lazy resolution:
 
 ```python
-from hieraconf import ensure_global_config_context
+from objectstate import ensure_global_config_context
 
 # After creating your global config instance
 global_config = GlobalPipelineConfig(
@@ -78,7 +78,7 @@ ensure_global_config_context(GlobalPipelineConfig, global_config)
 ## Installation
 
 ```bash
-pip install hieraconf
+pip install objectstate
 ```
 
 ## Automatic Lazy Config Generation with Decorators
@@ -87,7 +87,7 @@ For more complex applications with multiple config types, use the `auto_create_d
 
 ```python
 from dataclasses import dataclass
-from hieraconf import auto_create_decorator, config_context
+from objectstate import auto_create_decorator, config_context
 
 # Step 1: Create a global config class with "Global" prefix and apply auto_create_decorator
 @auto_create_decorator
@@ -132,7 +132,7 @@ When you use the generated decorator (e.g., `@global_pipeline_config`), the deco
 
 ```python
 from dataclasses import dataclass
-from hieraconf import auto_create_decorator
+from objectstate import auto_create_decorator
 
 # Create global config with auto_create_decorator
 @auto_create_decorator
@@ -216,7 +216,7 @@ When creating a lazy dataclass, **nested dataclass fields are automatically conv
 
 ```python
 from dataclasses import dataclass
-from hieraconf import LazyDataclassFactory
+from objectstate import LazyDataclassFactory
 
 @dataclass
 class DatabaseConfig:
@@ -241,7 +241,7 @@ LazyAppConfig = LazyDataclassFactory.make_lazy_simple(AppConfig)
 - Creates default factories for Optional dataclass fields
 - Uses `register_lazy_type_mapping()` internally
 
-## Why hieraconf?
+## Why objectstate?
 
 **Before** (Manual parameter passing):
 ```python
@@ -255,7 +255,7 @@ def sub_process(data, output_dir, num_workers, debug, ...):
     ...
 ```
 
-**After** (hieraconf):
+**After** (objectstate):
 ```python
 @dataclass
 class StepConfig:
@@ -280,7 +280,7 @@ with config_context(global_config):
     with config_context(pipeline_config):
         with config_context(step_config):
             # Resolves: step → pipeline → global → defaults
-            value = hieraconf.some_field
+            value = objectstate.some_field
 
 # Y-Axis: Sibling inheritance (MRO-based)
 @dataclass
@@ -297,13 +297,13 @@ class SpecializedConfig(BaseConfig):
 ### Placeholder Generation for UI
 
 ```python
-from hieraconf import LazyDefaultPlaceholderService
+from objectstate import LazyDefaultPlaceholderService
 
 service = LazyDefaultPlaceholderService()
 
 # Generate placeholder text showing inherited values
 placeholder = service.get_placeholder_text(
-    hieraconf,
+    objectstate,
     "output_dir",
     available_configs
 )
@@ -313,7 +313,7 @@ placeholder = service.get_placeholder_text(
 ### Cache Warming
 
 ```python
-from hieraconf import prewarm_config_analysis_cache
+from objectstate import prewarm_config_analysis_cache
 
 # Pre-warm caches for faster runtime resolution
 prewarm_config_analysis_cache([GlobalConfig, PipelineConfig, StepConfig])
@@ -343,7 +343,7 @@ Most specific class → Least specific class (following Python's MRO)
 
 ## Documentation
 
-Full documentation available at [hieraconf.readthedocs.io](https://hieraconf.readthedocs.io)
+Full documentation available at [objectstate.readthedocs.io](https://objectstate.readthedocs.io)
 
 ## Requirements
 
