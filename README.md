@@ -4,7 +4,7 @@
 
 [![PyPI version](https://badge.fury.io/py/objectstate.svg)](https://badge.fury.io/py/objectstate)
 [![Documentation Status](https://readthedocs.org/projects/objectstate/badge/?version=latest)](https://objectstate.readthedocs.io/en/latest/?badge=latest)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Coverage](https://raw.githubusercontent.com/trissim/objectstate/main/.github/badges/coverage.svg)](https://trissim.github.io/objectstate/coverage/)
 
@@ -79,6 +79,73 @@ ensure_global_config_context(GlobalPipelineConfig, global_config)
 
 ```bash
 pip install objectstate
+```
+
+## ObjectState Registry
+
+ObjectState separates mutable working state from saved baseline, enabling dirty tracking and undo/redo:
+
+```python
+from objectstate import ObjectState, ObjectStateRegistry
+
+# Register an object (e.g., when added to pipeline)
+state = ObjectState(my_step_config, scope_id="/pipeline::step_0")
+ObjectStateRegistry.register(state)
+
+# Query the registry
+state = ObjectStateRegistry.get_by_scope("/pipeline::step_0")
+all_states = ObjectStateRegistry.get_all()
+
+# Update a parameter (marks field as dirty)
+state.update_parameter("output_dir", "/new/path")
+
+# Check dirty state
+if state.dirty_fields:
+    print(f"Unsaved changes: {state.dirty_fields}")
+
+# Save changes (updates baseline)
+state.save()
+
+# Or restore to saved baseline
+state.restore_saved()
+
+# Unregister when removed
+ObjectStateRegistry.unregister(state)
+```
+
+## Undo/Redo and Time Travel
+
+Git-like DAG history with branching timelines:
+
+```python
+from objectstate import ObjectStateRegistry
+
+# Undo/redo (automatically recorded on parameter changes)
+ObjectStateRegistry.undo()
+ObjectStateRegistry.redo()
+
+# Batch multiple changes into one undo step
+with ObjectStateRegistry.atomic("add item"):
+    ObjectStateRegistry.register(item_state)
+    parent_state.update_parameter("items", new_items)
+
+# Time travel to specific point
+history = ObjectStateRegistry.get_branch_history()
+ObjectStateRegistry.time_travel_to_snapshot(history[5].id)
+ObjectStateRegistry.time_travel_to_head()  # Return to latest
+
+# Branching timelines
+ObjectStateRegistry.create_branch("experiment", description="Testing new approach")
+ObjectStateRegistry.switch_branch("main")
+branches = ObjectStateRegistry.list_branches()
+
+# Persist history
+history_dict = ObjectStateRegistry.export_history_to_dict()
+ObjectStateRegistry.import_history_from_dict(history_dict)
+
+# Or save to file
+ObjectStateRegistry.save_history_to_file("history.json")
+ObjectStateRegistry.load_history_from_file("history.json")
 ```
 
 ## Automatic Lazy Config Generation with Decorators
@@ -294,29 +361,23 @@ class SpecializedConfig(BaseConfig):
 # SpecializedConfig inherits field_a from BaseConfig
 ```
 
-### Placeholder Generation for UI
+### Accessing Resolved Values
 
 ```python
-from objectstate import LazyDefaultPlaceholderService
+from objectstate import ObjectState, ObjectStateRegistry
 
-service = LazyDefaultPlaceholderService()
+# ObjectState stores both saved baseline and live (edited) values
+state = ObjectStateRegistry.get_by_scope("/pipeline::step_0")
 
-# Generate placeholder text showing inherited values
-placeholder = service.get_placeholder_text(
-    objectstate,
-    "output_dir",
-    available_configs
-)
-# Returns: "Inherited: /data (from GlobalConfig)"
-```
+# Access resolved value (from _live_resolved cache)
+output_dir = state.get_resolved_value("output_dir")
 
-### Cache Warming
+# Check if field is dirty (live != saved)
+is_dirty = "output_dir" in state.dirty_fields
 
-```python
-from objectstate import prewarm_config_analysis_cache
-
-# Pre-warm caches for faster runtime resolution
-prewarm_config_analysis_cache([GlobalConfig, PipelineConfig, StepConfig])
+# Get provenance (where did this value come from?)
+source_scope, source_type = state.get_resolved_provenance("output_dir")
+# Returns: ("/pipeline", GlobalPipelineConfig) if inherited from pipeline
 ```
 
 ## Architecture
@@ -473,7 +534,7 @@ Full documentation available at [objectstate.readthedocs.io](https://objectstate
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.11+
 - No external dependencies (pure stdlib)
 
 ## License
