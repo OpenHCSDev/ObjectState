@@ -615,7 +615,9 @@ class LazyDataclassFactory:
             raise ValueError(f"{base_class} must be a dataclass")
 
         # Check cache first to prevent duplicate creation
-        cache_key = f"{base_class.__name__}_{lazy_class_name}_{id(instance_provider)}"
+        # Use id(base_class) to distinguish between different classes with the same name
+        # (e.g., locally-defined classes in tests)
+        cache_key = f"{id(base_class)}_{lazy_class_name}_{id(instance_provider)}"
         if cache_key in _lazy_class_cache:
             return _lazy_class_cache[cache_key]
 
