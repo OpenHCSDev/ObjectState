@@ -2,16 +2,18 @@
 Tests for parametric axes prototype.
 
 Tests cover:
+- AxesBase class statement syntax (class Foo(Base, axes={...}))
 - axes_type() factory function
 - @with_axes decorator
 - __axes__ introspection
 - Individual axis access via __<name>__
 - Utility functions
+- MRO-based axis resolution for multiple inheritance
 """
 
 import pytest
 from objectstate.parametric_axes import (
-    axes_type, with_axes, AxesMeta,
+    axes_type, with_axes, AxesMeta, AxesBase,
     get_axes, get_axis, has_axis,
 )
 
@@ -161,14 +163,126 @@ class TestRepr:
         assert "scope" in r
 
 
+class TestAxesBase:
+    """Test AxesBase class statement syntax via __init_subclass__."""
+
+    def test_basic_class_statement_syntax(self):
+        """class Foo(AxesBase, axes={...}) works."""
+        class Step(AxesBase):
+            pass
+
+        class MyStep(Step, axes={"scope": "/pipeline/step_0"}):
+            pass
+
+        assert dict(MyStep.__axes__) == {"scope": "/pipeline/step_0"}
+
+    def test_multiple_axes(self):
+        """Multiple axes in class statement."""
+        class Base(AxesBase):
+            pass
+
+        class Child(Base, axes={"scope": "/test", "registry": "handlers", "priority": 10}):
+            pass
+
+        assert Child.__axes__["scope"] == "/test"
+        assert Child.__axes__["registry"] == "handlers"
+        assert Child.__axes__["priority"] == 10
+
+    def test_inheritance_merges_axes(self):
+        """Child inherits parent axes and can override."""
+        class Base(AxesBase):
+            pass
+
+        class Parent(Base, axes={"scope": "/parent", "version": 1}):
+            pass
+
+        class Child(Parent, axes={"scope": "/child", "priority": 10}):
+            pass
+
+        # Child overrides scope, inherits version, adds priority
+        assert Child.__axes__["scope"] == "/child"
+        assert Child.__axes__["version"] == 1
+        assert Child.__axes__["priority"] == 10
+
+    def test_mro_resolution(self):
+        """Multiple inheritance resolves per MRO (leftmost wins)."""
+        class Base(AxesBase):
+            pass
+
+        class B(Base, axes={"scope": "b", "from_b": True}):
+            pass
+
+        class C(Base, axes={"scope": "c", "from_c": True}):
+            pass
+
+        class D(B, C):  # MRO: D, B, C, Base, AxesBase, object
+            pass
+
+        # scope="b" because B is leftmost in MRO
+        assert D.__axes__["scope"] == "b"
+        assert D.__axes__["from_b"] is True
+        assert D.__axes__["from_c"] is True
+
+    def test_convenience_attributes(self):
+        """Individual axes accessible as __<name>__."""
+        class Base(AxesBase):
+            pass
+
+        class Child(Base, axes={"scope": "/test", "priority": 10}):
+            pass
+
+        assert Child.__scope__ == "/test"
+        assert Child.__priority__ == 10
+
+    def test_axes_immutable(self):
+        """__axes__ is wrapped in MappingProxyType (immutable)."""
+        from types import MappingProxyType
+
+        class Base(AxesBase):
+            pass
+
+        class Child(Base, axes={"scope": "/test"}):
+            pass
+
+        assert isinstance(Child.__axes__, MappingProxyType)
+
+        with pytest.raises(TypeError):
+            Child.__axes__["new_key"] = "value"
+
+    def test_no_axes_gives_empty(self):
+        """Class without axes= has empty __axes__."""
+        class Base(AxesBase):
+            pass
+
+        class Child(Base):
+            pass
+
+        assert dict(Child.__axes__) == {}
+
+    def test_preserves_class_body(self):
+        """Class statement syntax preserves methods and attributes."""
+        class Base(AxesBase):
+            pass
+
+        class Child(Base, axes={"scope": "/test"}):
+            value = 42
+
+            def method(self):
+                return "hello"
+
+        assert Child.value == 42
+        assert Child().method() == "hello"
+        assert Child.__axes__["scope"] == "/test"
+
+
 class TestRealWorldExample:
     """Test real-world usage patterns from OpenHCS."""
-    
+
     def test_step_with_scope(self):
         """Simulate OpenHCS step registration."""
         class Step:
             pass
-        
+
         # What we currently do with ObjectStateRegistry.register()
         # Now expressible directly:
         ProcessingStep = axes_type(
@@ -176,21 +290,34 @@ class TestRealWorldExample:
             scope="/pipeline/step_0",
             registry="processing_steps"
         )
-        
+
         assert ProcessingStep.__scope__ == "/pipeline/step_0"
         assert ProcessingStep.__registry__ == "processing_steps"
-    
+
     def test_handler_with_registry(self):
         """Simulate OpenHCS handler registration."""
         HANDLERS = {}
-        
+
         @with_axes(registry=HANDLERS, format_name="imagexpress")
         class ImageXpressHandler:
             pass
-        
+
         # Framework can now introspect uniformly:
         axes = get_axes(ImageXpressHandler)
         axes["registry"][axes["format_name"]] = ImageXpressHandler
-        
+
         assert HANDLERS["imagexpress"] is ImageXpressHandler
+
+    def test_step_with_class_statement_syntax(self):
+        """OpenHCS step using class statement syntax (preferred)."""
+        class Step(AxesBase):
+            pass
+
+        class ProcessingStep(Step, axes={"scope": "/pipeline/step_0", "registry": "processing_steps"}):
+            def process(self):
+                return "processed"
+
+        assert ProcessingStep.__scope__ == "/pipeline/step_0"
+        assert ProcessingStep.__registry__ == "processing_steps"
+        assert ProcessingStep().process() == "processed"
 

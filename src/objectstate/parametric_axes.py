@@ -5,27 +5,41 @@ This module extends Python's type() to support arbitrary axes beyond (B, S).
 It's a proof-of-concept for PEP proposal: extending type() with **axes.
 
 Core concepts:
+- AxesBase: Base class enabling `class Foo(Base, axes={...})` syntax (PREFERRED)
 - AxesMeta: Metaclass that stores arbitrary axes in __axes__
 - axes_type(): Factory function mimicking extended type() signature
 - @with_axes: Decorator for class definitions
 
-Usage:
-    from objectstate.parametric_axes import axes_type, with_axes
-    
-    # Factory function approach
+Usage (class statement syntax - PREFERRED):
+    from objectstate.parametric_axes import AxesBase
+
+    class Step(AxesBase):
+        pass
+
+    class MyStep(Step, axes={"scope": "/pipeline/step_0", "registry": STEP_REGISTRY}):
+        pass
+
+    MyStep.__axes__  # {'scope': '/pipeline/step_0', 'registry': ...}
+
+Usage (factory function):
+    from objectstate.parametric_axes import axes_type
+
     MyStep = axes_type("MyStep", (Step,), {"process": fn},
                        scope="/pipeline/step_0",
                        registry=STEP_REGISTRY)
-    
+
     MyStep.__axes__  # {"scope": "/pipeline/step_0", "registry": ...}
-    
-    # Decorator approach
+
+Usage (decorator - when base class can't be modified):
+    from objectstate.parametric_axes import with_axes
+
     @with_axes(scope="/pipeline/step_0", registry=STEP_REGISTRY)
     class MyStep(Step):
         pass
 """
 
 from typing import Dict, Any, Tuple, Optional, Type
+from types import MappingProxyType
 import weakref
 
 # =============================================================================
@@ -118,23 +132,74 @@ def axes_type(name: str, bases: tuple, namespace: dict, **axes) -> type:
 
 
 # =============================================================================
-# DECORATOR - For class statement syntax
+# AXES BASE CLASS - Enables class statement syntax via __init_subclass__
+# =============================================================================
+
+class AxesBase:
+    """
+    Base class that enables `class Foo(AxesBase, axes={...})` syntax.
+
+    This works TODAY via __init_subclass__ (PEP 487, Python 3.6+).
+    No grammar changes required!
+
+    Usage:
+        class Step(AxesBase):
+            pass
+
+        class MyStep(Step, axes={"scope": "/pipeline/step_0"}):
+            pass
+
+        MyStep.__axes__  # {'scope': '/pipeline/step_0'}
+
+    Inheritance:
+        Axes are inherited and merged per-key using MRO order.
+        Child axes override parent axes for the same key.
+    """
+    __axes__: MappingProxyType = MappingProxyType({})
+
+    def __init_subclass__(cls, axes: Optional[Dict[str, Any]] = None, **kwargs):
+        super().__init_subclass__(**kwargs)
+
+        # Collect axes from parent classes (MRO order, first wins)
+        parent_axes: Dict[str, Any] = {}
+        for parent in cls.__mro__[1:]:
+            if hasattr(parent, '__axes__'):
+                for k, v in parent.__axes__.items():
+                    if k not in parent_axes:
+                        parent_axes[k] = v
+
+        # Child axes override parent axes
+        if axes:
+            parent_axes.update(axes)
+
+        # Store as immutable mapping
+        cls.__axes__ = MappingProxyType(parent_axes)
+
+        # Also attach individual axes as __<name>__ for convenience
+        for axis_name, axis_value in parent_axes.items():
+            setattr(cls, f"__{axis_name}__", axis_value)
+
+
+# =============================================================================
+# DECORATOR - For class statement syntax (alternative to AxesBase)
 # =============================================================================
 
 def with_axes(**axes):
     """
     Decorator to attach axes to a class definition.
-    
-    This is the workaround syntax until Python supports:
-        class MyStep(Step, scope="/pipeline/step_0"):
-            pass
-    
+
+    Alternative to inheriting from AxesBase. Use when you can't modify
+    the base class.
+
     Usage:
         @with_axes(scope="/pipeline/step_0", registry=STEP_REGISTRY)
         class MyStep(Step):
             pass
-        
+
         MyStep.__axes__  # {"scope": "/pipeline/step_0", "registry": ...}
+
+    Note: Prefer `class MyStep(Step, axes={...})` syntax when Step
+    inherits from AxesBase - it's cleaner and doesn't require a decorator.
     """
     def decorator(cls: type) -> type:
         # Recreate the class with AxesMeta
