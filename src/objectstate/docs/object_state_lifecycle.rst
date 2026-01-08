@@ -4,7 +4,7 @@ ObjectState Lifecycle and Contracts
 Purpose
 -------
 
-ObjectState holds the UI MODEL extracted from an object without any PyQt dependencies. ParameterFormManager (PFM) is the VIEW that reads/writes ObjectState; ObjectState persists beyond a single window.
+ObjectState holds the UI MODEL extracted from an object without any UI framework dependencies. Form managers are the VIEW that reads/writes ObjectState; ObjectState persists beyond a single window.
 
 Responsibilities
 ----------------
@@ -24,12 +24,10 @@ Lifecycle
 
    * - Owner
      - Creation/Destruction
-   * - PipelineEditor (steps)
-     - Create when step added; unregister when step removed
-   * - FunctionListWidget (functions)
-     - Create when function added; unregister when function removed
-   * - Config windows (global/pipeline)
-     - Create on window open (or during orchestrator init); persist for lifetime of orchestrator/app
+   * - Parent containers
+     - Create when child added; unregister when child removed
+   * - Config windows
+     - Create on window open; persist for lifetime of application
    * - Nested dataclasses
      - Created recursively inside parent ObjectState; inherit parent scope/context
 
@@ -48,8 +46,8 @@ Key methods:
 Lazy Config Defaults
 --------------------
 
-- Lazy dataclasses created with constructor defaults may carry concrete values (e.g., ``FijiStreamingConfig.port=5565``).
-- If the backing object has not been explicitly set, normalize to ``None`` in ``ObjectState.parameters`` before opening the PFM, then call ``mark_saved()`` to update the baseline so cancel restores placeholders instead of class defaults.
+- Lazy dataclasses created with constructor defaults may carry concrete values (e.g., ``StreamingConfig.port=5565``).
+- If the backing object has not been explicitly set, normalize to ``None`` in ``ObjectState.parameters`` before opening the form, then call ``mark_saved()`` to update the baseline so cancel restores placeholders instead of class defaults.
 
 Live Context Integration
 ------------------------
@@ -61,8 +59,8 @@ Live Context Integration
 Contracts for Callers
 ---------------------
 
-1. Create/register ObjectState at lifecycle ownership points (step added, function added, config window opened).
-2. Pass ObjectState into PFM; do not mutate ``parameters`` directly from the UI—use dispatcher/state updates.
-3. On save: call ``mark_saved()`` (or rely on ``BaseFormDialog.accept``).
-4. On cancel: call ``restore_saved()`` before closing (``BaseFormDialog.reject`` does this).
+1. Create/register ObjectState at lifecycle ownership points (object added, config window opened).
+2. Pass ObjectState into form managers; do not mutate ``parameters`` directly from the UI—use dispatcher/state updates.
+3. On save: call ``mark_saved()`` to capture the current state as the new baseline.
+4. On cancel: call ``restore_saved()`` to revert to the last saved state.
 5. When removing the owning object, unregister from ``ObjectStateRegistry`` to keep live context accurate.

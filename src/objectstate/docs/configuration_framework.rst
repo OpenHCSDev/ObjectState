@@ -1,18 +1,18 @@
 Configuration Framework
 =======================
 
-Traditional configuration systems lose user edits when switching contexts because they can't distinguish between "use parent default" and "I specifically want this value". OpenHCS solves this through lazy dataclass resolution with dual-axis inheritance.
+Traditional configuration systems lose user edits when switching contexts because they can't distinguish between "use parent default" and "I specifically want this value". objectstate solves this through lazy dataclass resolution with dual-axis inheritance.
 
 .. code-block:: python
 
    @auto_create_decorator
    @dataclass(frozen=True)
-   class GlobalPipelineConfig:
+   class GlobalAppConfig:
        num_workers: int = 1
-       
-   # Decorator automatically creates PipelineConfig with None defaults:
-   # class PipelineConfig:
-   #     num_workers: int | None = None  # Inherits from GlobalPipelineConfig
+
+   # Decorator automatically creates AppConfig with None defaults:
+   # class AppConfig:
+   #     num_workers: int | None = None  # Inherits from GlobalAppConfig
 
 The ``@auto_create_decorator`` generates lazy dataclasses where ``None`` means "inherit from parent context" and explicit values mean "use this specific value". This preserves user intent across context switches.
 
@@ -24,14 +24,13 @@ Resolution combines context flattening (X-axis) with MRO traversal (Y-axis):
 .. code-block:: python
 
    # X-axis: Context hierarchy flattened into available_configs dict
-   with config_context(global_config):           # GlobalPipelineConfig
-       with config_context(pipeline_config):     # PipelineConfig  
-           with config_context(step_config):     # StepMaterializationConfig
+   with config_context(global_config):           # GlobalAppConfig
+       with config_context(parent_config):       # ParentConfig
+           with config_context(child_config):    # ChildConfig
                # All three merged into available_configs dict
-               
+
    # Y-axis: MRO determines priority
-   # StepMaterializationConfig.__mro__ = [StepMaterializationConfig, StepWellFilterConfig, 
-   #                                       PathPlanningConfig, WellFilterConfig, ...]
+   # ChildConfig.__mro__ = [ChildConfig, ParentMixin, BaseMixin, ...]
    # Walk MRO, check available_configs for each type, return first concrete value
 
 This enables sophisticated inheritance patterns without hardcoded priority functions - Python's MRO IS the priority.
@@ -39,29 +38,29 @@ This enables sophisticated inheritance patterns without hardcoded priority funct
 Configuration Hierarchy
 -----------------------
 
-OpenHCS has two configuration levels with automatic lazy generation:
+A typical application has two configuration levels with automatic lazy generation:
 
 .. code-block:: python
 
-   # Level 1: GlobalPipelineConfig (application-wide defaults)
+   # Level 1: GlobalAppConfig (application-wide defaults)
    @auto_create_decorator
    @dataclass(frozen=True)
-   class GlobalPipelineConfig:
+   class GlobalAppConfig:
        num_workers: int = 1
-       
-   # Level 2: PipelineConfig (auto-generated with None defaults)
+
+   # Level 2: AppConfig (auto-generated with None defaults)
    # Automatically created by decorator
 
-The decorator system eliminates boilerplate - you only define ``GlobalPipelineConfig`` with concrete defaults, and ``PipelineConfig`` is generated automatically with ``None`` defaults for inheritance.
+The decorator system eliminates boilerplate - you only define ``GlobalAppConfig`` with concrete defaults, and ``AppConfig`` is generated automatically with ``None`` defaults for inheritance.
 
 Nested Configuration Pattern
 ----------------------------
 
-Nested configurations use the ``@global_pipeline_config`` decorator to inject fields into both ``GlobalPipelineConfig`` and ``PipelineConfig``:
+Nested configurations use the ``@global_config`` decorator to inject fields into both ``GlobalAppConfig`` and ``AppConfig``:
 
 .. code-block:: python
 
-   @global_pipeline_config
+   @global_config
    @dataclass(frozen=True)
    class PathPlanningConfig(WellFilterConfig):
        output_dir_suffix: str = ""
@@ -76,82 +75,85 @@ Multiple inheritance enables sibling field inheritance:
 
 .. code-block:: python
 
-   @global_pipeline_config
+   @global_config
    @dataclass(frozen=True)
-   class WellFilterConfig:
-       well_filter: Optional[Union[List[str], str, int]] = None
+   class BaseFilterConfig:
+       filter_value: Optional[Union[List[str], str, int]] = None
 
-   @global_pipeline_config
+   @global_config
    @dataclass(frozen=True)
-   class PathPlanningConfig(WellFilterConfig):
+   class PathConfig(BaseFilterConfig):
        output_dir_suffix: str = ""
        sub_dir: str = ""
 
-   @global_pipeline_config
+   @global_config
    @dataclass(frozen=True)
-   class StepWellFilterConfig(WellFilterConfig):
-       well_filter: Optional[Union[List[str], str, int]] = 1  # Override default
+   class ChildFilterConfig(BaseFilterConfig):
+       filter_value: Optional[Union[List[str], str, int]] = 1  # Override default
 
-   @global_pipeline_config
+   @global_config
    @dataclass(frozen=True)
-   class StepMaterializationConfig(StepWellFilterConfig, PathPlanningConfig):
-       backend: MaterializationBackend = MaterializationBackend.AUTO
-       # Inherits well_filter from StepWellFilterConfig (comes first in MRO)
-       # Inherits output_dir_suffix, sub_dir from PathPlanningConfig
+   class CombinedConfig(ChildFilterConfig, PathConfig):
+       backend: str = "auto"
+       # Inherits filter_value from ChildFilterConfig (comes first in MRO)
+       # Inherits output_dir_suffix, sub_dir from PathConfig
 
-The MRO for ``StepMaterializationConfig`` is:
+The MRO for ``CombinedConfig`` is:
 
 .. code-block:: python
 
-   StepMaterializationConfig.__mro__ = (
-       StepMaterializationConfig,
-       StepWellFilterConfig,
-       PathPlanningConfig,
-       WellFilterConfig,
+   CombinedConfig.__mro__ = (
+       CombinedConfig,
+       ChildFilterConfig,
+       PathConfig,
+       BaseFilterConfig,
        object
    )
 
-When resolving ``well_filter`` field with all values set to ``None``:
+When resolving ``filter_value`` field with all values set to ``None``:
 
-1. Check ``StepMaterializationConfig`` - no override (inherits)
-2. Check ``StepWellFilterConfig`` - has ``well_filter = 1`` → **use this**
-3. Never reaches ``PathPlanningConfig`` or ``WellFilterConfig``
+1. Check ``CombinedConfig`` - no override (inherits)
+2. Check ``ChildFilterConfig`` - has ``filter_value = 1`` → **use this**
+3. Never reaches ``PathConfig`` or ``BaseFilterConfig``
 
 This is pure Python MRO - no custom priority logic needed.
 
-Real-World Usage
----------------
-
-From ``tests/integration/test_main.py``:
+Usage Example
+-------------
 
 .. code-block:: python
 
-   # Create global config with concrete values
-   global_config = GlobalPipelineConfig(
-       num_workers=4,
-       path_planning_config=PathPlanningConfig(
-           sub_dir="processed",
-           output_dir_suffix="_output"
-       )
+   from objectstate import (
+       auto_create_decorator, config_context,
+       ensure_global_config_context, LazyDataclassFactory
    )
-   
-   # Establish global context
-   ensure_global_config_context(GlobalPipelineConfig, global_config)
-   
-   # Create pipeline config with lazy configs for inheritance
-   pipeline_config = PipelineConfig(
-       path_planning_config=LazyPathPlanningConfig(
-           output_dir_suffix="_custom"  # Override global
-           # sub_dir=None (implicit) - inherits "processed" from global
+
+   # Create global config with concrete values
+   global_config = GlobalAppConfig(
+       num_workers=4,
+       database_config=DatabaseConfig(
+           host="localhost",
+           port=5432
        )
    )
 
-The lazy configs resolve through dual-axis algorithm: check ``PipelineConfig`` context first, then ``GlobalPipelineConfig`` context, walking MRO at each level.
+   # Establish global context
+   ensure_global_config_context(GlobalAppConfig, global_config)
+
+   # Create app config with lazy configs for inheritance
+   app_config = AppConfig(
+       database_config=LazyDatabaseConfig(
+           port=5433  # Override global
+           # host=None (implicit) - inherits "localhost" from global
+       )
+   )
+
+The lazy configs resolve through dual-axis algorithm: check ``AppConfig`` context first, then ``GlobalAppConfig`` context, walking MRO at each level.
 
 Framework Modules
 ----------------
 
-The framework is extracted to ``openhcs.config_framework`` for reuse:
+The ``objectstate`` package contains:
 
 **lazy_factory.py**
   Generates lazy dataclasses with ``__getattribute__`` interception
@@ -168,32 +170,30 @@ The framework is extracted to ``openhcs.config_framework`` for reuse:
 **global_config.py**
   Thread-local storage for global configuration
 
-**config.py**
-  Framework initialization - ``set_base_config_type(GlobalPipelineConfig)``
-
-Backward compatibility shims at old paths (``openhcs.core.lazy_config``, etc.) re-export from framework.
+**object_state.py**
+  ObjectState and ObjectStateRegistry for UI state management
 
 Thread-Local Context Synchronization
 ------------------------------------
 
-The configuration framework maintains thread-local context for GlobalPipelineConfig to support lazy placeholder resolution across the application.
+The configuration framework maintains thread-local context for global configuration to support lazy placeholder resolution across the application.
 
 **Context Lifecycle**
 
-1. **Initialization**: Context set during GUI startup
+1. **Initialization**: Context set during application startup
 2. **Live Updates**: Context synchronized with form edits in real-time
 3. **Restoration**: Original context restored on cancel
 4. **Cleanup**: Context cleared on window close
 
-**GUI Integration**
+**UI Integration**
 
-The configuration window implements special handling for GlobalPipelineConfig to ensure thread-local context stays synchronized with form edits. Each field change triggers immediate context update, ensuring placeholder values in other windows update immediately.
+The configuration window implements special handling for global configuration to ensure thread-local context stays synchronized with form edits. Each field change triggers immediate context update, ensuring placeholder values in other windows update immediately.
 
 When users cancel config editing, the original context is restored to prevent context pollution from experimental changes.
 
 **Implementation Details**
 
-See :doc:`code_ui_interconversion` for detailed implementation of context synchronization during code editing.
+Context synchronization ensures that when users edit configuration in one window, dependent windows see the changes immediately through live placeholder resolution.
 
 Token-Based Caching Infrastructure
 -----------------------------------
@@ -207,7 +207,7 @@ The configuration framework includes reusable caching abstractions that eliminat
 
   .. code-block:: python
 
-     from openhcs.config_framework import TokenCache, CacheKey
+     from objectstate import TokenCache, CacheKey
 
      # Create cache with token provider
      cache = TokenCache(lambda: global_token_counter)
@@ -225,7 +225,7 @@ The configuration framework includes reusable caching abstractions that eliminat
 
   .. code-block:: python
 
-     from openhcs.config_framework import SingleValueTokenCache
+     from objectstate import SingleValueTokenCache
 
      cache = SingleValueTokenCache(lambda: global_token_counter)
      value = cache.get_or_compute(lambda: expensive_computation())
@@ -235,20 +235,20 @@ The configuration framework includes reusable caching abstractions that eliminat
 
   .. code-block:: python
 
-     from openhcs.config_framework import LiveContextResolver
+     from objectstate import LiveContextResolver
 
      resolver = LiveContextResolver()
 
      # Resolve attribute through context stack
      resolved_value = resolver.resolve_config_attr(
-         config_obj=step_config,
+         config_obj=child_config,
          attr_name='enabled',
-         context_stack=[global_config, pipeline_config, step],
-         live_context={PipelineConfig: {'num_workers': 4}},
+         context_stack=[global_config, parent_config, child_config],
+         live_context={ParentConfig: {'num_workers': 4}},
          cache_token=current_token
      )
 
-  **Critical None Value Semantics**: The resolver passes ``None`` values through during live context merge. When a field is reset to ``None`` in a form, the ``None`` value overrides the saved concrete value via ``dataclasses.replace()``. This triggers MRO resolution which walks up the context hierarchy to find the inherited value from parent context (e.g., GlobalPipelineConfig).
+  **Critical None Value Semantics**: The resolver passes ``None`` values through during live context merge. When a field is reset to ``None`` in a form, the ``None`` value overrides the saved concrete value via ``dataclasses.replace()``. This triggers MRO resolution which walks up the context hierarchy to find the inherited value from parent context.
 
 **Architecture Principles**
 
@@ -303,7 +303,7 @@ The configuration framework includes a real-time cross-window update system that
 
 The system uses class-level signals (``context_value_changed``, ``context_refreshed``) to propagate changes between windows. When a field changes:
 
-1. Emitting window sends field path (e.g., ``"PipelineConfig.well_filter_config.well_filter"``)
+1. Emitting window sends field path (e.g., ``"ParentConfig.filter_config.filter_value"``)
 2. Receiving windows check if they're affected using MRO inheritance checks
 3. Affected windows extract relevant field name from path for their level
 4. Only fields inheriting from the changed field's type are refreshed
@@ -313,4 +313,4 @@ The system uses class-level signals (``context_value_changed``, ``context_refres
 
 When fields are reset to ``None``, the system tracks them in a ``reset_fields`` set and includes them in live context even though their value is ``None``. The ``LiveContextResolver`` filters out ``None`` values during merge to preserve MRO inheritance semantics.
 
-For detailed information about cross-window update optimization, see :doc:`cross_window_update_optimization`.
+This pattern enables efficient real-time updates across multiple configuration windows.

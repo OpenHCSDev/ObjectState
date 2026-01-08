@@ -1,14 +1,14 @@
 Context Management System
 =========================
 
-Configuration resolution requires tracking which configs are active at any point during execution. OpenHCS uses Python's ``contextvars`` for clean context stacking without frame introspection.
+Configuration resolution requires tracking which configs are active at any point during execution. objectstate uses Python's ``contextvars`` for clean context stacking without frame introspection.
 
 .. code-block:: python
 
-   from openhcs.config_framework import config_context
+   from objectstate import config_context
 
    with config_context(global_config):
-       with config_context(pipeline_config):
+       with config_context(app_config):
            # Both configs available for resolution
            lazy_instance.field_name  # Resolves through both contexts
 
@@ -21,7 +21,7 @@ Contexts stack via ``contextvars.ContextVar``:
 
 .. code-block:: python
 
-   # openhcs/config_framework/context_manager.py
+   # objectstate/context_manager.py
    _config_context_base: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
        'config_context_base',
        default=None
@@ -67,14 +67,14 @@ The ``context_type_stack`` ContextVar tracks which types have been pushed via ``
 
 .. code-block:: python
 
-   from openhcs.config_framework import get_context_type_stack
+   from objectstate import get_context_type_stack
 
    with config_context(global_config):
-       with config_context(pipeline_config):
-           with config_context(step):
+       with config_context(app_config):
+           with config_context(child_config):
                # Query the active type stack
                stack = get_context_type_stack()
-               # Returns: (GlobalPipelineConfig, PipelineConfig, StepType)
+               # Returns: (GlobalAppConfig, AppConfig, ChildConfig)
 
 Hierarchy Registry
 ------------------
@@ -99,13 +99,13 @@ the system maintains a persistent hierarchy registry:
        child_base = _normalize_type(child_type)
        _known_hierarchy.pop(child_base, None)
 
-Form managers register their hierarchy when they open:
+UI managers register their hierarchy when forms open:
 
 .. code-block:: python
 
-   # Step editor opens with context_obj=pipeline_config
+   # Child editor opens with context_obj=parent_config
    register_hierarchy_relationship(type(context_obj), type(object_instance))
-   # Registers: PipelineConfig → Step
+   # Registers: ParentConfig → ChildConfig
 
 This allows ``get_types_before_in_stack()`` to return correct ancestors even when
 the parent window isn't actively inside a ``config_context()`` call.
@@ -113,27 +113,27 @@ the parent window isn't actively inside a ``config_context()`` call.
 Hierarchy Query Functions
 -------------------------
 
-The config framework provides generic functions to query the hierarchy:
+The framework provides generic functions to query the hierarchy:
 
 .. code-block:: python
 
-   from openhcs.config_framework import (
+   from objectstate import (
        get_types_before_in_stack,
        is_ancestor_in_context,
        is_same_type_in_context,
        get_ancestors_from_hierarchy
    )
 
-   # Get all types that come before Step in the hierarchy
-   ancestors = get_types_before_in_stack(Step)
-   # Returns: [PipelineConfig] (uses active stack or registry fallback)
+   # Get all types that come before ChildConfig in the hierarchy
+   ancestors = get_types_before_in_stack(ChildConfig)
+   # Returns: [ParentConfig] (uses active stack or registry fallback)
 
-   # Check if PipelineConfig is an ancestor of Step
-   is_ancestor = is_ancestor_in_context(PipelineConfig, Step)
+   # Check if ParentConfig is an ancestor of ChildConfig
+   is_ancestor = is_ancestor_in_context(ParentConfig, ChildConfig)
    # Returns: True
 
    # Check if two types are equivalent (handles lazy wrappers)
-   is_same = is_same_type_in_context(LazyPipelineConfig, PipelineConfig)
+   is_same = is_same_type_in_context(LazyParentConfig, ParentConfig)
    # Returns: True
 
 These functions first check the active ``context_type_stack``, then fall back to
@@ -210,26 +210,26 @@ The ``available_configs`` dict contains all configs from the context stack, flat
 Usage Pattern
 ------------
 
-From ``tests/integration/test_main.py``:
-
 .. code-block:: python
 
-   # Establish global context
-   global_config = GlobalPipelineConfig(num_workers=4)
-   ensure_global_config_context(GlobalPipelineConfig, global_config)
-   
-   # Create pipeline config
-   pipeline_config = PipelineConfig(
-       path_planning_config=LazyPathPlanningConfig(output_dir_suffix="_custom")
-   )
-   
-   # Stack contexts
-   with config_context(pipeline_config):
-       # Both global and pipeline configs available
-       # Lazy fields resolve through merged context
-       orchestrator = Orchestrator(pipeline_config)
+   from objectstate import config_context, ensure_global_config_context
 
-The orchestrator and all lazy configs inside it can resolve fields through both ``global_config`` and ``pipeline_config`` contexts.
+   # Establish global context
+   global_config = GlobalAppConfig(num_workers=4)
+   ensure_global_config_context(GlobalAppConfig, global_config)
+
+   # Create app config
+   app_config = AppConfig(
+       database_config=LazyDatabaseConfig(port=5433)
+   )
+
+   # Stack contexts
+   with config_context(app_config):
+       # Both global and app configs available
+       # Lazy fields resolve through merged context
+       result = process_with_config(app_config)
+
+All lazy configs can resolve fields through both ``global_config`` and ``app_config`` contexts.
 
 Context Cleanup
 --------------
@@ -253,13 +253,13 @@ framework-agnostic way to build complete context stacks:
 
 .. code-block:: python
 
-   from openhcs.config_framework import build_context_stack
+   from objectstate import build_context_stack
 
    # Build context stack for placeholder resolution
    stack = build_context_stack(
-       context_obj=pipeline_config,           # Parent context
-       overlay=manager.parameters,            # Current form values
-       dataclass_type=manager.dataclass_type, # Type being edited
+       context_obj=parent_config,             # Parent context
+       overlay=current_parameters,            # Current form values
+       dataclass_type=config_type,            # Type being edited
        live_context=live_context_dict,        # Live values from other forms
        root_form_values=root_values,          # Root form's values (for sibling inheritance)
        root_form_type=root_type,              # Root form's dataclass type
@@ -280,26 +280,24 @@ The stack builds layers in order:
 Sibling Inheritance via Root Form
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-When nested configs need to inherit from siblings (e.g., ``well_filter_config``
-inheriting from ``step_well_filter_config``), the root form's values enable this:
+When nested configs need to inherit from siblings, the root form's values enable this:
 
 .. code-block:: python
 
-   # Root form (Step) contains both sibling configs
+   # Root form contains both sibling configs
    root_values = {
-       'step_well_filter_config': LazyStepWellFilterConfig(well_filter=123),
-       'well_filter_config': LazyWellFilterConfig(well_filter=None),
+       'base_config': LazyBaseConfig(shared_value=123),
+       'child_config': LazyChildConfig(shared_value=None),  # Inherits from base
        ...
    }
 
-   # When resolving well_filter_config.well_filter:
+   # When resolving child_config.shared_value:
    # 1. stack includes root_values
-   # 2. LazyWellFilterConfig.well_filter resolution walks MRO
-   # 3. Finds StepWellFilterConfig (superclass) in context
-   # 4. Uses step_well_filter_config.well_filter = 123
+   # 2. LazyChildConfig.shared_value resolution walks MRO
+   # 3. Finds BaseConfig (superclass) in context
+   # 4. Uses base_config.shared_value = 123
 
-For non-dataclass roots (e.g., ``FunctionStep``), the function wraps values in
-``SimpleNamespace`` to maintain a unified code path:
+For non-dataclass roots, the function wraps values in ``SimpleNamespace`` to maintain a unified code path:
 
 .. code-block:: python
 
@@ -312,6 +310,4 @@ For non-dataclass roots (e.g., ``FunctionStep``), the function wraps values in
 
    stack.enter_context(config_context(root_instance))
 
-This enables sibling inheritance for any root type, including function step parameters.
-
-See :doc:`field_change_dispatcher` for how the UI uses this for live placeholder updates.
+This enables sibling inheritance for any root type.
