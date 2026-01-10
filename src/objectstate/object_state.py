@@ -2052,6 +2052,7 @@ class ObjectState:
         # Inherited values: need context stack for lazy resolution + provenance
         if inherited_fields:
             from objectstate.dual_axis_resolver import resolve_with_provenance
+            from objectstate.lazy_factory import is_lazy_dataclass as is_lazy
 
             # Use _with_scopes version to enable provenance tracking via context_layer_stack
             ancestor_objects_with_scopes = ObjectStateRegistry.get_ancestor_objects_with_scopes(self.scope_id)
@@ -2073,9 +2074,17 @@ class ObjectState:
                     container_type = self._path_to_type.get(dotted_path)
                     if container_type is None:
                         continue
-                    # Skip non-dataclass container types (e.g., built-in 'function' type
-                    # for primitive parameters of functions - these don't have lazy resolution)
-                    if not is_dataclass(container_type):
+                    # Skip non-lazy container types - only lazy dataclasses have inheritance resolution
+                    # Non-lazy fields with None should stay as None (no resolution)
+                    # Check is_lazy (LazyDataclass subclass) OR _has_lazy_resolution (GlobalPipelineConfig)
+                    is_lazy_type = is_lazy(container_type) or getattr(container_type, '_has_lazy_resolution', False)
+                    if not is_dataclass(container_type) or not is_lazy_type:
+                        # Non-lazy field: just use raw value (None)
+                        old_val = self._live_resolved.get(dotted_path)
+                        raw_val = self.parameters.get(dotted_path)
+                        if old_val != raw_val:
+                            changed_paths.add(dotted_path)
+                        self._live_resolved[dotted_path] = raw_val
                         continue
                     parts = dotted_path.split('.')
                     field_name = parts[-1]
@@ -2154,22 +2163,13 @@ class ObjectState:
     def _compute_signature_diff_fields(self) -> Set[str]:
         """Compute signature-diff set from parameters vs defaults.
 
-        Only includes LEAF fields (those with signature defaults).
-        Nested dataclass container fields are excluded since they're not
-        directly editable values.
-
-        For non-dataclass roots (e.g. AbstractStep): only includes fields INSIDE nested
-        dataclass configs (has '.' in path), not top-level attrs which are set explicitly.
-        For dataclass roots: all fields are trackable.
+        Any field that differs from its signature default is included.
+        Nested dataclass container fields are implicitly excluded since
+        they don't have entries in _signature_defaults (only leaf fields do).
         """
-        obj = self.object_instance
-        obj_type = obj if isinstance(obj, type) else type(obj)
-        is_dataclass_root = is_dataclass(obj_type)
-
         return {
             k for k, v in self.parameters.items()
             if k in self._signature_defaults
-            and (is_dataclass_root or '.' in k)  # dataclass: all fields; non-dataclass: only nested
             and v != self._signature_defaults[k]
         }
 
@@ -2239,6 +2239,7 @@ class ObjectState:
         """
         from objectstate.context_manager import build_context_stack
         from objectstate.dual_axis_resolver import resolve_with_provenance
+        from objectstate.lazy_factory import is_lazy_dataclass as is_lazy
 
         # Get ancestor objects WITH scope_ids for provenance tracking
         # use_saved=True returns object_instance (saved), False returns to_object() (live)
@@ -2290,8 +2291,11 @@ class ObjectState:
                     # Containers are kept in parameters for UI rendering but excluded from
                     # dirty comparison since we compare leaf fields instead
                     pass
-                elif container_type is not None and is_dataclass(container_type):
-                    # Leaf field inside a lazy dataclass - resolve value AND provenance in ONE walk
+                elif container_type is not None and is_dataclass(container_type) and (is_lazy(container_type) or getattr(container_type, '_has_lazy_resolution', False)):
+                    # Leaf field inside a LAZY dataclass - resolve value AND provenance in ONE walk
+                    # CRITICAL: Only resolve for lazy dataclasses! Non-lazy dataclasses with None
+                    # defaults should keep None as-is, not trigger inheritance resolution.
+                    # Check is_lazy (LazyDataclass subclass) OR _has_lazy_resolution (GlobalPipelineConfig).
                     # This handles both:
                     # - Nested fields (processing_config.group_by) where parts > 1
                     # - Top-level fields on root (num_workers on PipelineConfig) where parts == 1
@@ -2316,7 +2320,8 @@ class ObjectState:
                         f"raw={raw_value!r} -> resolved={resolved_val!r} (type={type(resolved_val).__name__})"
                     )
                 else:
-                    # Non-dataclass field - use raw value directly
+                    # Non-lazy field (regular dataclass, class instance, callable) - use raw value directly
+                    # None stays as None, no inheritance resolution
                     snapshot[dotted_path] = raw_value
 
         # Store provenance for live resolution (not saved)
