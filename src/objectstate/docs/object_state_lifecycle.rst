@@ -53,8 +53,8 @@ Live Context Integration
 ------------------------
 
 - ``ObjectStateRegistry`` stores all states keyed by ``scope_id``.
-- ``LiveContextService.collect()`` walks the registry, calling ``get_user_modified_values()``/``get_user_modified_overlay()`` on each state (and nested states).
-- Consumers merge ancestor scopes via ``merge_ancestor_values(scopes, my_scope)`` and build context stacks for placeholder resolution.
+- ``ObjectStateRegistry.get_ancestor_objects(scope_id, use_saved=False)`` collects ancestor context by walking the scope hierarchy.
+- Consumers use the ancestor objects to build context stacks for placeholder resolution.
 
 Contracts for Callers
 ---------------------
