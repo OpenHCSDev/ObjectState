@@ -9,3 +9,4 @@ This section provides practical examples of using objectstate.
    basic
    dual_axis
    ui
+   atomic_operations
