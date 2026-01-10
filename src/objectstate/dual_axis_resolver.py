@@ -189,11 +189,22 @@ def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any,
     """
     Resolve a field value AND find its provenance source in ONE walk.
 
-    DUAL-AXIS RESOLUTION: Mirrors resolve_field_inheritance but also tracks provenance.
-    1. For each layer (scope) from most to least specific:
-       a. Check if same-type config has concrete value
-       b. Walk MRO to find parent class config with concrete value
-    2. Return first concrete value found, with its scope and source type.
+    TWO-PHASE DUAL-AXIS RESOLUTION:
+
+    Phase 1 - Hierarchy (same-type only, outer to inner):
+      Walk scopes from global → pipeline → step, checking ONLY the same-type config.
+      If a concrete value is found, return it immediately.
+      This gives hierarchy precedence for directly-set values.
+
+    Phase 2 - MRO fallback (only if Phase 1 found nothing):
+      Walk scopes from inner to outer (step → pipeline → global), doing MRO walk.
+      This allows sibling inheritance when no concrete value exists in the hierarchy.
+
+    This ensures:
+    - GlobalPipelineConfig.well_filter_config.well_filter overrides the same field
+      at PipelineConfig level (hierarchy precedence for same-type)
+    - MRO inheritance only applies when NO concrete value exists in the hierarchy
+      for the specific config type being resolved
 
     PERFORMANCE: Single walk instead of separate resolve + provenance calls.
 
@@ -227,55 +238,93 @@ def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any,
         mro_base = _normalize_to_base(mro_class)
         mro_types.append(mro_base)
 
-    # X-AXIS FIRST: Walk layers from most specific to least specific scope
-    # This matches how resolve_field_inheritance gets called - the context stack
-    # is already ordered with most specific scope first.
+    # TWO-PHASE RESOLUTION:
+    # Phase 1: Hierarchy walk (same-type only) - outer to inner
+    # Phase 2: MRO fallback (only if no concrete value in hierarchy)
+    #
+    # This ensures:
+    # - A concrete value at GlobalPipelineConfig.well_filter_config.well_filter overrides
+    #   the same field at PipelineConfig level (hierarchy precedence)
+    # - MRO inheritance only applies when NO concrete value exists in the hierarchy
+    #   for the specific config type being resolved
+
     if field_name == 'well_filter':
         logger.debug(f"🔍 resolve_with_provenance: container={container_base.__name__}, field={field_name}, layers={len(layers)}")
         logger.debug(f"🔍 resolve_with_provenance: mro_types={[t.__name__ for t in mro_types]}")
 
-    # Track fallback provenance - first place we find the field, even if None
-    # This is where the "concrete None" (signature default) comes from
+    # Track fallback provenance - where we find the field (even if None)
     fallback_scope: Optional[str] = None
     fallback_type: Optional[type] = None
 
-    for scope_id, layer_obj in reversed(layers):
+    # Collect layer configs once for both phases
+    all_layer_configs: list[tuple[str, dict]] = []
+    for scope_id, layer_obj in layers:
         if layer_obj is None:
             continue
-
-        # Extract configs from this layer
         try:
             layer_configs = extract_all_configs(layer_obj)
+            all_layer_configs.append((scope_id, layer_configs))
         except Exception:
             continue
 
+    # PHASE 1: Hierarchy walk - check ONLY same-type config at each scope (outer to inner)
+    # This gives hierarchy precedence: global value overrides pipeline/step
+    for scope_id, layer_configs in all_layer_configs:
         if field_name == 'well_filter':
-            logger.debug(f"🔍   Layer scope={scope_id!r}, configs={list(layer_configs.keys())}")
+            logger.debug(f"🔍   Phase 1 - Layer scope={scope_id!r}, checking same-type only")
 
-        # Y-AXIS SECOND: Full MRO walk within this layer (same as resolve_field_inheritance)
-        # First check same-type, then walk MRO parents
-        for mro_type in mro_types:
+        for config_instance in layer_configs.values():
+            instance_base = _normalize_to_base(type(config_instance))
+            if instance_base == container_base:  # Same-type only, no MRO
+                try:
+                    value = object.__getattribute__(config_instance, field_name)
+                    if field_name == 'well_filter':
+                        logger.debug(f"🔍     {container_base.__name__}.{field_name} = {value!r}")
+                    if value is not None:
+                        # Found concrete value in hierarchy - return immediately
+                        return value, scope_id, container_base
+                    else:
+                        # Track fallback - only FIRST occurrence (outermost scope)
+                        # When all values are None, provenance should point to the
+                        # highest/outermost level where the attribute is defined
+                        if fallback_scope is None:
+                            fallback_scope = scope_id
+                            fallback_type = container_base
+                except AttributeError:
+                    continue
+
+    # PHASE 2: MRO fallback - no concrete value in hierarchy, try MRO inheritance
+    # Walk layers from innermost to outermost (most specific scope's MRO first)
+    if field_name == 'well_filter':
+        logger.debug(f"🔍   Phase 2 - MRO fallback, walking layers inner to outer")
+
+    for scope_id, layer_configs in reversed(all_layer_configs):
+        if field_name == 'well_filter':
+            logger.debug(f"🔍   Phase 2 - Layer scope={scope_id!r}, MRO walk")
+
+        # Walk MRO (skip first entry which is container_base, already checked in Phase 1)
+        for mro_type in mro_types[1:]:
             for config_instance in layer_configs.values():
                 instance_base = _normalize_to_base(type(config_instance))
                 if instance_base == mro_type:
                     try:
                         value = object.__getattribute__(config_instance, field_name)
                         if field_name == 'well_filter':
-                            logger.debug(f"🔍     {mro_type.__name__}.{field_name} = {value!r}")
+                            logger.debug(f"🔍     MRO: {mro_type.__name__}.{field_name} = {value!r}")
                         if value is not None:
-                            # Found non-None value - return immediately with provenance
+                            # Found MRO-inherited value
                             return value, scope_id, mro_type
                         else:
-                            # Found None - track as fallback provenance (LAST found wins)
-                            # We want the most ANCESTRAL scope that has the field,
-                            # since that's where the signature default originates.
-                            # Iteration is most-specific first, so keep updating.
-                            fallback_scope = scope_id
-                            fallback_type = mro_type
+                            # Track fallback - KEEP UPDATING to get outermost scope
+                            # (since we're walking inner to outer, last update = outermost)
+                            # Only update if Phase 1 didn't already set a same-type fallback
+                            if fallback_type is None or fallback_type != container_base:
+                                fallback_scope = scope_id
+                                fallback_type = mro_type
                     except AttributeError:
                         continue
 
-    # No non-None found - return None with fallback provenance (where the None came from)
+    # No non-None found - return None with fallback provenance (outermost/highest level)
     return None, fallback_scope, fallback_type
 
 
