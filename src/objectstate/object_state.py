@@ -1636,6 +1636,7 @@ class ObjectState:
         Handles:
         - Dataclasses: uses dataclasses.fields()
         - Regular classes: walks MRO and analyzes __init__ signatures
+        - Callables/functions: uses python_introspect SignatureAnalyzer (if available)
         """
         import inspect
         from dataclasses import fields, MISSING
@@ -1645,6 +1646,24 @@ class ObjectState:
         result = {}
 
         obj_type = obj if isinstance(obj, type) else type(obj)
+
+        # Prefer python_introspect for plain callables (functions/methods) to
+        # preserve full signature info (defaults, doc-derived types).
+        if inspect.isfunction(obj) or inspect.ismethod(obj) or (callable(obj) and not inspect.isclass(obj)):
+            try:
+                from python_introspect import SignatureAnalyzer
+                sig_info = SignatureAnalyzer.analyze(obj)
+                for name, info in sig_info.items():
+                    if name in exclude_params:
+                        continue
+                    result[name] = SimpleNamespace(
+                        param_type=getattr(info, "param_type", Any),
+                        default_value=getattr(info, "default_value", None)
+                    )
+                return result
+            except Exception:
+                # Fall back to stdlib paths below if introspection extension fails
+                result = {}
 
         if is_dataclass(obj_type):
             # Dataclass: use fields()
