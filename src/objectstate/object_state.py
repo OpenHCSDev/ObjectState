@@ -943,19 +943,18 @@ class ObjectStateRegistry:
                         callback(changed_paths)
 
             # PHASE 4: Fire time-travel completion callbacks
-            # Reopen windows for states that:
-            # - Had param changes during time travel, OR
-            # - Have concrete unsaved work (parameters != saved_parameters)
-            if cls._on_time_travel_complete_callbacks and scopes_needing_window:
+            # ALWAYS fire callbacks so subscribers can update their state (e.g., PlateManager
+            # needs to refresh orchestrators dict even when no dirty states).
+            # Pass dirty_states for states with concrete unsaved work.
+            if cls._on_time_travel_complete_callbacks:
                 dirty_states = [
                     (scope_key, cls._states[scope_key])
                     for scope_key in scopes_needing_window
                     if scope_key in cls._states
                 ]
-                if dirty_states:
-                    logger.debug(f"⏱️ TIME_TRAVEL: {len(dirty_states)} states needing window")
-                    for callback in cls._on_time_travel_complete_callbacks:
-                        callback(dirty_states, snapshot.triggering_scope)
+                logger.debug(f"⏱️ TIME_TRAVEL: Firing {len(cls._on_time_travel_complete_callbacks)} callback(s) with {len(dirty_states)} dirty state(s)")
+                for callback in cls._on_time_travel_complete_callbacks:
+                    callback(dirty_states, snapshot.triggering_scope)
         finally:
             cls._in_time_travel = False
 
