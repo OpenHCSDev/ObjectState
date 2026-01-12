@@ -223,7 +223,7 @@ from objectstate.object_state import ObjectState, ObjectStateRegistry
 from objectstate.snapshot_model import Snapshot, StateSnapshot, Timeline
 
 # Parametric axes
-from objectstate.parametric_axes import axes_type, with_axes, get_axes
+from objectstate.parametric_axes import axes_type, get_axes
 
 # Reified generics
 from objectstate.reified_generics import List, Dict, Set, Tuple, Optional
@@ -239,7 +239,6 @@ __all__ += [
     'Timeline',
     # Parametric axes
     'axes_type',
-    'with_axes',
     'get_axes',
     # Reified generics
     'List',
