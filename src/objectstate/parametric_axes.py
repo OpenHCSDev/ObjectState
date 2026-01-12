@@ -1,41 +1,34 @@
 """
 Parametric Axes Prototype - Arbitrary semantic axes for type construction.
 
-This module extends Python's type() to support arbitrary axes beyond (B, S).
-It's a proof-of-concept for PEP proposal: extending type() with **axes.
+This module prototypes extending type() to support arbitrary axes beyond (B, S).
+Proof-of-concept for PEP proposal: extending type() with axes= parameter.
 
-Core concepts:
-- AxesBase: Base class enabling `class Foo(Base, axes={...})` syntax (PREFERRED)
-- AxesMeta: Metaclass that stores arbitrary axes in __axes__
-- axes_type(): Factory function mimicking extended type() signature
-- @with_axes: Decorator for class definitions
+In the real CPython implementation, this logic would be in type.__new__ itself,
+and every class would have __axes__ by default (empty MappingProxyType).
 
-Usage (class statement syntax - PREFERRED):
-    from objectstate.parametric_axes import AxesBase
+This prototype uses AxesMeta as a stand-in for what type() would do natively.
+Once any class uses metaclass=AxesMeta, all subclasses inherit it automatically.
 
-    class Step(AxesBase):
+Usage:
+    from objectstate.parametric_axes import AxesMeta
+
+    # One class in hierarchy uses metaclass=AxesMeta
+    class Step(metaclass=AxesMeta):
         pass
 
-    class MyStep(Step, axes={"scope": "/pipeline/step_0", "registry": STEP_REGISTRY}):
+    # All subclasses automatically get axes support (metaclass inherited)
+    class MyStep(Step, axes={"scope": "/pipeline/step_0"}):
         pass
 
-    MyStep.__axes__  # {'scope': '/pipeline/step_0', 'registry': ...}
+    MyStep.__axes__["scope"]  # "/pipeline/step_0"
 
-Usage (factory function):
-    from objectstate.parametric_axes import axes_type
-
-    MyStep = axes_type("MyStep", (Step,), {"process": fn},
-                       scope="/pipeline/step_0",
-                       registry=STEP_REGISTRY)
-
-    MyStep.__axes__  # {"scope": "/pipeline/step_0", "registry": ...}
-
-Usage (decorator - when base class can't be modified):
-    from objectstate.parametric_axes import with_axes
-
-    @with_axes(scope="/pipeline/step_0", registry=STEP_REGISTRY)
-    class MyStep(Step):
+    # Per-key MRO inheritance works automatically
+    class ChildStep(MyStep, axes={"priority": 1}):
         pass
+
+    ChildStep.__axes__["scope"]     # "/pipeline/step_0" (inherited)
+    ChildStep.__axes__["priority"]  # 1 (defined here)
 """
 
 from typing import Dict, Any, Tuple, Optional, Type
@@ -62,42 +55,46 @@ def _cache_key(origin: type, bases: tuple, axes: dict) -> tuple:
 
 class AxesMeta(type):
     """
-    Metaclass for types with arbitrary semantic axes.
-    
-    Stores axes in __axes__ and provides uniform introspection.
+    Metaclass prototype for type() with axes support.
+
+    In the real CPython implementation, this logic would be in type.__new__,
+    and every class would have __axes__ = MappingProxyType({}) by default.
+
+    This metaclass is the stand-in: once any class uses metaclass=AxesMeta,
+    all subclasses inherit it automatically (standard metaclass inheritance).
     """
-    
+
     def __new__(mcs, name: str, bases: tuple, namespace: dict,
-                __axes__: Optional[Dict[str, Any]] = None, **kwargs):
-        """Create type with axes metadata."""
-        # Handle any remaining kwargs as axes
-        axes = __axes__ or {}
-        axes.update(kwargs)
-        
+                axes: Optional[Dict[str, Any]] = None, **kwargs):
+        """Create type with axes metadata and per-key MRO inheritance."""
         # Create the class
         cls = super().__new__(mcs, name, bases, namespace)
-        
-        # Attach axes metadata
-        cls.__axes__ = axes
-        
-        # Also attach individual axes as __<name>__ for convenience
-        for axis_name, axis_value in axes.items():
+
+        # Per-key MRO inheritance: collect from parents, first wins
+        parent_axes: Dict[str, Any] = {}
+        for parent in cls.__mro__[1:]:
+            for k, v in getattr(parent, '__axes__', {}).items():
+                if k not in parent_axes:
+                    parent_axes[k] = v
+
+        # Child axes override parent axes
+        if axes:
+            parent_axes.update(axes)
+
+        # Store as immutable mapping
+        cls.__axes__ = MappingProxyType(parent_axes)
+
+        # Convenience attributes: __scope__, __registry__, etc.
+        for axis_name, axis_value in parent_axes.items():
             setattr(cls, f"__{axis_name}__", axis_value)
-        
+
         return cls
-    
+
     def __repr__(cls) -> str:
-        if hasattr(cls, '__axes__') and cls.__axes__:
+        if cls.__axes__:
             axes_str = ', '.join(f"{k}={v!r}" for k, v in cls.__axes__.items())
             return f"<class '{cls.__name__}' axes=({axes_str})>"
         return super().__repr__()
-    
-    def __hash__(cls) -> int:
-        """Hash includes axes for type identity."""
-        if hasattr(cls, '__axes__') and cls.__axes__:
-            axes_tuple = tuple(sorted(cls.__axes__.items()))
-            return hash((cls.__name__, cls.__bases__, axes_tuple))
-        return super().__hash__()
 
 
 # =============================================================================
@@ -128,88 +125,7 @@ def axes_type(name: str, bases: tuple, namespace: dict, **axes) -> type:
         MyStep.__axes__["scope"]  # "/pipeline/step_0"
         MyStep.__scope__          # "/pipeline/step_0" (convenience)
     """
-    return AxesMeta(name, bases, namespace, __axes__=axes)
-
-
-# =============================================================================
-# AXES BASE CLASS - Enables class statement syntax via __init_subclass__
-# =============================================================================
-
-class AxesBase:
-    """
-    Base class that enables `class Foo(AxesBase, axes={...})` syntax.
-
-    This works TODAY via __init_subclass__ (PEP 487, Python 3.6+).
-    No grammar changes required!
-
-    Usage:
-        class Step(AxesBase):
-            pass
-
-        class MyStep(Step, axes={"scope": "/pipeline/step_0"}):
-            pass
-
-        MyStep.__axes__  # {'scope': '/pipeline/step_0'}
-
-    Inheritance:
-        Axes are inherited and merged per-key using MRO order.
-        Child axes override parent axes for the same key.
-    """
-    __axes__: MappingProxyType = MappingProxyType({})
-
-    def __init_subclass__(cls, axes: Optional[Dict[str, Any]] = None, **kwargs):
-        super().__init_subclass__(**kwargs)
-
-        # Collect axes from parent classes (MRO order, first wins)
-        parent_axes: Dict[str, Any] = {}
-        for parent in cls.__mro__[1:]:
-            if hasattr(parent, '__axes__'):
-                for k, v in parent.__axes__.items():
-                    if k not in parent_axes:
-                        parent_axes[k] = v
-
-        # Child axes override parent axes
-        if axes:
-            parent_axes.update(axes)
-
-        # Store as immutable mapping
-        cls.__axes__ = MappingProxyType(parent_axes)
-
-        # Also attach individual axes as __<name>__ for convenience
-        for axis_name, axis_value in parent_axes.items():
-            setattr(cls, f"__{axis_name}__", axis_value)
-
-
-# =============================================================================
-# DECORATOR - For class statement syntax (alternative to AxesBase)
-# =============================================================================
-
-def with_axes(**axes):
-    """
-    Decorator to attach axes to a class definition.
-
-    Alternative to inheriting from AxesBase. Use when you can't modify
-    the base class.
-
-    Usage:
-        @with_axes(scope="/pipeline/step_0", registry=STEP_REGISTRY)
-        class MyStep(Step):
-            pass
-
-        MyStep.__axes__  # {"scope": "/pipeline/step_0", "registry": ...}
-
-    Note: Prefer `class MyStep(Step, axes={...})` syntax when Step
-    inherits from AxesBase - it's cleaner and doesn't require a decorator.
-    """
-    def decorator(cls: type) -> type:
-        # Recreate the class with AxesMeta
-        return AxesMeta(
-            cls.__name__,
-            cls.__bases__,
-            dict(cls.__dict__),
-            __axes__=axes
-        )
-    return decorator
+    return AxesMeta(name, bases, namespace, axes=axes)
 
 
 # =============================================================================
