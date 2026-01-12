@@ -383,8 +383,8 @@ class ObjectStateRegistry:
             state = cls._states.get(ancestor_key)
             if state:
                 if use_saved:
-                    # Return saved baseline (object_instance is updated in mark_saved)
-                    objects.append(state.object_instance)
+                    # Return saved baseline (saved_object handles delegation correctly)
+                    objects.append(state.saved_object)
                 else:
                     # Return live state with current edits
                     objects.append(state.to_object())
@@ -420,7 +420,7 @@ class ObjectStateRegistry:
         for ancestor_key in ancestors:
             state = cls._states.get(ancestor_key)
             if state:
-                obj = state.object_instance if use_saved else state.to_object()
+                obj = state.saved_object if use_saved else state.to_object()
                 results.append((ancestor_key, obj))
 
         return results
@@ -1564,6 +1564,18 @@ class ObjectState:
         return self._parent_state.object_instance if self._parent_state else None
 
     @property
+    def saved_object(self) -> Any:
+        """Get the saved baseline object with the correct type.
+
+        For delegation: returns _extraction_target (the delegate/config)
+        For non-delegation: returns object_instance
+
+        This is the object that should be used for context resolution when
+        use_saved=True. It represents the "saved" state of the editable object.
+        """
+        return self._extraction_target
+
+    @property
     def fields(self) -> FieldProxy:
         """Type-safe field access via FieldProxy.
 
@@ -2282,7 +2294,8 @@ class ObjectState:
 
         # Use saved baseline or live state for this object
         if use_saved:
-            current_obj = self.object_instance
+            # Use saved_object which handles delegation correctly
+            current_obj = self.saved_object
         else:
             # CRITICAL: Use to_object() to get CURRENT state with user edits,
             # not object_instance which is the original/saved baseline.
@@ -2392,16 +2405,17 @@ class ObjectState:
                     if is_container:
                         continue
 
-                # Get the old value from object_instance by navigating dotted path
+                # Get the old value by navigating dotted path on the extraction target
+                # For delegation, parameters are on the delegate, not object_instance
                 try:
                     # Navigate through nested attributes for dotted paths
-                    obj = self.object_instance
+                    obj = self._extraction_target
                     parts = param_name.split('.')
                     for part in parts:
                         obj = object.__getattribute__(obj, part)
                     old_instance_values[param_name] = obj
                 except AttributeError:
-                    # Field doesn't exist on object_instance, skip it
+                    # Field doesn't exist on extraction target, skip it
                     pass
 
         # Find parameters that differ between old object_instance and new live parameters
@@ -2419,12 +2433,18 @@ class ObjectState:
             if old_value != new_value:
                 changed_params.append(param_name)
 
-        # CRITICAL: Rebuild object_instance BEFORE invalidating descendants
-        # Descendants will recompute using parent's object_instance, so it must have new values!
+        # CRITICAL: Rebuild extraction target BEFORE invalidating descendants
+        # Descendants will recompute using parent's extraction target, so it must have new values!
         if not isinstance(self.object_instance, type):
-            # Update object_instance with current parameters
-            # to_object() already handles all types uniformly
-            self.object_instance = self.to_object()
+            if self._delegate_attr is not None:
+                # DELEGATION: to_object() returns the delegate and updates it on object_instance
+                # as a side effect. Keep object_instance unchanged (it's the lifecycle object).
+                # _extraction_target is updated to point to the new delegate.
+                self._extraction_target = self.to_object()
+            else:
+                # NON-DELEGATION: to_object() returns the reconstructed object_instance
+                self.object_instance = self.to_object()
+                self._extraction_target = self.object_instance  # Keep in sync
 
         # Update saved parameters (after object_instance update, before invalidation)
         self._saved_parameters = copy.deepcopy(self.parameters)
@@ -2624,8 +2644,15 @@ class ObjectState:
         - Python functions: can't copy, return original
         - Everything else: shallow copy + reconstruct nested dataclass fields
 
-        DELEGATION: If __objectstate_delegate__ was used, reconstructs the delegate
-        and updates it on the original object_instance, returning object_instance.
+        DELEGATION: If __objectstate_delegate__ was used:
+        - Reconstructs the delegate (e.g., pipeline_config)
+        - Updates the delegate attribute on object_instance as a side effect
+        - Returns the reconstructed delegate (NOT object_instance)
+        - Callers needing the lifecycle object (orchestrator) should use state.object_instance
+
+        Returns:
+            The reconstructed object that matches the stored parameters.
+            For delegation, this is the delegate type (config), not the lifecycle object.
         """
         if self._cached_object is not None:
             return self._cached_object
@@ -2694,10 +2721,13 @@ class ObjectState:
             reconstructed = obj_copy
 
         # DELEGATION: If using delegation, update the delegate attribute on object_instance
-        # and return the object_instance (which now has the updated delegate)
+        # as a side effect, but return the reconstructed delegate (not object_instance).
+        # This ensures callers get the correct type (config, not orchestrator).
+        # Callers who need the lifecycle object should access state.object_instance directly.
         if self._delegate_attr is not None:
             setattr(self.object_instance, self._delegate_attr, reconstructed)
-            self._cached_object = self.object_instance
+            # Return the reconstructed delegate - this is what the parameters represent
+            self._cached_object = reconstructed
         else:
             self._cached_object = reconstructed
 
