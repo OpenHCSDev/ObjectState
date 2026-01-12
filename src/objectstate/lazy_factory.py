@@ -5,6 +5,7 @@ import dataclasses
 import logging
 import re
 import sys
+from contextlib import contextmanager
 
 from dataclasses import dataclass, fields, is_dataclass, make_dataclass, MISSING, field
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar, Union
@@ -20,6 +21,9 @@ _base_to_lazy_registry: Dict[Type, Type] = {}
 
 # Cache for lazy classes to prevent duplicate creation
 _lazy_class_cache: Dict[str, Type] = {}
+
+# Registry for lazy types that need constructor patching (for code execution)
+_LAZY_TYPE_REGISTRY: set = set()
 
 
 # =============================================================================
@@ -173,6 +177,42 @@ def register_lazy_type_mapping(lazy_type: Type, base_type: Type) -> None:
 def get_base_type_for_lazy(lazy_type: Type) -> Optional[Type]:
     """Get the base type for a lazy dataclass type."""
     return _lazy_type_registry.get(lazy_type)
+
+
+def register_lazy_type(cls: Type) -> Type:
+    """
+    Register a lazy dataclass type for constructor patching.
+
+    This decorator/function marks a lazy dataclass as needing constructor
+    patching when used in code execution contexts (e.g., exec()).
+
+    Args:
+        cls: The lazy dataclass type to register
+
+    Returns:
+        The class unchanged (allows use as decorator)
+
+    Example:
+        register_lazy_type(LazyPipelineConfig)
+        register_lazy_type(LazyZarrConfig)
+
+        # Or as decorator:
+        @register_lazy_type
+        class LazyCustomConfig:
+            ...
+    """
+    _LAZY_TYPE_REGISTRY.add(cls)
+    return cls
+
+
+def get_registered_lazy_types() -> frozenset:
+    """
+    Get all registered lazy types for constructor patching.
+
+    Returns:
+        Immutable set of registered lazy dataclass types
+    """
+    return frozenset(_LAZY_TYPE_REGISTRY)
 
 
 def is_lazy_dataclass(obj_or_type) -> bool:
@@ -751,6 +791,106 @@ class LazyDataclassFactory:
     # All legacy methods removed - use make_lazy_simple() for all use cases
 
 
+# =============================================================================
+# Constructor Patching for Code Execution
+# =============================================================================
+
+@contextmanager
+def patch_lazy_constructors(types: Optional[List[Type]] = None):
+    """
+    Context manager that patches lazy dataclass constructors to preserve None vs concrete distinction.
+
+    This is critical for code editors that use exec() to create dataclass instances.
+    Without patching, lazy dataclasses would resolve None values to concrete defaults
+    during construction, making it impossible to distinguish between explicitly set
+    values and inherited values.
+
+    The patched constructor sets fields provided in kwargs and otherwise uses the
+    dataclass defaults/default_factory (or None if none exist). This preserves the
+    None vs concrete distinction while still instantiating nested lazy configs.
+
+    Args:
+        types: Optional list of lazy types to patch. If None, uses all registered lazy types.
+
+    Usage:
+        # Register types at module level
+        register_lazy_type(LazyPipelineConfig)
+        register_lazy_type(LazyZarrConfig)
+
+        # Patch during code execution
+        with patch_lazy_constructors():
+            exec(code_string, namespace)
+            # Lazy dataclasses created during exec() will preserve None values
+
+    Example:
+        # Without patching:
+        LazyZarrConfig(compression='gzip')  # All unspecified fields resolve to defaults
+
+        # With patching:
+        with patch_lazy_constructors():
+            LazyZarrConfig(compression='gzip')  # Only compression is set, rest are None
+    """
+    from contextlib import contextmanager
+
+    # Use registered types if not specified
+    lazy_types = list(types) if types else list(_LAZY_TYPE_REGISTRY)
+
+    if not lazy_types:
+        # No types to patch - just yield
+        yield
+        return
+
+    # Store original constructors
+    original_constructors: Dict[Type, callable] = {}
+
+    # Patch all lazy types
+    for lazy_type in lazy_types:
+        # Store original constructor
+        original_constructors[lazy_type] = lazy_type.__init__
+
+        # Create patched constructor that uses raw values
+        def create_patched_init(original_init, dataclass_type):
+            def patched_init(self, **kwargs):
+                # Use raw value approach instead of calling original constructor
+                # This prevents lazy resolution during code execution, while still
+                # honoring default_factory for nested lazy configs so attributes
+                # are not left as None (e.g., path_planning_config).
+                for field in dataclasses.fields(dataclass_type):
+                    if field.name in kwargs:
+                        value = kwargs[field.name]
+                    else:
+                        try:
+                            if field.default_factory is not dataclasses.MISSING:  # type: ignore
+                                value = field.default_factory()  # Preserve lazy placeholder objects
+                            elif field.default is not dataclasses.MISSING:
+                                value = field.default
+                            else:
+                                value = None
+                        except Exception:
+                            value = None
+
+                    object.__setattr__(self, field.name, value)
+
+                # Track explicit fields for downstream logic that inspects this flag
+                object.__setattr__(self, '_explicitly_set_fields', set(kwargs.keys()))
+
+                # Initialize any required lazy dataclass attributes
+                if hasattr(dataclass_type, '_is_lazy_dataclass'):
+                    object.__setattr__(self, '_is_lazy_dataclass', True)
+
+            return patched_init
+
+        # Apply the patch
+        lazy_type.__init__ = create_patched_init(original_constructors[lazy_type], lazy_type)
+
+    try:
+        yield
+    finally:
+        # Restore original constructors
+        for lazy_type, original_init in original_constructors.items():
+            lazy_type.__init__ = original_init
+
+
 # Generic utility functions for clean thread-local storage management
 def ensure_global_config_context(global_config_type: Type, global_config_instance: Any) -> None:
     """Ensure proper thread-local storage setup for any global config type."""
@@ -1174,7 +1314,6 @@ def auto_create_decorator(global_config_class):
     # Lazy global config will be created after field injection
 
     return global_config_class
-
 
 
 

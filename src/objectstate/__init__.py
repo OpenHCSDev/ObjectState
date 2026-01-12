@@ -91,6 +91,10 @@ from objectstate.lazy_factory import (
     get_base_type_for_lazy,
     get_lazy_type_for_base,
     ensure_global_config_context,
+    # Constructor patching for code execution
+    register_lazy_type,
+    get_registered_lazy_types,
+    patch_lazy_constructors,
     # Global config type checking
     GlobalConfigBase,
     GlobalConfigMeta,
@@ -166,6 +170,10 @@ __all__ = [
     'get_base_type_for_lazy',
     'get_lazy_type_for_base',
     'ensure_global_config_context',
+    # Constructor patching for code execution
+    'register_lazy_type',
+    'get_registered_lazy_types',
+    'patch_lazy_constructors',
     # Global config type checking
     'GlobalConfigBase',
     'GlobalConfigMeta',

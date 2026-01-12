@@ -249,6 +249,23 @@ class ObjectStateRegistry:
         return cls._states.get(cls._normalize_scope_id(scope_id))
 
     @classmethod
+    def get_object(cls, scope_id: Optional[str]) -> Optional[Any]:
+        """Get object_instance for a scope, or None if not registered/in limbo.
+
+        Convenience method for the common pattern of accessing the stored object.
+        When ObjectState uses delegation (via __objectstate_delegate__), this still
+        returns the original object_instance (e.g., orchestrator), not the delegate.
+
+        Args:
+            scope_id: The scope identifier.
+
+        Returns:
+            The object_instance if ObjectState is registered, None otherwise.
+        """
+        state = cls.get_by_scope(scope_id)
+        return state.object_instance if state else None
+
+    @classmethod
     def get_all(cls) -> List['ObjectState']:
         """Get all registered ObjectStates.
 
@@ -1413,6 +1430,8 @@ class ObjectState:
 
         Args:
             object_instance: The object being edited (dataclass, callable, etc.)
+                             If the object declares __objectstate_delegate__, parameters
+                             are extracted from that attribute instead (delegation pattern).
             scope_id: Scope identifier for filtering (e.g., "/path::step_0")
             parent_state: Parent ObjectState for nested forms
             exclude_params: Parameters to exclude from extraction (e.g., ['func'] for FunctionStep)
@@ -1424,6 +1443,19 @@ class ObjectState:
         # FunctionPane passes explicit scope_id for functions (step_scope::function_N)
         # Nested dataclass configs may omit scope_id and inherit from parent
         self.scope_id = scope_id if scope_id is not None else (parent_state.scope_id if parent_state else None)
+
+        # === Delegation Support ===
+        # Check if object declares a delegate for parameter extraction.
+        # This allows storing a lifecycle object (e.g., orchestrator) while
+        # extracting editable parameters from a nested config (e.g., pipeline_config).
+        delegate_attr = getattr(type(object_instance), '__objectstate_delegate__', None)
+        if delegate_attr:
+            self._extraction_target = getattr(object_instance, delegate_attr)
+            self._delegate_attr = delegate_attr
+            logger.debug(f"ObjectState delegation: extracting from '{delegate_attr}' attribute")
+        else:
+            self._extraction_target = object_instance
+            self._delegate_attr = None
 
         # === Flat Storage (NEW - for flattened architecture) ===
         self._path_to_type: Dict[str, type] = {}  # Maps dotted paths to their container types
@@ -1438,12 +1470,14 @@ class ObjectState:
         # e.g., FunctionStep excludes 'func' but we need it for to_object()
         self._exclude_param_names: List[str] = list(exclude_params or [])  # For restore_saved()
         self._excluded_params: Dict[str, Any] = {}
+        extraction_target = self._extraction_target
         for param_name in self._exclude_param_names:
-            if hasattr(object_instance, param_name):
-                self._excluded_params[param_name] = getattr(object_instance, param_name)
+            if hasattr(extraction_target, param_name):
+                self._excluded_params[param_name] = getattr(extraction_target, param_name)
 
         # Flatten parameter extraction - walk nested dataclasses recursively
-        self._extract_all_parameters_flat(object_instance, prefix='', exclude_params=self._exclude_param_names)
+        # Uses _extraction_target (delegate) instead of object_instance for delegation support
+        self._extract_all_parameters_flat(extraction_target, prefix='', exclude_params=self._exclude_param_names)
 
         # NOTE: Signature defaults are now populated by _extract_all_parameters_flat()
         # for all fields including nested ones (flattened dotted paths).
@@ -2589,6 +2623,9 @@ class ObjectState:
         UNIFIED: Works for ANY object_instance type.
         - Python functions: can't copy, return original
         - Everything else: shallow copy + reconstruct nested dataclass fields
+
+        DELEGATION: If __objectstate_delegate__ was used, reconstructs the delegate
+        and updates it on the original object_instance, returning object_instance.
         """
         if self._cached_object is not None:
             return self._cached_object
@@ -2597,10 +2634,13 @@ class ObjectState:
         # Works for dataclass, non-dataclass class instances, AND functions
         import copy
 
+        # For delegation, work with the extraction target (delegate), not object_instance
+        target = self._extraction_target
+
         # Collect ALL top-level field updates from self.parameters
         # This includes both primitive fields AND nested dataclass fields
         field_updates = {}
-        root_type = type(self.object_instance)
+        root_type = type(target)
         for field_name in self._path_to_type:
             if '.' not in field_name:
                 # Check if this field's TYPE is a dataclass (not the instance value)
@@ -2626,29 +2666,40 @@ class ObjectState:
                     value = self.parameters.get(field_name)
                     field_updates[field_name] = value
 
+        # Reconstruct the target object (either object_instance or delegate)
+        reconstructed = None
+
         # Python functions can't be copied, but we CAN update their attributes
         # This is critical for MRO resolution to see edited config values
-        if type(self.object_instance).__name__ == 'function':
+        if type(target).__name__ == 'function':
             for field_name, field_value in field_updates.items():
-                setattr(self.object_instance, field_name, field_value)
-            self._cached_object = self.object_instance
-        elif is_dataclass(self.object_instance):
+                setattr(target, field_name, field_value)
+            reconstructed = target
+        elif is_dataclass(target):
             # CRITICAL: Use replace_raw to preserve raw None values!
             # dataclasses.replace triggers lazy resolution via __getattribute__,
             # which resolves None -> concrete defaults and breaks inheritance.
             from objectstate.lazy_factory import replace_raw
-            self._cached_object = replace_raw(self.object_instance, **field_updates)
+            reconstructed = replace_raw(target, **field_updates)
         else:
             # Non-dataclass class instance - shallow copy + setattr
-            obj_copy = copy.copy(self.object_instance)
-            obj_type = type(self.object_instance)
+            obj_copy = copy.copy(target)
+            obj_type = type(target)
             for field_name, field_value in field_updates.items():
                 # Skip read-only properties (those without setters)
                 prop = getattr(obj_type, field_name, None)
                 if isinstance(prop, property) and prop.fset is None:
                     continue
                 setattr(obj_copy, field_name, field_value)
-            self._cached_object = obj_copy
+            reconstructed = obj_copy
+
+        # DELEGATION: If using delegation, update the delegate attribute on object_instance
+        # and return the object_instance (which now has the updated delegate)
+        if self._delegate_attr is not None:
+            setattr(self.object_instance, self._delegate_attr, reconstructed)
+            self._cached_object = self.object_instance
+        else:
+            self._cached_object = reconstructed
 
         return self._cached_object
 
@@ -2663,8 +2714,8 @@ class ObjectState:
         """
         # Determine the type to reconstruct
         if not prefix:
-            # Root level - use object_instance type
-            obj_type = type(self.object_instance)
+            # Root level - use extraction target type (handles delegation)
+            obj_type = type(self._extraction_target)
         else:
             # Nested level - look up type from _path_to_type
             obj_type = self._path_to_type.get(prefix)
