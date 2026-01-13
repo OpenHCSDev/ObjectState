@@ -387,7 +387,7 @@ class ObjectStateRegistry:
                     objects.append(state.saved_object)
                 else:
                     # Return live state with current edits
-                    objects.append(state.to_object())
+                    objects.append(state.to_object(update_delegate=False))
 
         return objects
 
@@ -420,7 +420,7 @@ class ObjectStateRegistry:
         for ancestor_key in ancestors:
             state = cls._states.get(ancestor_key)
             if state:
-                obj = state.saved_object if use_saved else state.to_object()
+                obj = state.saved_object if use_saved else state.to_object(update_delegate=False)
                 results.append((ancestor_key, obj))
 
         return results
@@ -1460,6 +1460,7 @@ class ObjectState:
         # === Flat Storage (NEW - for flattened architecture) ===
         self._path_to_type: Dict[str, type] = {}  # Maps dotted paths to their container types
         self._cached_object: Optional[Any] = None  # Cached result of to_object()
+        self._cached_object_applied: bool = False  # True if cached delegate was applied to object_instance
 
         # Extract parameters using FLAT extraction (dotted paths)
         # This replaces the old UnifiedParameterAnalyzer + _create_nested_states() approach
@@ -1826,6 +1827,7 @@ class ObjectState:
         # SELF-INVALIDATION: Mark this field as needing recompute in our own cache
         self._invalid_fields.add(param_name)
         self._cached_object = None  # Invalidate cached reconstructed object
+        self._cached_object_applied = False
 
         # GLOBAL CONFIG EXCEPTION: Update LIVE thread-local FIRST, BEFORE invalidating descendants!
         # This is critical: descendants re-resolve during invalidation, so they need to see
@@ -2105,7 +2107,7 @@ class ObjectState:
             # CRITICAL: Use to_object() to get CURRENT state with user edits,
             # not object_instance which is the original/saved baseline.
             # This ensures sibling field inheritance sees updated values.
-            current_obj = self.to_object()
+            current_obj = self.to_object(update_delegate=False)
 
             stack = build_context_stack(
                 object_instance=current_obj,
@@ -2299,7 +2301,7 @@ class ObjectState:
         else:
             # CRITICAL: Use to_object() to get CURRENT state with user edits,
             # not object_instance which is the original/saved baseline.
-            current_obj = self.to_object()
+            current_obj = self.to_object(update_delegate=False)
 
         # Build context stack ONCE with scope_ids for provenance tracking
         # CRITICAL: use_live must match use_saved to ensure global config layer
@@ -2440,10 +2442,10 @@ class ObjectState:
                 # DELEGATION: to_object() returns the delegate and updates it on object_instance
                 # as a side effect. Keep object_instance unchanged (it's the lifecycle object).
                 # _extraction_target is updated to point to the new delegate.
-                self._extraction_target = self.to_object()
+                self._extraction_target = self.to_object(update_delegate=True)
             else:
                 # NON-DELEGATION: to_object() returns the reconstructed object_instance
-                self.object_instance = self.to_object()
+                self.object_instance = self.to_object(update_delegate=True)
                 self._extraction_target = self.object_instance  # Keep in sync
 
         # Update saved parameters (after object_instance update, before invalidation)
@@ -2508,18 +2510,30 @@ class ObjectState:
                 leaf_field_name = param_name.split('.')[-1] if '.' in param_name else param_name
                 changed_params_with_types.append((param_name, container_type, leaf_field_name))
 
-        # Clear and re-extract from object_instance (the saved version)
-        # CRITICAL: Pass exclude_params to ensure excluded fields stay excluded
-        # Do this BEFORE invalidating descendants so they see restored values
+        # Clear and re-extract from the saved baseline
+        # CRITICAL: For delegation, extract from the delegate (pipeline_config), not the lifecycle object.
+        # This keeps flat parameters aligned with the form's target object after window close/reopen.
+        # Also refresh _extraction_target in case the delegate attribute was replaced externally.
         self.parameters.clear()
         self._path_to_type.clear()
-        self._extract_all_parameters_flat(self.object_instance, prefix='', exclude_params=self._exclude_param_names)
+        extraction_target = self._extraction_target
+        if self._delegate_attr is not None:
+            try:
+                extraction_target = getattr(self.object_instance, self._delegate_attr)
+                self._extraction_target = extraction_target
+            except Exception:
+                # Fallback to existing extraction target if delegate access fails
+                extraction_target = self._extraction_target
+        self._extract_all_parameters_flat(extraction_target, prefix='', exclude_params=self._exclude_param_names)
 
         # CRITICAL: Also restore _saved_parameters to match current parameters
         # After restore, parameters == saved (both extracted from object_instance)
         self._saved_parameters = copy.deepcopy(self.parameters)
 
         self.invalidate_cache()
+        # Invalidate cached reconstructed object (may contain unsaved edits)
+        self._cached_object = None
+        self._cached_object_applied = False
 
         # CRITICAL: Recompute _saved_resolved to match the restored state
         # Time travel may have overwritten _saved_resolved with snapshot values,
@@ -2632,7 +2646,7 @@ class ObjectState:
                 # info.default_value is now guaranteed to be the CLASS signature default
                 self._signature_defaults[dotted_path] = info.default_value
 
-    def to_object(self) -> Any:
+    def to_object(self, *, update_delegate: bool = False) -> Any:
         """Reconstruct object from flat parameters with updated nested configs.
 
         BOUNDARY METHOD - EXPENSIVE - only call at system boundaries:
@@ -2646,7 +2660,7 @@ class ObjectState:
 
         DELEGATION: If __objectstate_delegate__ was used:
         - Reconstructs the delegate (e.g., pipeline_config)
-        - Updates the delegate attribute on object_instance as a side effect
+        - If update_delegate=True, updates the delegate attribute on object_instance
         - Returns the reconstructed delegate (NOT object_instance)
         - Callers needing the lifecycle object (orchestrator) should use state.object_instance
 
@@ -2655,6 +2669,13 @@ class ObjectState:
             For delegation, this is the delegate type (config), not the lifecycle object.
         """
         if self._cached_object is not None:
+            if not update_delegate:
+                return self._cached_object
+            if self._delegate_attr is None or self._cached_object_applied:
+                return self._cached_object
+            # Apply cached delegate to lifecycle object when requested
+            setattr(self.object_instance, self._delegate_attr, self._cached_object)
+            self._cached_object_applied = True
             return self._cached_object
 
         # UNIFIED: reconstruct nested dataclass fields
@@ -2725,11 +2746,16 @@ class ObjectState:
         # This ensures callers get the correct type (config, not orchestrator).
         # Callers who need the lifecycle object should access state.object_instance directly.
         if self._delegate_attr is not None:
-            setattr(self.object_instance, self._delegate_attr, reconstructed)
+            if update_delegate:
+                setattr(self.object_instance, self._delegate_attr, reconstructed)
+                self._cached_object_applied = True
+            else:
+                self._cached_object_applied = False
             # Return the reconstructed delegate - this is what the parameters represent
             self._cached_object = reconstructed
         else:
             self._cached_object = reconstructed
+            self._cached_object_applied = True
 
         return self._cached_object
 
