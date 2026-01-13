@@ -40,10 +40,10 @@ docs = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/trissim/objectstate"
+Homepage = "https://github.com/OpenHCSDev/objectstate"
 Documentation = "https://objectstate.readthedocs.io"
-Repository = "https://github.com/trissim/objectstate"
-Issues = "https://github.com/trissim/objectstate/issues"
+Repository = "https://github.com/OpenHCSDev/objectstate"
+Issues = "https://github.com/OpenHCSDev/objectstate/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/objectstate"]
