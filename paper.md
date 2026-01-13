@@ -163,7 +163,7 @@ This example illustrates how configuration values flow through both the context 
 
 # Research Applications
 
-ObjectState was developed as part of the OpenHCS (Open High-Content Screening) project to manage complex imaging pipeline configurations with hundreds of parameters across multiple processing stages. The framework has proven effective in scenarios requiring:
+ObjectState was developed as part of the OpenHCS (Open High-Content Screening) project to manage complex imaging pipeline configurations with hundreds of parameters across multiple processing stages. The framework was recently extracted from the OpenHCS monorepo as a standalone package, where it underwent extensive development and production use before being released independently as the monorepo is decomposed into focused, reusable components. The framework has proven effective in scenarios requiring:
 
 - Interactive parameter tuning with immediate visual feedback
 - Experiment branching to compare different configuration strategies
@@ -180,7 +180,7 @@ Planned enhancements include validation hooks for constraint checking, schema ev
 
 # Acknowledgments
 
-This work was supported by the OpenHCS project. The author thanks the Python community for the robust standard library that made this implementation possible.
+This work was supported by the OpenHCS project. ObjectState was developed within the OpenHCS monorepo over an extended period before being extracted as a standalone package as part of the ongoing decomposition of the monorepo into modular, reusable components. The author thanks the Python community for the robust standard library that made this implementation possible.
 
 # AI Usage Disclosure
 
