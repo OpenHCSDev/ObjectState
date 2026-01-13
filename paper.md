@@ -182,4 +182,8 @@ Planned enhancements include validation hooks for constraint checking, schema ev
 
 This work was supported by the OpenHCS project. The author thanks the Python community for the robust standard library that made this implementation possible.
 
+# AI Usage Disclosure
+
+This paper was drafted with assistance from Claude (Anthropic, claude-sonnet-4-5), which was used to structure the manuscript, synthesize information from the codebase and documentation, generate citations, and format content according to JOSS guidelines. All technical content, architectural decisions, research contributions, and the complete ObjectState software implementation are the original intellectual work of the human author(s) developed without AI assistance.
+
 # References
