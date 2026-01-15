@@ -24,197 +24,86 @@ url: https://objectstate.readthedocs.io
 
 # Summary
 
-`ObjectState` is a pure-Python framework for hierarchical configuration management that combines lazy dataclass resolution with stateful object tracking. The framework addresses the common challenge of managing complex, deeply nested configurations across hierarchical execution contexts (e.g., global → pipeline → step) while maintaining change tracking, dirty detection, and complete undo/redo capabilities. Built entirely on Python's standard library, ObjectState introduces a novel dual-axis inheritance model that resolves configuration values both vertically through context hierarchies (X-axis) and horizontally through class inheritance chains (Y-axis), enabling sophisticated configuration patterns without manual parameter propagation.
+`ObjectState` provides hierarchical configuration management with dual-axis inheritance: values resolve through both context hierarchy (step → pipeline → global) and class inheritance (specialized → base config). Built on Python's standard library with zero dependencies, it combines lazy dataclass resolution with integrated state tracking, dirty detection, and git-style undo/redo.
 
-# Statement of need
+# Statement of Need
 
-Scientific computing workflows and data processing pipelines often involve deeply nested execution contexts with hundreds of configuration parameters that must be shared across multiple levels of abstraction [@Wilson2014; @Jimenez2017]. Traditional approaches force developers to either explicitly pass dozens of parameters through every function call, leading to brittle code with poor maintainability, or resort to global state that violates encapsulation and complicates testing [@Martin2008].
+Scientific workflows often require hundreds of parameters shared across nested execution contexts [@Wilson2014]. Traditional approaches either thread parameters explicitly through every call (brittle) or use global state (untestable) [@Martin2008].
 
-Existing Python configuration libraries such as `Hydra` [@Yadan2019], `OmegaConf` [@Yadan2021], and `pydantic-settings` [@Colvin2023] provide hierarchical configuration management but lack integrated state tracking and change history. Configuration management systems designed for machine learning workflows, such as `ml_collections` [@Google2020] and Sacred [@Greff2017], focus on experiment tracking rather than runtime configuration resolution. None of these solutions provide the dual-axis inheritance model that ObjectState implements, which is essential for handling complex inheritance patterns where configuration values must be resolved across both context boundaries and class hierarchies simultaneously.
+Existing solutions address parts of this: Hydra [@Yadan2019] provides hierarchical composition but not runtime resolution. Sacred [@Greff2017] tracks experiments post-hoc but doesn't determine values at runtime. MobX [@MobX2023] offers reactive state but no inheritance semantics.
 
-ObjectState fills this gap by providing:
+ObjectState uniquely combines:
 
-1. **Dual-axis inheritance**: Configuration values resolve through both context hierarchy (step → pipeline → global) and class inheritance (specialized → base), eliminating the need for manual parameter threading [@Gamma1994].
+1. **Dual-axis inheritance**: Values resolve through context stack *and* class MRO simultaneously
+2. **Integrated state management**: Saved/live state separation with automatic dirty tracking [@Fowler2002]
+3. **Git-like history**: Undo/redo with branching timelines
+4. **Type-safe lazy evaluation**: Standard dataclasses with deferred resolution [@Claessen2000]
 
-2. **Integrated state management**: Every configuration object maintains both saved (baseline) and live (edited) states with automatic dirty tracking, enabling robust change detection without external state stores [@Fowler2002].
+# State of the Field
 
-3. **Git-like history**: Complete undo/redo with branching timelines and time-travel capabilities, allowing developers to experiment with configuration changes and rollback to any previous state [@Spinellis2005].
+| Feature | ObjectState | Hydra | pydantic-settings | MobX | Sacred |
+|---------|:-----------:|:-----:|:-----------------:|:----:|:------:|
+| Dual-axis inheritance | ✓ | — | — | — | — |
+| Context hierarchy | ✓ | ✓ | — | — | — |
+| Class MRO resolution | ✓ | — | — | — | — |
+| Lazy resolution (None sentinel) | ✓ | — | — | — | — |
+| Dirty tracking | ✓ | — | — | ✓ | — |
+| Undo/redo with branching | ✓ | — | — | — | — |
+| Native dataclass support | ✓ | ¹ | ✓ | — | — |
+| Zero dependencies | ✓ | — | — | — | — |
 
-4. **Type-safe lazy evaluation**: Configuration objects use Python dataclasses with full IDE support and type checking, while deferring resolution until runtime [@Claessen2000].
+¹ Uses OmegaConf DictConfig, not native dataclasses.
 
-The framework is particularly valuable for scientific applications requiring complex, deeply nested configurations with interactive parameter adjustment, such as high-content screening workflows, image analysis pipelines, and machine learning experiments where tracking configuration provenance and enabling experimentation are critical.
+Hydra [@Yadan2019] provides hierarchical *composition* but not runtime *resolution*—once composed, values are static. MobX [@MobX2023] offers reactive state without inheritance semantics. Sacred [@Greff2017] captures configuration post-hoc; ObjectState determines values at runtime based on execution context.
 
-# State of the field
+# Software Design
 
-Configuration management in Python has evolved through several paradigms. Early approaches relied on global dictionaries or environment variables [@vanRossum2009], sacrificing type safety and IDE support. The introduction of dataclasses in Python 3.7 [@Smith2018] provided structured configuration with type hints, but lacked hierarchical resolution mechanisms.
+**Lazy Dataclass Factory**: Generates lazy versions of dataclasses using `__getattribute__` interception for deferred resolution.
 
-Modern configuration frameworks can be categorized into three main approaches:
+**Dual-Axis Resolver**: For each field access, traverses the object's MRO checking available contexts for concrete (non-None) values. Uses `contextvars` [@Selivanov2017] for thread-safe context management.
 
-**Hierarchical configuration libraries** like Hydra [@Yadan2019] and OmegaConf [@Yadan2021] provide composition and override capabilities but use custom data structures rather than standard dataclasses, limiting integration with existing type-checking tools. They focus on static configuration loading rather than runtime context resolution.
+**Object State Registry**: Maintains saved/live state separation with automatic dirty tracking and DAG-based undo/redo history.
 
-**Settings management libraries** such as `pydantic-settings` [@Colvin2023] and `python-decouple` [@Sousa2020] excel at loading configuration from multiple sources (files, environment variables, etc.) but lack support for dynamic context hierarchies and change tracking.
-
-**Experiment tracking systems** like Sacred [@Greff2017], MLflow [@Zaharia2018], and Weights & Biases [@Biewald2020] provide comprehensive configuration capture for reproducibility but are designed for post-hoc analysis rather than runtime resolution and interactive modification.
-
-**Reactive state management** libraries such as MobX [@MobX2023] and Redux [@Redux2023] in the JavaScript ecosystem provide observable state with change detection, but focus on UI reactivity rather than hierarchical inheritance. These libraries lack context-based resolution and class inheritance traversal.
-
-## Feature Comparison
-
-Table 1 compares ObjectState with representative frameworks across configuration management, experiment tracking, and reactive state management paradigms.
-
-| Feature | ObjectState | Hydra | pydantic-settings | MobX | Redux | Sacred |
-|---------|:-----------:|:-----:|:-----------------:|:----:|:-----:|:------:|
-| Dual-axis inheritance | ✓ | — | — | — | — | — |
-| Context hierarchy | ✓ | ✓ | — | — | — | — |
-| Class MRO resolution | ✓ | — | — | — | — | — |
-| Lazy resolution (None sentinel) | ✓ | — | — | — | — | — |
-| Dirty tracking | ✓ | — | — | ✓ | — | — |
-| Undo/redo | ✓ | — | — | — | ¹ | — |
-| Branching timelines | ✓ | — | — | — | — | — |
-| Provenance tracking | ✓ | — | — | — | — | ✓ |
-| Native dataclass support | ✓ | ² | ✓ | — | — | — |
-| Zero dependencies | ✓ | — | — | — | — | — |
-| Thread-safe (contextvars) | ✓ | — | — | — | — | — |
-
-¹ Requires external middleware. ² Uses OmegaConf DictConfig, not native dataclasses.
-
-**Key differentiators**: Hydra and OmegaConf provide hierarchical *composition* (merging YAML files) but not runtime *resolution*—once composed, values are static. ObjectState resolves at attribute access time, enabling dynamic context-dependent values. MobX provides reactive state where observables trigger re-renders, but lacks inheritance semantics. Sacred and MLflow capture configuration *post-hoc* for reproducibility; ObjectState determines configuration *at runtime* based on execution context.
-
-ObjectState uniquely combines the structured approach of dataclasses with context-aware resolution inspired by React's Context API [@Facebook2019] and the change tracking patterns from revision control systems [@Spinellis2005]. The dual-axis inheritance model draws inspiration from multiple inheritance resolution in object-oriented languages [@vanRossum1991] but applies it to configuration values across execution contexts, a novel contribution not found in existing frameworks.
-
-The framework's `contextvars`-based implementation [@Selivanov2017] ensures thread-safety without global state pollution, making it suitable for concurrent processing scenarios common in scientific computing. The optional parametric axes prototype extends Python's type system with arbitrary semantic dimensions, contributing to ongoing discussions about Python's type system evolution [@Levkivskyi2016; @vanRossum2014].
-
-# Implementation and Quality Assurance
-
-ObjectState is implemented in pure Python 3.11+ with zero external dependencies, comprising approximately 7,900 lines of production code. The architecture consists of several key components:
-
-**Lazy Dataclass Factory** (`lazy_factory.py`): Dynamically generates lazy versions of dataclasses that defer field resolution to runtime. Uses Python's `__getattribute__` protocol to intercept attribute access and resolve values through the dual-axis resolver. Supports automatic nested dataclass conversion and field injection for modular configuration composition.
-
-**Dual-Axis Resolver** (`dual_axis_resolver.py`): Implements the core MRO-based inheritance algorithm. For each field access, traverses the requesting object's Method Resolution Order (MRO) from most to least specific class, checking available contexts for concrete (non-None) values. Includes targeted cache invalidation to maintain performance while ensuring correctness during parameter updates.
-
-**Context Manager** (`context_manager.py`): Provides `config_context()` context manager using Python's `contextvars` module for clean, thread-safe context management. Supports context stacking, hierarchy registration, and scope-based filtering for complex nested workflows.
-
-**Object State Registry** (`object_state.py`): Maintains a global registry of all configuration objects with automatic dirty tracking. Implements the state separation pattern where each object stores both saved (baseline) and live (current) states, enabling efficient change detection and rollback operations.
-
-**Snapshot Model** (`snapshot_model.py`): Provides immutable snapshot dataclasses for the time-travel system. Implements a Directed Acyclic Graph (DAG) history model analogous to Git's commit graph, supporting branching timelines, time travel to arbitrary points, and complete history serialization to JSON.
-
-**Advanced Prototypes**: The `parametric_axes` module demonstrates extending Python's type system with arbitrary semantic axes beyond the standard `(Base, Self)` tuple, using `__init_subclass__` (PEP 487). The `reified_generics` module provides runtime-accessible type parameters for generic types, addressing limitations in Python's type system.
-
-Quality assurance is maintained through comprehensive testing:
-
-- **Test Coverage**: 100% code coverage across 8 test modules with 200+ unit and integration tests
-- **Type Safety**: Full type annotations with `mypy` static type checking in strict mode
-- **Code Quality**: Automated linting with `ruff` and code formatting with `black`
-- **Documentation**: Complete API documentation hosted on ReadTheDocs with examples and tutorials
-- **Continuous Integration**: Automated testing on Python 3.11, 3.12, and 3.13
-
-The codebase follows established software engineering practices including the Single Responsibility Principle, dependency inversion, and extensive inline documentation. Performance-critical sections use caching strategies with targeted invalidation to balance speed and correctness.
-
-## Availability and Installation
-
-ObjectState is distributed via the Python Package Index (PyPI) and can be installed with:
-
-```bash
-pip install objectstate
-```
-
-The source code is hosted on GitHub at https://github.com/trissim/objectstate under the MIT license, with comprehensive documentation available at https://objectstate.readthedocs.io. The package supports Python 3.11 and later versions, with no external dependencies required.
-
-## Example Usage
-
-The following example demonstrates ObjectState's dual-axis inheritance in a typical scientific computing scenario:
+## Example
 
 ```python
-from dataclasses import dataclass
-from objectstate import (
-    LazyDataclassFactory,
-    config_context,
-    set_base_config_type,
-    ObjectState,
-    ObjectStateRegistry
-)
-
-# Define hierarchical configuration structure
-@dataclass
-class GlobalConfig:
-    num_workers: int = 4
-    output_dir: str = "/tmp"
-    debug: bool = False
-
-@dataclass
-class PipelineConfig:
-    batch_size: int = 32
-    num_workers: int = None  # Inherits from GlobalConfig
-
 @dataclass
 class StepConfig(PipelineConfig):
-    step_name: str = "preprocessing"
-    batch_size: int = None  # Inherits from PipelineConfig
-    num_workers: int = None  # Inherits through dual-axis
+    batch_size: int = None  # None = inherit from context
 
-# Initialize framework
-set_base_config_type(GlobalConfig)
 LazyStepConfig = LazyDataclassFactory.make_lazy_simple(StepConfig)
 
-# Create concrete configurations
-global_cfg = GlobalConfig(num_workers=8, debug=True)
-pipeline_cfg = PipelineConfig(batch_size=64)
-
-# Dual-axis resolution: context hierarchy + class inheritance
 with config_context(global_cfg):
     with config_context(pipeline_cfg):
-        step = LazyStepConfig(step_name="normalization")
+        step = LazyStepConfig()
+        print(step.batch_size)  # 64 (from PipelineConfig in context)
 
-        # Resolves: StepConfig → PipelineConfig → GlobalConfig
-        print(step.num_workers)   # 8 (from GlobalConfig)
-        print(step.batch_size)    # 64 (from PipelineConfig)
-        print(step.debug)         # True (from GlobalConfig)
-
-        # State management with undo/redo
-        state = ObjectState(step, scope_id="/pipeline/step_0")
-        ObjectStateRegistry.register(state)
-
-        # Track changes
+        state = ObjectState(step, scope_id="/step_0")
         state.update_parameter("batch_size", 128)
         print(state.dirty_fields)  # {'batch_size'}
-
-        # Undo/redo support
         ObjectStateRegistry.undo()
         print(step.batch_size)  # 64 (restored)
 ```
 
-This example illustrates how configuration values flow through both the context stack (global → pipeline → step) and the class inheritance chain (StepConfig → PipelineConfig), with automatic change tracking and undo capabilities.
+## Design Principle: None as Sentinel
 
-## Design Principles
+`None` means "resolve from context." This unifies data model and UI behavior:
 
-### None as Universal Sentinel
+- **Data**: `None` triggers dual-axis resolution through context stack and class MRO
+- **UI**: Empty fields display placeholder text showing the live-resolved inherited value
+- **User**: Clear a field to inherit; enter a value to override
 
-ObjectState uses `None` as a universal sentinel indicating "resolve from context." This design choice unifies the data model with user interface behavior:
+The user's mental model ("empty = inherit") maps directly to resolution semantics.
 
-- **Data model**: A field with value `None` triggers dual-axis resolution through the context hierarchy and class MRO
-- **UI integration**: Empty form fields display placeholder text showing the live-resolved inherited value
-- **User interaction**: Clearing a field restores inheritance; entering a concrete value overrides it
+# Research Application
 
-This three-way correspondence eliminates state synchronization complexity. The user's mental model ("empty means inherit, filled means override") maps directly to the underlying resolution semantics. Configuration UIs built on ObjectState can show inherited values in real-time without additional state tracking—the placeholder *is* the resolved value.
+ObjectState was developed for OpenHCS (Open High-Content Screening) to manage imaging pipeline configurations with hundreds of parameters across processing stages. The framework handles:
 
-Traditional configuration systems either display default values (making it impossible to distinguish inherited from explicit) or show empty fields (leaving users uncertain what value will be used). ObjectState's sentinel pattern provides both clarity and control: users see what they will get while retaining the ability to override at any level.
+- Interactive parameter tuning with immediate feedback
+- Experiment branching for comparing configuration strategies
+- Hierarchical override patterns (step inherits from pipeline inherits from global)
 
-# Research Applications
-
-ObjectState was developed as part of the OpenHCS (Open High-Content Screening) project to manage complex imaging pipeline configurations with hundreds of parameters across multiple processing stages. The framework was recently extracted from the OpenHCS monorepo as a standalone package, where it underwent extensive development and production use before being released independently as the monorepo is decomposed into focused, reusable components. The framework has proven effective in scenarios requiring:
-
-- Interactive parameter tuning with immediate visual feedback
-- Experiment branching to compare different configuration strategies
-- Configuration provenance tracking for reproducible science
-- Hierarchical override patterns where specialized steps inherit from global defaults
-
-The dual-axis inheritance model naturally represents the configuration space of scientific workflows where both context hierarchy (which processing stage) and class hierarchy (which algorithm variant) determine parameter values. The integrated state management eliminates an entire class of bugs related to unsaved changes and inconsistent state.
-
-Beyond high-content screening, the framework is applicable to any scientific computing domain requiring hierarchical configuration management, including bioinformatics pipelines, machine learning hyperparameter tuning, simulation workflows, and computational physics applications. The zero-dependency design and pure-stdlib implementation ensure easy integration into existing scientific software stacks.
-
-# Future Directions
-
-Planned enhancements include validation hooks for constraint checking, schema evolution support for versioned configurations, and integration with popular experiment tracking frameworks. The parametric axes prototype may inform future Python Enhancement Proposals (PEPs) for extending the type system with arbitrary semantic dimensions.
+The zero-dependency design ensures easy integration into scientific software stacks.
 
 # Acknowledgments
 
