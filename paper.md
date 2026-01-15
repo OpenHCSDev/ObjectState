@@ -70,7 +70,7 @@ Hydra [@Yadan2019] provides hierarchical *composition* but not runtime *resoluti
 
 ## Beyond Dataclasses: Callable Support
 
-ObjectState handles callables (functions, methods) the same way as dataclasses. When given a callable, it extracts parameters from the function signature:
+ObjectState handles callables (functions, methods) the same way as dataclasses. When given a callable, it extracts parameters from the function signature using Python's `inspect` module:
 
 ```python
 def gaussian_filter(image, sigma=None, preserve_range=None):
@@ -82,6 +82,28 @@ state.update_parameter("sigma", 2.0)
 ```
 
 The `None` sentinel works identically for function kwargs—unset parameters inherit from the context hierarchy. This enables pipeline steps where function parameters participate in the same dual-axis inheritance as dataclass fields.
+
+**Practical Impact**: In OpenHCS, users can register arbitrary Python functions (from scikit-image, CuPy, PyTorch, etc.) as pipeline steps. ObjectState automatically extracts their parameters and makes them configurable through the same hierarchical inheritance system as dataclass fields. A user can set a global default for `sigma`, override it per-pipeline, and override it again per-step—all without modifying the function itself.
+
+## Provenance Tracking
+
+Every parameter value is tagged with its source:
+
+```python
+state.get_parameter_with_provenance("sigma")
+# Returns: (2.0, "step_config")
+```
+
+This enables:
+- **UI Feedback**: Show users where a value came from (e.g., "inherited from pipeline config")
+- **Debugging**: Trace why a parameter has a particular value
+- **Dirty Tracking**: Distinguish between user-set and inherited values
+
+The provenance system is the foundation for the GUI's visual feedback—empty fields show inherited values in gray, while user-set values appear in bold.
+
+**Implementation Details**: Provenance is tracked via a parallel dictionary structure that mirrors the parameter structure. When a parameter is resolved through the inheritance chain, the resolution function records which scope level provided the final value. This allows the UI to display not just the value, but also its source, enabling users to understand the configuration hierarchy at a glance.
+
+**Example**: A user sees `sigma = 2.0 (from pipeline config)` in the UI. They can click to see that the step config has no override, the plate config has no override, but the pipeline config sets it to 2.0. This transparency is critical for debugging configuration issues in complex pipelines.
 
 ## Example
 
@@ -124,13 +146,25 @@ The user's mental model ("empty = inherit") maps directly to resolution semantic
 
 # Research Application
 
-ObjectState was developed for OpenHCS (Open High-Content Screening) to manage imaging pipeline configurations with hundreds of parameters across processing stages. The framework handles:
+ObjectState was developed for OpenHCS (Open High-Content Screening), an open-source platform for automated microscopy image analysis. OpenHCS pipelines process thousands of images per experiment, each requiring configuration across multiple scopes:
 
-- Interactive parameter tuning with immediate feedback
-- Experiment branching for comparing configuration strategies
-- Hierarchical override patterns (step inherits from pipeline inherits from global)
+**Global Scope**: Default parameters for all plates (e.g., `num_workers=8`, `output_dir="/results"`)
 
-The zero-dependency design ensures easy integration into scientific software stacks.
+**Plate Scope**: Per-plate overrides (e.g., `num_workers=4` for a specific plate with memory constraints)
+
+**Pipeline Scope**: Per-pipeline overrides (e.g., `compression="gzip"` for Zarr output on this pipeline only)
+
+**Step Scope**: Per-processing-step overrides (e.g., `sigma=2.0` for Gaussian filtering in this step)
+
+Without ObjectState, each scope level would require explicit parameter passing through 20+ function calls. With ObjectState, configuration resolves automatically: a step's `sigma` parameter first checks the step config, then the pipeline config, then the plate config, then global defaults—all transparently.
+
+**Interactive Parameter Tuning**: The GUI allows users to edit parameters in real-time. When a user clears a field (sets it to `None`), the UI immediately shows the inherited value via provenance tracking. When they type a value, it overrides the inheritance chain. This unifies the user's mental model ("empty = inherit") with the data model.
+
+**Experiment Branching**: ObjectState's git-like undo/redo with branching timelines enables users to compare configuration strategies. A user can configure a pipeline, save it, then time-travel back and try a different configuration, creating a branching history. This is more powerful than traditional undo/redo for exploratory parameter tuning.
+
+**Dirty Tracking**: The framework maintains both saved and live state. When a user edits a parameter, it's marked dirty. The UI shows visual feedback (flash animations) for modified fields. Users can save changes (updating the baseline) or restore to the last saved state without losing the history.
+
+The zero-dependency design ensures easy integration into scientific software stacks without adding heavyweight dependencies.
 
 # Acknowledgments
 
