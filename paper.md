@@ -107,7 +107,7 @@ The zero-dependency design ensures easy integration into scientific software sta
 
 # Acknowledgments
 
-This work was supported by the OpenHCS project. ObjectState was developed within the OpenHCS monorepo over an extended period before being extracted as a standalone package as part of the ongoing decomposition of the monorepo into modular, reusable components. The author thanks the Python community for the robust standard library that made this implementation possible.
+This work was supported in part by the Fournier lab at the Montreal Neurological Institute, McGill University. ObjectState was developed within the OpenHCS project before being extracted as a standalone package.
 
 # AI Usage Disclosure
 
