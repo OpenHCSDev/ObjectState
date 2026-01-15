@@ -10,7 +10,7 @@ tags:
   - lazy evaluation
 authors:
   - name: Tristan Simas
-    orcid: 0000-0000-0000-0000  # TODO: Replace with actual ORCID
+    orcid: 0000-0002-6526-3149
     equal-contrib: true
     affiliation: 1
 affiliations:
@@ -55,6 +55,30 @@ Modern configuration frameworks can be categorized into three main approaches:
 **Settings management libraries** such as `pydantic-settings` [@Colvin2023] and `python-decouple` [@Sousa2020] excel at loading configuration from multiple sources (files, environment variables, etc.) but lack support for dynamic context hierarchies and change tracking.
 
 **Experiment tracking systems** like Sacred [@Greff2017], MLflow [@Zaharia2018], and Weights & Biases [@Biewald2020] provide comprehensive configuration capture for reproducibility but are designed for post-hoc analysis rather than runtime resolution and interactive modification.
+
+**Reactive state management** libraries such as MobX [@MobX2023] and Redux [@Redux2023] in the JavaScript ecosystem provide observable state with change detection, but focus on UI reactivity rather than hierarchical inheritance. These libraries lack context-based resolution and class inheritance traversal.
+
+## Feature Comparison
+
+Table 1 compares ObjectState with representative frameworks across configuration management, experiment tracking, and reactive state management paradigms.
+
+| Feature | ObjectState | Hydra | pydantic-settings | MobX | Redux | Sacred |
+|---------|:-----------:|:-----:|:-----------------:|:----:|:-----:|:------:|
+| Dual-axis inheritance | ✓ | — | — | — | — | — |
+| Context hierarchy | ✓ | ✓ | — | — | — | — |
+| Class MRO resolution | ✓ | — | — | — | — | — |
+| Lazy resolution (None sentinel) | ✓ | — | — | — | — | — |
+| Dirty tracking | ✓ | — | — | ✓ | — | — |
+| Undo/redo | ✓ | — | — | — | ¹ | — |
+| Branching timelines | ✓ | — | — | — | — | — |
+| Provenance tracking | ✓ | — | — | — | — | ✓ |
+| Native dataclass support | ✓ | ² | ✓ | — | — | — |
+| Zero dependencies | ✓ | — | — | — | — | — |
+| Thread-safe (contextvars) | ✓ | — | — | — | — | — |
+
+¹ Requires external middleware. ² Uses OmegaConf DictConfig, not native dataclasses.
+
+**Key differentiators**: Hydra and OmegaConf provide hierarchical *composition* (merging YAML files) but not runtime *resolution*—once composed, values are static. ObjectState resolves at attribute access time, enabling dynamic context-dependent values. MobX provides reactive state where observables trigger re-renders, but lacks inheritance semantics. Sacred and MLflow capture configuration *post-hoc* for reproducibility; ObjectState determines configuration *at runtime* based on execution context.
 
 ObjectState uniquely combines the structured approach of dataclasses with context-aware resolution inspired by React's Context API [@Facebook2019] and the change tracking patterns from revision control systems [@Spinellis2005]. The dual-axis inheritance model draws inspiration from multiple inheritance resolution in object-oriented languages [@vanRossum1991] but applies it to configuration values across execution contexts, a novel contribution not found in existing frameworks.
 
@@ -160,6 +184,20 @@ with config_context(global_cfg):
 ```
 
 This example illustrates how configuration values flow through both the context stack (global → pipeline → step) and the class inheritance chain (StepConfig → PipelineConfig), with automatic change tracking and undo capabilities.
+
+## Design Principles
+
+### None as Universal Sentinel
+
+ObjectState uses `None` as a universal sentinel indicating "resolve from context." This design choice unifies the data model with user interface behavior:
+
+- **Data model**: A field with value `None` triggers dual-axis resolution through the context hierarchy and class MRO
+- **UI integration**: Empty form fields display placeholder text showing the live-resolved inherited value
+- **User interaction**: Clearing a field restores inheritance; entering a concrete value overrides it
+
+This three-way correspondence eliminates state synchronization complexity. The user's mental model ("empty means inherit, filled means override") maps directly to the underlying resolution semantics. Configuration UIs built on ObjectState can show inherited values in real-time without additional state tracking—the placeholder *is* the resolved value.
+
+Traditional configuration systems either display default values (making it impossible to distinguish inherited from explicit) or show empty fields (leaving users uncertain what value will be used). ObjectState's sentinel pattern provides both clarity and control: users see what they will get while retaining the ability to override at any level.
 
 # Research Applications
 
