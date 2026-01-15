@@ -120,11 +120,15 @@ Git-like DAG history with branching timelines:
 ```python
 from objectstate import ObjectStateRegistry
 
-# Undo/redo (automatically recorded on parameter changes)
-ObjectStateRegistry.undo()
-ObjectStateRegistry.redo()
+# Time travel (automatically recorded on parameter changes)
+ObjectStateRegistry.time_travel_back()   # Go one step back in history
+ObjectStateRegistry.time_travel_forward()  # Go one step forward in history
 
-# Batch multiple changes into one undo step
+# Note: ObjectState uses time-travel semantics (like Git), not traditional undo/redo.
+# You can navigate to any point in history and make new changes (creating branches).
+# This is more powerful than undo/redo for complex workflows.
+
+# Batch multiple changes into one snapshot
 with ObjectStateRegistry.atomic("add item"):
     ObjectStateRegistry.register(item_state)
     parent_state.update_parameter("items", new_items)
