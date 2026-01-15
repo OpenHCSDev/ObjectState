@@ -98,15 +98,17 @@ with config_context(global_cfg):
         print(step.batch_size)  # 64 (from PipelineConfig in context)
 
         # Provenance: where did this value come from?
+        from objectstate.dual_axis_resolver import resolve_with_provenance
         value, scope, source_type = resolve_with_provenance(
             StepConfig, "batch_size"
         )
         # scope="/pipeline", source_type=PipelineConfig
 
         state = ObjectState(step, scope_id="/step_0")
+        ObjectStateRegistry.register(state)
         state.update_parameter("batch_size", 128)
         print(state.dirty_fields)  # {'batch_size'}
-        ObjectStateRegistry.undo()
+        ObjectStateRegistry.time_travel_back()
         print(step.batch_size)  # 64 (restored)
 ```
 
