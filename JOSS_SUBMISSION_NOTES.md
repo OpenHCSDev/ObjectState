@@ -172,4 +172,5 @@ For questions about the JOSS submission:
 
 ## Version History
 
+- 2026-01-15: Updated with repository metadata and equal-contrib field
 - 2026-01-13: Initial JOSS paper draft created
