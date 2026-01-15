@@ -283,13 +283,8 @@ def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any,
                     if value is not None:
                         # Found concrete value in hierarchy - return immediately
                         return value, scope_id, container_base
-                    else:
-                        # Track fallback - only FIRST occurrence (outermost scope)
-                        # When all values are None, provenance should point to the
-                        # highest/outermost level where the attribute is defined
-                        if fallback_scope is None:
-                            fallback_scope = scope_id
-                            fallback_type = container_base
+                    # Don't set fallback here - let Phase 2 walk MRO to find
+                    # the highest type that defines this field
                 except AttributeError:
                     continue
 
@@ -302,8 +297,9 @@ def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any,
         if field_name == 'well_filter':
             logger.debug(f"🔍   Phase 2 - Layer scope={scope_id!r}, MRO walk")
 
-        # Walk MRO (skip first entry which is container_base, already checked in Phase 1)
-        for mro_type in mro_types[1:]:
+        # Walk MRO - check ALL types including container_base
+        # Phase 1 only checked for non-None; we need to track fallback for None case
+        for mro_type in mro_types:
             for config_instance in layer_configs.values():
                 instance_base = _normalize_to_base(type(config_instance))
                 if instance_base == mro_type:
@@ -317,14 +313,13 @@ def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any,
                         else:
                             # Track fallback - KEEP UPDATING to get outermost scope
                             # (since we're walking inner to outer, last update = outermost)
-                            # Only update if Phase 1 didn't already set a same-type fallback
-                            if fallback_type is None or fallback_type != container_base:
-                                fallback_scope = scope_id
-                                fallback_type = mro_type
+                            # Always update so we walk up MRO even when all values are None
+                            fallback_scope = scope_id
+                            fallback_type = mro_type
                     except AttributeError:
                         continue
 
-    # No non-None found - return None with fallback provenance (outermost/highest level)
+    # No non-None found - return None with fallback provenance (outermost/highest MRO type)
     return None, fallback_scope, fallback_type
 
 

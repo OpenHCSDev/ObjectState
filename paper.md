@@ -47,6 +47,8 @@ ObjectState uniquely combines:
 | Context hierarchy | ✓ | ✓ | — | — | — |
 | Class MRO resolution | ✓ | — | — | — | — |
 | Lazy resolution (None sentinel) | ✓ | — | — | — | — |
+| Callable parameter inheritance | ✓ | — | — | — | — |
+| Provenance tracking | ✓ | — | — | — | — |
 | Dirty tracking | ✓ | — | — | ✓ | — |
 | Undo/redo with branching | ✓ | — | — | — | — |
 | Native dataclass support | ✓ | ¹ | ✓ | — | — |
@@ -62,7 +64,24 @@ Hydra [@Yadan2019] provides hierarchical *composition* but not runtime *resoluti
 
 **Dual-Axis Resolver**: For each field access, traverses the object's MRO checking available contexts for concrete (non-None) values. Uses `contextvars` [@Selivanov2017] for thread-safe context management.
 
+**Provenance Tracking**: Resolution returns not just the value but its source—which scope and type provided it. This enables UI features like placeholder text showing where inherited values originate.
+
 **Object State Registry**: Maintains saved/live state separation with automatic dirty tracking and DAG-based undo/redo history.
+
+## Beyond Dataclasses: Callable Support
+
+ObjectState handles callables (functions, methods) the same way as dataclasses. When given a callable, it extracts parameters from the function signature:
+
+```python
+def gaussian_filter(image, sigma=None, preserve_range=None):
+    ...
+
+# ObjectState extracts {sigma: None, preserve_range: None} from signature
+state = ObjectState(gaussian_filter, scope_id="/plate::step_0::func_0")
+state.update_parameter("sigma", 2.0)
+```
+
+The `None` sentinel works identically for function kwargs—unset parameters inherit from the context hierarchy. This enables pipeline steps where function parameters participate in the same dual-axis inheritance as dataclass fields.
 
 ## Example
 
@@ -78,6 +97,12 @@ with config_context(global_cfg):
         step = LazyStepConfig()
         print(step.batch_size)  # 64 (from PipelineConfig in context)
 
+        # Provenance: where did this value come from?
+        value, scope, source_type = resolve_with_provenance(
+            StepConfig, "batch_size"
+        )
+        # scope="/pipeline", source_type=PipelineConfig
+
         state = ObjectState(step, scope_id="/step_0")
         state.update_parameter("batch_size", 128)
         print(state.dirty_fields)  # {'batch_size'}
@@ -90,7 +115,7 @@ with config_context(global_cfg):
 `None` means "resolve from context." This unifies data model and UI behavior:
 
 - **Data**: `None` triggers dual-axis resolution through context stack and class MRO
-- **UI**: Empty fields display placeholder text showing the live-resolved inherited value
+- **UI**: Empty fields display placeholder text showing the live-resolved inherited value (via provenance)
 - **User**: Clear a field to inherit; enter a value to override
 
 The user's mental model ("empty = inherit") maps directly to resolution semantics.
