@@ -2540,6 +2540,10 @@ class ObjectState:
         # but after restore_saved(), _saved_resolved should reflect object_instance
         self._saved_resolved = self._compute_resolved_snapshot(use_saved=True)
 
+        # Recompute _live_resolved to reflect any unsaved changes from higher-level ObjectStates
+        # This ensures that unsaved resolved changes from other windows are preserved
+        self._live_resolved = self._compute_resolved_snapshot(use_saved=False)
+
         # NOW invalidate descendant caches for each changed parameter
         # This must happen AFTER restoring parameters so descendants see restored values
         for param_name, container_type, leaf_field_name in changed_params_with_types:
