@@ -1564,6 +1564,62 @@ class ObjectState:
         """Derive context_obj from parent_state (no separate attribute needed)."""
         return self._parent_state.object_instance if self._parent_state else None
 
+    def _check_and_sync_delegate(self) -> bool:
+        """Check if delegate attribute has changed and sync extraction target if needed.
+
+        This implements auto-detection of delegate changes (Option 3 from architectural discussion).
+        When object_instance's delegate attribute is replaced with a new instance (e.g., after
+        rebuild_lazy_config_with_new_global_reference()), this method detects the change and
+        automatically re-extracts parameters from the new delegate.
+
+        Returns:
+            True if delegate was detected as changed and re-extraction occurred, False otherwise.
+        """
+        if self._delegate_attr is None:
+            # Not using delegation - nothing to check
+            return False
+
+        try:
+            current_delegate = getattr(self.object_instance, self._delegate_attr)
+        except AttributeError:
+            # Delegate attribute no longer exists - this is unexpected but handle gracefully
+            logger.warning(
+                f"Delegate attribute '{self._delegate_attr}' no longer exists on "
+                f"{type(self.object_instance).__name__}. Keeping current extraction target."
+            )
+            return False
+
+        # Use identity check (is) not equality (==) to detect if it's a new instance
+        if current_delegate is self._extraction_target:
+            # Delegate hasn't changed - no sync needed
+            return False
+
+        # Delegate has changed to a new instance - sync extraction target and re-extract
+        logger.debug(
+            f"Auto-detected delegate change for ObjectState(scope={self.scope_id!r}): "
+            f"'{self._delegate_attr}' attribute was replaced with new instance. Re-extracting parameters."
+        )
+
+        self._extraction_target = current_delegate
+
+        # Re-extract parameters from new delegate (same logic as refresh_state())
+        self.parameters.clear()
+        self._path_to_type.clear()
+        self._extract_all_parameters_flat(
+            current_delegate,
+            prefix='',
+            exclude_params=self._exclude_param_names
+        )
+
+        # Update saved parameters to match
+        import copy
+        self._saved_parameters = copy.deepcopy(self.parameters)
+
+        # Invalidate caches since parameters changed
+        self.invalidate_cache()
+
+        return True
+
     @property
     def saved_object(self) -> Any:
         """Get the saved baseline object with the correct type.
@@ -1574,6 +1630,8 @@ class ObjectState:
         This is the object that should be used for context resolution when
         use_saved=True. It represents the "saved" state of the editable object.
         """
+        # Auto-detect delegate changes before returning extraction target
+        self._check_and_sync_delegate()
         return self._extraction_target
 
     @property
@@ -1809,6 +1867,9 @@ class ObjectState:
             param_name: Name of parameter to update
             value: New value
         """
+        # Auto-detect delegate changes before parameter access
+        self._check_and_sync_delegate()
+
         if param_name not in self.parameters:
             logger.warning(
                 f"⚠️ update_parameter({param_name!r}) called on ObjectState(scope={self.scope_id!r}) "
@@ -1925,6 +1986,8 @@ class ObjectState:
         Returns:
             Resolved value from _live_resolved snapshot
         """
+        # Auto-detect delegate changes before resolving values
+        self._check_and_sync_delegate()
         self._ensure_live_resolved()
         assert self._live_resolved is not None  # Guaranteed by _ensure_live_resolved
         result = self._live_resolved.get(param_name)
@@ -2046,6 +2109,53 @@ class ObjectState:
         """
         if field_name in self.parameters:
             self._invalid_fields.add(field_name)
+
+    def update_object_instance(self, new_instance: Any) -> None:
+        """Replace object_instance with a new instance and re-extract parameters.
+
+        This is used when the object being edited is replaced externally (e.g., from
+        code mode execution). The ObjectState is updated to point to the new instance
+        and parameters are re-extracted to match the new object's state.
+
+        For delegation cases, this updates _extraction_target. For non-delegation cases,
+        it updates object_instance directly.
+
+        Args:
+            new_instance: The new object instance to extract parameters from
+        """
+        if self._delegate_attr is not None:
+            # Delegation case: verify the new_instance matches the delegate type
+            if type(new_instance) != type(self._extraction_target):
+                logger.warning(
+                    f"Type mismatch in update_object_instance for delegated ObjectState: "
+                    f"expected {type(self._extraction_target).__name__}, got {type(new_instance).__name__}"
+                )
+            self._extraction_target = new_instance
+            # Don't update object_instance for delegation - it's the parent object
+        else:
+            # Non-delegation case: update object_instance directly
+            self.object_instance = new_instance
+            self._extraction_target = new_instance
+
+        # Re-extract parameters from new instance
+        self.parameters.clear()
+        self._path_to_type.clear()
+        self._extract_all_parameters_flat(
+            new_instance,
+            prefix='',
+            exclude_params=self._exclude_param_names
+        )
+
+        # Update saved parameters to match
+        import copy
+        self._saved_parameters = copy.deepcopy(self.parameters)
+
+        # Invalidate caches
+        self.invalidate_cache()
+
+        logger.debug(
+            f"Updated ObjectState(scope={self.scope_id!r}) to new instance of type {type(new_instance).__name__}"
+        )
 
     def _recompute_invalid_fields(self) -> Set[str]:
         """Recompute only the invalid fields, not the entire snapshot.
@@ -2178,6 +2288,8 @@ class ObjectState:
         For ObjectState, this reads directly from self.parameters.
         PFM overrides this to also read from widgets.
         """
+        # Auto-detect delegate changes before accessing parameters
+        self._check_and_sync_delegate()
         return dict(self.parameters)
 
     # ==================== MATERIALIZED DIFFS ====================
@@ -2672,6 +2784,9 @@ class ObjectState:
             The reconstructed object that matches the stored parameters.
             For delegation, this is the delegate type (config), not the lifecycle object.
         """
+        # Auto-detect delegate changes before reconstruction
+        self._check_and_sync_delegate()
+
         if self._cached_object is not None:
             if not update_delegate:
                 return self._cached_object
@@ -2758,6 +2873,13 @@ class ObjectState:
             # Return the reconstructed delegate - this is what the parameters represent
             self._cached_object = reconstructed
         else:
+            # NON-DELEGATION: Update object_instance to point to reconstructed object
+            # This ensures that when to_object() is called (e.g., on window save),
+            # the ObjectState automatically points to the new instance
+            if update_delegate:
+                self.object_instance = reconstructed
+                self._extraction_target = reconstructed
+                logger.debug(f"Auto-updated object_instance to new reconstructed object for scope={self.scope_id!r}")
             self._cached_object = reconstructed
             self._cached_object_applied = True
 
@@ -2836,3 +2958,44 @@ class ObjectState:
             logger.debug(f"🔍 _reconstruct_from_prefix: Reconstructed {prefix} with well_filter={raw_well_filter}")
 
         return result
+
+    def _get_changed_params_with_types(
+        self, old_target: Any, new_target: Any
+    ) -> List[Tuple[str, type, str]]:
+        """
+        Compare old and new extraction targets to find changed parameters.
+
+        Returns a list of tuples: (param_name, container_type, leaf_field_name)
+        """
+        changed_params = []
+
+        # Get all parameter names from the new extraction target
+        for param_name in self.parameters.keys():
+            old_value = self._get_param_value_from_target(old_target, param_name)
+            new_value = self._get_param_value_from_target(new_target, param_name)
+
+            if old_value != new_value:
+                container_type = self._path_to_type.get(param_name, type(self.object_instance))
+                leaf_field_name = param_name.split('.')[-1] if '.' in param_name else param_name
+                changed_params.append((param_name, container_type, leaf_field_name))
+
+        return changed_params
+
+    def _get_param_value_from_target(self, target: Any, param_name: str) -> Any:
+        """
+        Get a parameter value from an extraction target by dotted path.
+
+        Handles nested dataclass attributes.
+        """
+        if target is None:
+            return None
+
+        parts = param_name.split('.')
+        current = target
+
+        for part in parts:
+            if not hasattr(current, part):
+                return None
+            current = getattr(current, part)
+
+        return current
