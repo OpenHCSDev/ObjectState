@@ -114,6 +114,7 @@ Contents
    architecture
    state_management
    undo_redo
+   architectural_fixes
    examples/index
 
 .. toctree::

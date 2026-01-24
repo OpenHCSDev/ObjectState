@@ -392,16 +392,25 @@ class ObjectStateRegistry:
         return objects
 
     @classmethod
-    def get_ancestor_objects_with_scopes(cls, scope_id: Optional[str], use_saved: bool = False) -> List[Tuple[str, Any]]:
+    def get_ancestor_objects_with_scopes(cls, scope_id: Optional[str], use_saved: bool = False, skip_delegate_sync: bool = False) -> List[Tuple[str, Any]]:
         """Get (scope_id, object) tuples from this scope and all ancestors.
 
         Similar to get_ancestor_objects() but includes the scope_id for each object.
         Used for provenance tracking to determine which scope provided a resolved value.
 
+        ARCHITECTURAL NOTE: This method provides object instances for type structure/MRO resolution,
+        NOT for reading current parameter values. Actual parameter values come from the parameters dict.
+        Using object_instance instead of to_object() avoids:
+        - Expensive reconstruction from parameters
+        - Side effects from delegate auto-sync
+        - Re-entrant calls that invalidate caches mid-computation
+
         Args:
             scope_id: The scope to get ancestors for (e.g., "/plate::step_0")
-            use_saved: If True, return saved baseline (object_instance) instead of
-                       live state (to_object()). Used when computing _saved_resolved.
+            use_saved: If True, use saved baseline. If False, use current live state.
+            skip_delegate_sync: If True, access _extraction_target directly without delegate sync.
+                               Use True during cache recomputation to avoid re-entrant invalidation.
+                               Use False (default) when you need current values with auto-sync.
 
         Returns:
             List of (scope_id, object) tuples from ancestor scopes, ordered least→most specific.
@@ -420,7 +429,18 @@ class ObjectStateRegistry:
         for ancestor_key in ancestors:
             state = cls._states.get(ancestor_key)
             if state:
-                obj = state.saved_object if use_saved else state.to_object(update_delegate=False)
+                # Get object - either with or without delegate sync
+                logger.debug(f"🐛 get_ancestor_objects_with_scopes: Getting object for ancestor_key={ancestor_key!r}, skip_delegate_sync={skip_delegate_sync}, use_saved={use_saved}")
+
+                if use_saved:
+                    # For saved baseline, we want object_instance (the original saved state)
+                    # Not reconstructed, no delegate sync needed
+                    obj = state._extraction_target
+                else:
+                    # For live state, reconstruct from current parameters
+                    # Control whether delegate sync happens
+                    obj = state.to_object(update_delegate=False, sync_delegate=not skip_delegate_sync)
+
                 results.append((ancestor_key, obj))
 
         return results
@@ -940,6 +960,9 @@ class ObjectStateRegistry:
                 state._live_provenance = copy.deepcopy(state_snap.provenance)
                 state.parameters = copy.deepcopy(state_snap.parameters)
                 state._saved_parameters = copy.deepcopy(state_snap.saved_parameters)
+                # Back-compat: old snapshots may not include saved_parameters.
+                if state._saved_parameters is None:
+                    state._saved_parameters = copy.deepcopy(state.parameters)
                 state._sync_materialized_state()
 
                 # ALL scopes: include if CONCRETE dirty after restore (unsaved work exists)
@@ -1259,7 +1282,13 @@ class ObjectStateRegistry:
                         saved_resolved=state_data['saved_resolved'],
                         live_resolved=state_data['live_resolved'],
                         parameters=state_data['parameters'],
-                        saved_parameters=state_data.get('saved_parameters', state_data['parameters']),  # Fallback for old snapshots
+                        # Back-compat: old history may omit saved_parameters or explicitly store it as null.
+                        # In either case, treat it as "same as parameters".
+                        saved_parameters=(
+                            state_data.get('saved_parameters')
+                            if state_data.get('saved_parameters') is not None
+                            else state_data['parameters']
+                        ),
                         provenance=state_data['provenance'],
                     )
 
@@ -1603,6 +1632,7 @@ class ObjectState:
         self._extraction_target = current_delegate
 
         # Re-extract parameters from new delegate (same logic as refresh_state())
+        logger.debug(f"🐛 _check_and_sync_delegate: BEFORE clear - parameters is None={self.parameters is None}, _saved_parameters is None={self._saved_parameters is None}")
         self.parameters.clear()
         self._path_to_type.clear()
         self._extract_all_parameters_flat(
@@ -1610,10 +1640,13 @@ class ObjectState:
             prefix='',
             exclude_params=self._exclude_param_names
         )
+        logger.debug(f"🐛 _check_and_sync_delegate: AFTER extract - parameters is None={self.parameters is None}, len={len(self.parameters) if self.parameters else 'N/A'}")
 
         # Update saved parameters to match
         import copy
+        logger.debug(f"🐛 _check_and_sync_delegate: About to copy parameters to _saved_parameters")
         self._saved_parameters = copy.deepcopy(self.parameters)
+        logger.debug(f"🐛 _check_and_sync_delegate: AFTER copy - _saved_parameters is None={self._saved_parameters is None}")
 
         # Invalidate caches since parameters changed
         self.invalidate_cache()
@@ -2211,13 +2244,19 @@ class ObjectState:
             from objectstate.dual_axis_resolver import resolve_with_provenance
             from objectstate.lazy_factory import is_lazy_dataclass as is_lazy
 
-            # Use _with_scopes version to enable provenance tracking via context_layer_stack
-            ancestor_objects_with_scopes = ObjectStateRegistry.get_ancestor_objects_with_scopes(self.scope_id)
+            # Get ancestor objects for context stack building
+            # CRITICAL: Skip delegate sync to avoid re-entrant invalidate_cache() calls
+            # that would destroy _live_resolved while we're computing it.
+            ancestor_objects_with_scopes = ObjectStateRegistry.get_ancestor_objects_with_scopes(
+                self.scope_id,
+                skip_delegate_sync=True
+            )
 
-            # CRITICAL: Use to_object() to get CURRENT state with user edits,
-            # not object_instance which is the original/saved baseline.
-            # This ensures sibling field inheritance sees updated values.
-            current_obj = self.to_object(update_delegate=False)
+            # ARCHITECTURAL FIX: Reconstruct current object from parameters for real-time MRO.
+            # Using object_instance (original saved state) gives stale values, breaking inheritance.
+            # Calling to_object() with sync_delegate=False reconstructs from CURRENT parameters
+            # without triggering delegate sync that would invalidate our cache mid-computation.
+            current_obj = self.to_object(update_delegate=False, sync_delegate=False)
 
             stack = build_context_stack(
                 object_instance=current_obj,
@@ -2432,13 +2471,35 @@ class ObjectState:
         # This ensures saved_resolved represents "what was last saved locally" + ancestor saved values,
         # NOT "current live edits resolved with saved ancestor context".
         # This is key for dirty detection: dirty = live_resolved != saved_resolved
+        #
+        # Robustness: Some older snapshot restores or partial state restores can yield
+        # `_saved_parameters=None`. Avoid crashing ("NoneType has no attribute 'get'")
+        # during save/close flows.
+        logger.debug(f"🐛 _compute_resolved_snapshot: scope={self.scope_id!r}, use_saved={use_saved}, _saved_parameters is None={self._saved_parameters is None}, parameters is None={self.parameters is None}")
+        if use_saved and self._saved_parameters is None:
+            logger.warning(f"🐛 _compute_resolved_snapshot: _saved_parameters is None for scope={self.scope_id!r}, using parameters as fallback")
+            self._saved_parameters = copy.deepcopy(self.parameters)
+        if self.parameters is None:
+            logger.warning(f"🐛 _compute_resolved_snapshot: parameters is None for scope={self.scope_id!r}, initializing to empty dict")
+            self.parameters = {}
+
         params_source = self._saved_parameters if use_saved else self.parameters
+        if params_source is None:
+            logger.error(f"🐛 _compute_resolved_snapshot: params_source is STILL None after guards! scope={self.scope_id!r}, use_saved={use_saved}")
+            params_source = {}
 
         # UNIFIED: Resolve ALL fields in single context stack
         # For each path, check if it has a lazy dataclass container type
+        logger.debug(f"🐛 _compute_resolved_snapshot: About to iterate parameters, params_source type={type(params_source).__name__}, is None={params_source is None}")
         with stack:
             for dotted_path in self.parameters.keys():
-                raw_value = params_source.get(dotted_path)
+                try:
+                    raw_value = params_source.get(dotted_path)
+                except AttributeError as e:
+                    logger.error(f"🐛 _compute_resolved_snapshot: ERROR accessing params_source.get({dotted_path!r})! params_source type={type(params_source).__name__}, is None={params_source is None}, scope={self.scope_id!r}")
+                    logger.error(f"🐛 _compute_resolved_snapshot: _saved_parameters type={type(self._saved_parameters).__name__}, is None={self._saved_parameters is None}")
+                    logger.error(f"🐛 _compute_resolved_snapshot: parameters type={type(self.parameters).__name__}, is None={self.parameters is None}")
+                    raise
                 container_type = self._path_to_type.get(dotted_path)
                 parts = dotted_path.split('.')
 
@@ -2503,6 +2564,7 @@ class ObjectState:
         Invalidation is based on comparing the OLD object_instance (about to be replaced)
         with the NEW self.parameters (live values used for reconstruction).
         """
+        logger.debug(f"🐛 mark_saved: ENTER for scope={self.scope_id!r}, obj_type={type(self.object_instance).__name__}, _saved_parameters is None={self._saved_parameters is None}")
         # Ensure live cache is populated for accurate dirty computation post-save
         self._ensure_live_resolved(notify_flash=False)
 
@@ -2566,9 +2628,11 @@ class ObjectState:
         # NOW invalidate descendant caches AFTER object_instance is updated
         # This ensures descendants see the NEW object_instance when they recompute
         # CRITICAL: Also invalidate saved_resolved cache so descendants recompute their saved baseline
+        logger.debug(f"🔧 mark_saved: Starting invalidation for changed_params={changed_params}, scope={self.scope_id!r}")
         for param_name in changed_params:
             container_type = self._path_to_type.get(param_name, type(self.object_instance))
             leaf_field_name = param_name.split('.')[-1] if '.' in param_name else param_name
+            logger.debug(f"🔧 mark_saved: Invalidating param={param_name}, container_type={container_type.__name__ if hasattr(container_type, '__name__') else type(container_type).__name__}, leaf_field={leaf_field_name}")
 
             ObjectStateRegistry.invalidate_by_type_and_scope(
                 scope_id=self.scope_id,
@@ -2579,7 +2643,9 @@ class ObjectState:
 
         # Compute new saved resolved using SAVED ancestor baselines (use_saved=True)
         # This ensures saved baseline is computed relative to other saved baselines
+        logger.debug(f"🔧 mark_saved: Computing new saved_resolved for scope={self.scope_id!r}")
         new_saved_resolved = self._compute_resolved_snapshot(use_saved=True)
+        logger.debug(f"🔧 mark_saved: New saved_resolved computed, keys={list(new_saved_resolved.keys())[:5]}...")
 
         # Update saved resolved baseline
         self._saved_resolved = new_saved_resolved
@@ -2594,6 +2660,55 @@ class ObjectState:
         # This prevents no-op snapshots (e.g., saving a window where only sibling state changed)
         if changed_params:
             ObjectStateRegistry.record_snapshot("save", self.scope_id)
+
+        # CRITICAL FIX: Propagate saved baseline update to ALL descendant states
+        # When an ancestor's saved baseline changes, all descendants must recompute
+        # their _saved_resolved to reflect the new ancestor saved values. This ensures that
+        # when GlobalPipelineConfig is saved, plates/steps clear their dirty markers (*).
+        logger.debug(f"🔧 mark_saved: Propagating saved baseline to descendants for scope={self.scope_id!r}")
+        logger.debug(f"🔧 mark_saved: Total states in registry: {len(ObjectStateRegistry._states)}")
+        
+        # Collect descendant scopes first to avoid modifying registry during iteration.
+        #
+        # IMPORTANT: Global scope is represented by "" (empty string).
+        # In that case, *every* non-global scope is a descendant, but the naive
+        # prefix check ("" + "::" == "::") matches nothing.
+        changed_scope = ObjectStateRegistry._normalize_scope_id(self.scope_id)
+        if changed_scope == "":
+            # Global baseline change affects ALL other states.
+            descendant_scopes = [
+                s.scope_id for s in ObjectStateRegistry._states.values()
+                if ObjectStateRegistry._normalize_scope_id(s.scope_id) != ""
+            ]
+        else:
+            prefix = changed_scope + "::"
+            descendant_scopes = [
+                s.scope_id for s in ObjectStateRegistry._states.values()
+                if s.scope_id is not None and ObjectStateRegistry._normalize_scope_id(s.scope_id).startswith(prefix)
+            ]
+        logger.debug(f"🔧 mark_saved: Found {len(descendant_scopes)} descendant scopes: {descendant_scopes}")
+        
+        for descendant_scope in descendant_scopes:
+            state = ObjectStateRegistry._states.get(descendant_scope)
+            if state is not None:
+                logger.debug(f"🔧 mark_saved: Processing descendant state scope={descendant_scope!r}, obj_type={type(state.object_instance).__name__}")
+                logger.debug(f"🐛 mark_saved descendant: _saved_parameters is None={state._saved_parameters is None}, parameters is None={state.parameters is None}")
+                # Log dirty fields BEFORE recompute
+                logger.debug(f"🔧 mark_saved: BEFORE recompute - dirty_fields={state._dirty_fields}, _saved_resolved_keys={list(state._saved_resolved.keys())[:3]}")
+                # Recompute descendant's saved_resolved using new ancestor saved values
+                try:
+                    state._saved_resolved = state._compute_resolved_snapshot(use_saved=True)
+                except AttributeError as e:
+                    logger.error(f"🐛 mark_saved descendant: ERROR in _compute_resolved_snapshot for scope={descendant_scope!r}! Error: {e}")
+                    logger.error(f"🐛 mark_saved descendant: state._saved_parameters type={type(state._saved_parameters).__name__}, is None={state._saved_parameters is None}")
+                    logger.error(f"🐛 mark_saved descendant: state.parameters type={type(state.parameters).__name__}, is None={state.parameters is None}")
+                    raise
+                # Sync materialized state so dirty fields are recalculated
+                state._sync_materialized_state()
+                # Log dirty fields AFTER recompute
+                logger.debug(f"🔧 mark_saved: AFTER recompute - dirty_fields={state._dirty_fields}, _saved_resolved_keys={list(state._saved_resolved.keys())[:3]}")
+            else:
+                logger.warning(f"🔧 mark_saved: Descendant scope {descendant_scope!r} not found in registry!")
 
     def restore_saved(self) -> None:
         """Restore parameters to the last saved baseline (from object_instance).
@@ -2615,8 +2730,13 @@ class ObjectState:
         # Find parameters that differ from saved baseline AND capture their container types
         # BEFORE clearing parameters (we need _path_to_type)
         changed_params_with_types = []
+        logger.debug(f"🐛 restore_saved: About to iterate parameters, _saved_parameters type={type(self._saved_parameters).__name__}, is None={self._saved_parameters is None}")
         for param_name, current_value in self.parameters.items():
-            saved_value = self._saved_parameters.get(param_name)
+            try:
+                saved_value = self._saved_parameters.get(param_name)
+            except AttributeError as e:
+                logger.error(f"🐛 restore_saved: ERROR accessing _saved_parameters.get({param_name!r})! _saved_parameters type={type(self._saved_parameters).__name__}, is None={self._saved_parameters is None}, scope={self.scope_id!r}")
+                raise
             if current_value != saved_value:
                 container_type = self._path_to_type.get(param_name, type(self.object_instance))
                 leaf_field_name = param_name.split('.')[-1] if '.' in param_name else param_name
@@ -2762,7 +2882,7 @@ class ObjectState:
                 # info.default_value is now guaranteed to be the CLASS signature default
                 self._signature_defaults[dotted_path] = info.default_value
 
-    def to_object(self, *, update_delegate: bool = False) -> Any:
+    def to_object(self, *, update_delegate: bool = False, sync_delegate: bool = True) -> Any:
         """Reconstruct object from flat parameters with updated nested configs.
 
         BOUNDARY METHOD - EXPENSIVE - only call at system boundaries:
@@ -2780,12 +2900,18 @@ class ObjectState:
         - Returns the reconstructed delegate (NOT object_instance)
         - Callers needing the lifecycle object (orchestrator) should use state.object_instance
 
+        Args:
+            update_delegate: If True, apply reconstructed delegate to object_instance
+            sync_delegate: If True (default), check for delegate changes before reconstruction.
+                          Set to False during cache recomputation to avoid re-entrant invalidation.
+
         Returns:
             The reconstructed object that matches the stored parameters.
             For delegation, this is the delegate type (config), not the lifecycle object.
         """
-        # Auto-detect delegate changes before reconstruction
-        self._check_and_sync_delegate()
+        # Auto-detect delegate changes before reconstruction (unless explicitly disabled)
+        if sync_delegate:
+            self._check_and_sync_delegate()
 
         if self._cached_object is not None:
             if not update_delegate:

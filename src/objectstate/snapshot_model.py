@@ -90,7 +90,13 @@ class Snapshot:
                 saved_resolved=state_data['saved_resolved'],
                 live_resolved=state_data['live_resolved'],
                 parameters=state_data['parameters'],
-                saved_parameters=state_data.get('saved_parameters', state_data['parameters']),  # Fallback for old snapshots
+                # Back-compat: old snapshots may be missing saved_parameters entirely.
+                # Also guard against explicit null saved_parameters in older exported histories.
+                saved_parameters=(
+                    state_data.get('saved_parameters')
+                    if state_data.get('saved_parameters') is not None
+                    else state_data['parameters']
+                ),
                 provenance=state_data['provenance'],
             )
             for scope_id, state_data in data['states'].items()
@@ -137,4 +143,3 @@ class Timeline:
             created_at=data['created_at'],
             description=data['description'],
         )
-
