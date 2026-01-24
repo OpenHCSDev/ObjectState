@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/hieraconf
+      url: https://pypi.org/p/objectstate
 
     steps:
       - name: Checkout code
