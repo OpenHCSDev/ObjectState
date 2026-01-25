@@ -113,6 +113,7 @@ Contents
    quickstart
    architecture
    state_management
+   provenance
    undo_redo
    architectural_fixes
    examples/index

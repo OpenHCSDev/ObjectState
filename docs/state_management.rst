@@ -20,6 +20,7 @@ Core attributes
 - ``_live_resolved``: last resolved values using the *current* ancestor stack
 - ``_saved_resolved``: resolved values at the last explicit save (baseline)
 - ``_saved_parameters``: immutable snapshot of raw parameters at save time
+- ``_live_provenance``: dict tracking which scope provided each inherited field value
 - ``scope_id``: unique key for registry lookup
 
 Saved vs Live
@@ -66,3 +67,4 @@ Notes
 ~~~~~
 - Registry methods are classmethods; the registry is effectively a singleton.
 - History/undo is covered separately in :doc:`undo_redo`.
+- Provenance tracking for inherited fields is covered in :doc:`provenance`.
