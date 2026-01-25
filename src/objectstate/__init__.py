@@ -211,7 +211,7 @@ __all__ = [
     'CacheKey',
 ]
 
-__version__ = '1.0.3'
+__version__ = '1.0.4'
 __author__ = 'OpenHCS Team'
 __description__ = 'Generic configuration framework for lazy dataclass resolution'
 
