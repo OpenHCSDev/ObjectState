@@ -289,35 +289,55 @@ def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any,
                     continue
 
     # PHASE 2: MRO fallback - no concrete value in hierarchy, try MRO inheritance
-    # Walk layers from innermost to outermost (most specific scope's MRO first)
+    #
+    # IMPORTANT SEMANTICS:
+    # MRO order must dominate scope order.
+    #
+    # If a more-specific MRO class has a field set to None at an inner scope, that
+    # means "inherit". We must first check outer scopes for that SAME MRO class
+    # before falling back to later (less-specific) MRO classes at the inner scope.
+    #
+    # Therefore: for each MRO type (most→least specific), scan scopes (inner→outer)
+    # looking for the first non-None value.
     if field_name == 'well_filter':
         logger.debug(f"🔍   Phase 2 - MRO fallback, walking layers inner to outer")
 
-    for scope_id, layer_configs in reversed(all_layer_configs):
-        if field_name == 'well_filter':
-            logger.debug(f"🔍   Phase 2 - Layer scope={scope_id!r}, MRO walk")
+    # Track where the "highest-precedence" field exists even if None, so callers
+    # can still navigate to a sensible provenance target when everything is None.
+    best_fallback_set = False
 
-        # Walk MRO - check ALL types including container_base
-        # Phase 1 only checked for non-None; we need to track fallback for None case
-        for mro_type in mro_types:
+    for mro_type in mro_types:
+        last_scope_for_type: Optional[str] = None
+        saw_type_anywhere = False
+
+        # Walk scopes from inner→outer for this MRO type
+        for scope_id, layer_configs in reversed(all_layer_configs):
             for config_instance in layer_configs.values():
                 instance_base = _normalize_to_base(type(config_instance))
-                if instance_base == mro_type:
-                    try:
-                        value = object.__getattribute__(config_instance, field_name)
-                        if field_name == 'well_filter':
-                            logger.debug(f"🔍     MRO: {mro_type.__name__}.{field_name} = {value!r}")
-                        if value is not None:
-                            # Found MRO-inherited value
-                            return value, scope_id, mro_type
-                        else:
-                            # Track fallback - KEEP UPDATING to get outermost scope
-                            # (since we're walking inner to outer, last update = outermost)
-                            # Always update so we walk up MRO even when all values are None
-                            fallback_scope = scope_id
-                            fallback_type = mro_type
-                    except AttributeError:
-                        continue
+                if instance_base != mro_type:
+                    continue
+
+                saw_type_anywhere = True
+                last_scope_for_type = scope_id  # update as we walk inner→outer (last = outermost)
+
+                try:
+                    value = object.__getattribute__(config_instance, field_name)
+                except AttributeError:
+                    continue
+
+                if field_name == 'well_filter':
+                    logger.debug(f"🔍     MRO: {mro_type.__name__}.{field_name} @ {scope_id!r} = {value!r}")
+
+                if value is not None:
+                    # Found MRO-inherited value
+                    return value, scope_id, mro_type
+
+        # No non-None found for this MRO type across any scope.
+        # Record fallback for the FIRST MRO type that exists anywhere.
+        if (not best_fallback_set) and saw_type_anywhere:
+            best_fallback_set = True
+            fallback_scope = last_scope_for_type
+            fallback_type = mro_type
 
     # No non-None found - return None with fallback provenance (outermost/highest MRO type)
     return None, fallback_scope, fallback_type
