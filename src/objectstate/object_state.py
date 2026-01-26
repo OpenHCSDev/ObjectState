@@ -1495,6 +1495,8 @@ class ObjectState:
         # This replaces the old UnifiedParameterAnalyzer + _create_nested_states() approach
         self.parameters: Dict[str, Any] = {}
         self._signature_defaults: Dict[str, Any] = {}
+        # Maps dotted paths to their descriptions (value may be None when no description exists).
+        self._parameter_descriptions: Dict[str, Optional[str]] = {}
 
         # Store excluded params and their original values for reconstruction
         # e.g., FunctionStep excludes 'func' but we need it for to_object()
@@ -1677,6 +1679,16 @@ class ObjectState:
         """
         return FieldProxy(self, '', type(self.object_instance))
 
+    @property
+    def parameter_descriptions(self) -> Dict[str, Optional[str]]:
+        """Get parameter descriptions for all parameters.
+
+        Returns:
+            Dictionary mapping dotted parameter paths to their descriptions (value may be None).
+            E.g., {'well_filter_config.well_filter': 'Filter wells by...'}
+        """
+        return dict(self._parameter_descriptions)
+
     # === Resolved Change Subscription ===
 
     def on_resolved_changed(self, callback: Callable[[Set[str]], None]) -> None:
@@ -1768,7 +1780,7 @@ class ObjectState:
     def _analyze_parameters(self, obj: Any, exclude_params: Optional[List[str]] = None) -> Dict[str, Any]:
         """Analyze object parameters using pure stdlib introspection.
 
-        Returns dict mapping param_name -> info object with .param_type and .default_value attributes.
+        Returns dict mapping param_name -> info object with .param_type, .default_value, and .description attributes.
 
         Handles:
         - Dataclasses: uses dataclasses.fields()
@@ -1784,23 +1796,38 @@ class ObjectState:
 
         obj_type = obj if isinstance(obj, type) else type(obj)
 
+        # Use the richer UnifiedParameterAnalyzer. This extracts docstring-derived
+        # `description` for dataclass fields and other objects.
+        #
+        # NOTE: python_introspect is a required dependency in OpenHCS; fail loud if missing.
+        from python_introspect import UnifiedParameterAnalyzer
+
+        ua_info = UnifiedParameterAnalyzer.analyze(obj, exclude_params=exclude_params or [])
+        for name, info in ua_info.items():
+            if name in exclude_params:
+                continue
+            result[name] = SimpleNamespace(
+                param_type=getattr(info, "param_type", Any),
+                default_value=getattr(info, "default_value", None),
+                description=getattr(info, "description", None),
+            )
+        return result
+
         # Prefer python_introspect for plain callables (functions/methods) to
-        # preserve full signature info (defaults, doc-derived types).
+        # preserve full signature info (defaults, doc-derived types, descriptions).
         if inspect.isfunction(obj) or inspect.ismethod(obj) or (callable(obj) and not inspect.isclass(obj)):
-            try:
-                from python_introspect import SignatureAnalyzer
-                sig_info = SignatureAnalyzer.analyze(obj)
-                for name, info in sig_info.items():
-                    if name in exclude_params:
-                        continue
-                    result[name] = SimpleNamespace(
-                        param_type=getattr(info, "param_type", Any),
-                        default_value=getattr(info, "default_value", None)
-                    )
-                return result
-            except Exception:
-                # Fall back to stdlib paths below if introspection extension fails
-                result = {}
+            from python_introspect import SignatureAnalyzer
+
+            sig_info = SignatureAnalyzer.analyze(obj)
+            for name, info in sig_info.items():
+                if name in exclude_params:
+                    continue
+                result[name] = SimpleNamespace(
+                    param_type=getattr(info, "param_type", Any),
+                    default_value=getattr(info, "default_value", None),
+                    description=getattr(info, "description", None)
+                )
+            return result
 
         if is_dataclass(obj_type):
             # Dataclass: use fields()
@@ -1812,7 +1839,8 @@ class ObjectState:
                 )
                 result[field.name] = SimpleNamespace(
                     param_type=field.type,
-                    default_value=default
+                    default_value=default,
+                    description=None  # Dataclass fields don't have descriptions in stdlib
                 )
         else:
             # Non-dataclass: walk MRO and analyze __init__ signatures
@@ -1840,7 +1868,8 @@ class ObjectState:
 
                     result[name] = SimpleNamespace(
                         param_type=param_type,
-                        default_value=default
+                        default_value=default,
+                        description=None  # __init__ parameters don't have descriptions in stdlib
                     )
 
         return result
@@ -2365,11 +2394,15 @@ class ObjectState:
         Nested dataclass container fields are implicitly excluded since
         they don't have entries in _signature_defaults (only leaf fields do).
         """
-        return {
-            k for k, v in self.parameters.items()
-            if k in self._signature_defaults
-            and v != self._signature_defaults[k]
-        }
+        result = set()
+        for k, v in self.parameters.items():
+            if k in self._signature_defaults:
+                # Direct dict key access - no special behavior to avoid
+                sig_default = self._signature_defaults[k]
+                is_diff = v != sig_default
+                if is_diff:
+                    result.add(k)
+        return result
 
     def _update_dirty_fields(self) -> Set[str]:
         """Recompute _dirty_fields, return set of fields that changed dirty status.
@@ -2817,7 +2850,7 @@ class ObjectState:
     def _extract_all_parameters_flat(self, obj: Any, prefix: str = '', exclude_params: Optional[List[str]] = None) -> None:
         """Recursively extract parameters into flat dict with dotted paths.
 
-        Populates self.parameters and self._path_to_type with dotted path keys.
+        Populates self.parameters, self._path_to_type, and self._parameter_descriptions with dotted path keys.
 
         Uses pluggable parameter analyzer if available, falls back to stdlib dataclass introspection.
 
@@ -2827,10 +2860,12 @@ class ObjectState:
             exclude_params: List of top-level parameter names to exclude
         """
         exclude_params = exclude_params or []
+        
         obj_type = type(obj)
         is_function = obj_type.__name__ == 'function'
 
-        # Try to use UnifiedParameterAnalyzer if available (OpenHCS), else fall back to stdlib
+        # Delegate signature default extraction to python_introspect (it must derive
+        # defaults from the type/signature and avoid instance attribute reads).
         param_info = self._analyze_parameters(obj, exclude_params if not prefix else [])
 
         for param_name, info in param_info.items():
@@ -2852,6 +2887,11 @@ class ObjectState:
                     current_value = object.__getattribute__(obj, param_name)
                 except AttributeError:
                     current_value = info.default_value
+
+            # Store description entry for the dotted path. Even if the specific
+            # parameter has no description, ensure the dotted key exists so
+            # callers can rely on presence of the full path (value may be None).
+            self._parameter_descriptions[dotted_path] = getattr(info, 'description', None)
 
             # Check if this is a nested dataclass
             # First try from type annotation, then fall back to checking actual value

@@ -23,7 +23,9 @@ classifiers = [
 ]
 keywords = ["configuration", "dataclass", "lazy", "inheritance", "contextvars", "hierarchical"]
 
-dependencies = []
+dependencies = [
+    "python-introspect>=0.1.0",
+]
 
 [project.optional-dependencies]
 dev = [
