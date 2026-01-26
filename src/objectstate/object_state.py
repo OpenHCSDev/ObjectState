@@ -1794,15 +1794,13 @@ class ObjectState:
         exclude_params = exclude_params or []
         result = {}
 
-        obj_type = obj if isinstance(obj, type) else type(obj)
-
-        # Use the richer UnifiedParameterAnalyzer. This extracts docstring-derived
-        # `description` for dataclass fields and other objects.
-        #
         # NOTE: python_introspect is a required dependency in OpenHCS; fail loud if missing.
+        # UnifiedParameterAnalyzer is responsible for correctness guarantees:
+        # - defaults come from type/signature (never from instance)
+        # - current instance values are accessed in a lazy-safe way (if needed)
         from python_introspect import UnifiedParameterAnalyzer
 
-        ua_info = UnifiedParameterAnalyzer.analyze(obj, exclude_params=exclude_params or [])
+        ua_info = UnifiedParameterAnalyzer.analyze(obj, exclude_params=exclude_params)
         for name, info in ua_info.items():
             if name in exclude_params:
                 continue
@@ -1812,22 +1810,6 @@ class ObjectState:
                 description=getattr(info, "description", None),
             )
         return result
-
-        # Prefer python_introspect for plain callables (functions/methods) to
-        # preserve full signature info (defaults, doc-derived types, descriptions).
-        if inspect.isfunction(obj) or inspect.ismethod(obj) or (callable(obj) and not inspect.isclass(obj)):
-            from python_introspect import SignatureAnalyzer
-
-            sig_info = SignatureAnalyzer.analyze(obj)
-            for name, info in sig_info.items():
-                if name in exclude_params:
-                    continue
-                result[name] = SimpleNamespace(
-                    param_type=getattr(info, "param_type", Any),
-                    default_value=getattr(info, "default_value", None),
-                    description=getattr(info, "description", None)
-                )
-            return result
 
         if is_dataclass(obj_type):
             # Dataclass: use fields()
