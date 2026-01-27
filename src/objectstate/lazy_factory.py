@@ -947,7 +947,21 @@ def resolve_lazy_configurations_for_serialization(data: Any) -> Any:
             field_value = getattr(resolved_data, f.name)
             logger.debug(f"Resolving {type(resolved_data).__name__}.{f.name} = {type(field_value).__name__}")
             resolved_fields[f.name] = resolve_lazy_configurations_for_serialization(field_value)
-        return type(resolved_data)(**resolved_fields)
+        cls = type(resolved_data)
+
+        # Optional hook: allow dataclasses with custom constructors to control rebuild.
+        rebuild = getattr(cls, "__objectstate_rebuild__", None)
+        if callable(rebuild):
+            return rebuild(**resolved_fields)
+
+        # Default: try normal construction, then fall back to field-wise construction.
+        try:
+            return cls(**resolved_fields)
+        except TypeError:
+            obj = cls.__new__(cls)
+            for k, v in resolved_fields.items():
+                object.__setattr__(obj, k, v)
+            return obj
 
     elif isinstance(resolved_data, dict):
         # Process dictionary values recursively
@@ -1314,7 +1328,6 @@ def auto_create_decorator(global_config_class):
     # Lazy global config will be created after field injection
 
     return global_config_class
-
 
 
 
