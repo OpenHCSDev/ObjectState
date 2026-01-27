@@ -19,6 +19,7 @@
 - **Thread-Safe**: Thread-local global configuration storage
 - **100% Generic**: No application-specific dependencies
 - **Pure Stdlib**: No external dependencies
+- **Custom Dataclass Rebuild Hook**: For `init=False` dataclasses during lazy serialization (`__objectstate_rebuild__`)
 
 ## Quick Start
 

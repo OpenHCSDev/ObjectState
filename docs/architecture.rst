@@ -177,10 +177,47 @@ Currently, fields are resolved on each access. For performance-critical applicat
 
    .. code-block:: python
 
-      with config_context(config):
-          lazy = LazyConfig()
-          concrete = lazy.to_base_config()
-          # concrete now has all values materialized
+       with config_context(config):
+           lazy = LazyConfig()
+           concrete = lazy.to_base_config()
+           # concrete now has all values materialized
+
+Dataclass Reconstruction Hook
+-----------------------------
+
+ObjectState sometimes needs to reconstruct dataclass instances from their resolved field values
+(for example in :py:func:`objectstate.lazy_factory.resolve_lazy_configurations_for_serialization`).
+
+By default, ObjectState rebuilds a dataclass as::
+
+   type(obj)(**resolved_fields)
+
+If your dataclass uses a custom constructor (common when using ``@dataclass(init=False)``),
+the default reconstruction may fail because the constructor does not accept the dataclass field
+names as keyword arguments.
+
+To support this cleanly, a dataclass may define a rebuild hook:
+
+.. code-block:: python
+
+   from dataclasses import dataclass
+
+   @dataclass(frozen=True, init=False)
+   class MySpec:
+       outputs: tuple[object, ...]
+       primary: int
+
+       def __init__(self, *outputs: object, primary: int = 0):
+           object.__setattr__(self, "outputs", tuple(outputs))
+           object.__setattr__(self, "primary", primary)
+
+       @classmethod
+       def __objectstate_rebuild__(cls, **fields):
+           # fields is the resolved dataclass field mapping
+           return cls(*fields["outputs"], primary=fields.get("primary", 0))
+
+When present, ObjectState will call ``__objectstate_rebuild__(**resolved_fields)`` instead of
+calling ``cls(**resolved_fields)``.
 
 Type System
 -----------
