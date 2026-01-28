@@ -1082,6 +1082,12 @@ FIELD_ABBREVIATIONS_REGISTRY: Dict[Type, Dict[str, str]] = {}
 # Used by UI to display compact config class names in grouped previews
 GROUP_ABBREVIATIONS_REGISTRY: Dict[Type, str] = {}
 
+# Always viewable fields registry: Type -> List[field_name]
+# Used by UI to auto-discover which fields should always be shown in list item previews
+# regardless of the specific widget's PREVIEW_FIELD_CONFIGS.
+# This allows config types to declare their own preview fields declaratively.
+ALWAYS_VIEWABLE_FIELDS_REGISTRY: Dict[Type, List[str]] = {}
+
 
 class abbreviation:
     """
@@ -1117,6 +1123,16 @@ class abbreviation:
         # Decorators apply bottom-up, so @abbreviation runs AFTER @global_pipeline_config.
         # Without this, @global_pipeline_config would see the parent's _abbreviation.
         GROUP_ABBREVIATIONS_REGISTRY[cls] = self.name
+        
+        # Also update the lazy wrapper class if it exists
+        # The lazy wrapper is created by @global_pipeline_config before @abbreviation runs,
+        # so we need to update its abbreviation here to keep them in sync.
+        lazy_class_name = f"{LAZY_CONFIG_PREFIX}{cls.__name__}"
+        lazy_class = getattr(sys.modules[cls.__module__], lazy_class_name, None)
+        if lazy_class is not None:
+            GROUP_ABBREVIATIONS_REGISTRY[lazy_class] = self.name
+            logger.debug(f"🔍 @abbreviation: Updated lazy wrapper {lazy_class_name} -> {self.name}")
+        
         return cls
 
     def __repr__(self) -> str:
@@ -1222,7 +1238,7 @@ def create_global_default_decorator(target_config_class: Type):
             'configs_to_inject': []
         }
 
-    def global_default_decorator(cls=None, *, optional: bool = False, inherit_as_none: bool = True, ui_hidden: bool = False, preview_label: Optional[str] = None, abbreviation: Optional[str] = None, field_abbreviations: Optional[Dict[str, str]] = None):
+    def global_default_decorator(cls=None, *, optional: bool = False, inherit_as_none: bool = True, ui_hidden: bool = False, preview_label: Optional[str] = None, abbreviation: Optional[str] = None, field_abbreviations: Optional[Dict[str, str]] = None, always_viewable_fields: Optional[List[str]] = None):
         """
         Decorator that can be used with or without parameters.
 
@@ -1237,6 +1253,8 @@ def create_global_default_decorator(target_config_class: Type):
                          Registered in GROUP_ABBREVIATIONS_REGISTRY.
             field_abbreviations: Dict mapping field names to abbreviations for compact display.
                           E.g., {'well_filter': 'wf', 'num_workers': 'W'}. Registered in FIELD_ABBREVIATIONS_REGISTRY.
+            always_viewable_fields: List of field names that should always be shown in list item previews
+                          for this config type. E.g., ['enabled', 'persistent']. Registered in ALWAYS_VIEWABLE_FIELDS_REGISTRY.
         """
         def decorator(actual_cls):
             # UNIFIED NONE-FORCING: Single make_dataclass rebuild instead of old 3-stage approach
@@ -1281,6 +1299,12 @@ def create_global_default_decorator(target_config_class: Type):
             logger.debug(f"🔍   Field abbrs detected={detected_field_abbrs}, explicit={field_abbreviations}, final={final_field_abbrs}")
             if final_field_abbrs:
                 FIELD_ABBREVIATIONS_REGISTRY[actual_cls] = final_field_abbrs
+
+            # Register always viewable fields for this config type
+            # These fields will always be shown in list item previews regardless of widget config
+            if always_viewable_fields:
+                ALWAYS_VIEWABLE_FIELDS_REGISTRY[actual_cls] = always_viewable_fields
+                logger.debug(f"🔍   Registered always_viewable_fields for {actual_cls.__name__}: {always_viewable_fields}")
 
             # Check if class is abstract (has unimplemented abstract methods)
             # Abstract classes should NEVER be injected into GlobalPipelineConfig
@@ -1330,6 +1354,10 @@ def create_global_default_decorator(target_config_class: Type):
             field_abbr_to_copy = field_abbreviations or detected_field_abbrs
             if field_abbr_to_copy:
                 FIELD_ABBREVIATIONS_REGISTRY[lazy_class] = field_abbr_to_copy
+
+            # Copy always_viewable_fields to lazy class
+            if always_viewable_fields:
+                ALWAYS_VIEWABLE_FIELDS_REGISTRY[lazy_class] = always_viewable_fields
 
             # Note: No Stage 3 post-processing needed!
             # - Base class: rebuilt via rebuild_with_none_defaults() above
