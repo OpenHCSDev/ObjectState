@@ -267,21 +267,26 @@ def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any,
         except Exception:
             continue
 
-    # PHASE 1: Hierarchy walk - check ONLY same-type config at each scope (outer to inner)
-    # This gives hierarchy precedence: global value overrides pipeline/step
-    for scope_id, layer_configs in all_layer_configs:
+    # PHASE 1: Hierarchy walk - check ONLY same-type config at each scope (inner to outer)
+    # This gives hierarchy precedence: inner/child scopes override outer/parent scopes
+    # REVERSED ORDER: Walk from inner to outer so more specific scopes override general scopes
+    for scope_id, layer_configs in reversed(all_layer_configs):
         if field_name == 'well_filter':
-            logger.debug(f"🔍   Phase 1 - Layer scope={scope_id!r}, checking same-type only")
+            logger.debug(f"🔍   Phase 1 - Layer scope={scope_id!r}, checking same-type only (inner to outer)")
 
         for config_instance in layer_configs.values():
             instance_base = _normalize_to_base(type(config_instance))
+            if field_name in ('well_filter', 'enabled') and instance_base == container_base:
+                logger.debug(f"🔍     FOUND same-type config: {instance_base.__name__} @ scope={scope_id}")
             if instance_base == container_base:  # Same-type only, no MRO
                 try:
                     value = object.__getattribute__(config_instance, field_name)
-                    if field_name == 'well_filter':
-                        logger.debug(f"🔍     {container_base.__name__}.{field_name} = {value!r}")
+                    if field_name in ('well_filter', 'enabled'):
+                        logger.debug(f"🔍     {container_base.__name__}.{field_name} @ scope={scope_id} = {value!r} (from object.__getattribute__)")
                     if value is not None:
                         # Found concrete value in hierarchy - return immediately
+                        if field_name in ('well_filter', 'enabled'):
+                            logger.debug(f"🔍     FOUND concrete value in hierarchy at scope={scope_id!r}, returning {value!r}")
                         return value, scope_id, container_base
                     # Don't set fallback here - let Phase 2 walk MRO to find
                     # the highest type that defines this field

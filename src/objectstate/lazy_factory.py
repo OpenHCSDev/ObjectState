@@ -1083,6 +1083,93 @@ FIELD_ABBREVIATIONS_REGISTRY: Dict[Type, Dict[str, str]] = {}
 GROUP_ABBREVIATIONS_REGISTRY: Dict[Type, str] = {}
 
 
+class abbreviation:
+    """
+    Decorator/marker for abbreviations in config classes.
+
+    Can be used as:
+    1. Class decorator: @abbreviation('wfc') to set class abbreviation
+    2. In Annotated types: Annotated[Type, abbreviation('wf')] for field abbreviation
+
+    Examples:
+        @abbreviation('wfc')
+        @global_pipeline_config
+        @dataclass
+        class WellFilterConfig:
+            well_filter: Annotated[Optional[int], abbreviation('wf')] = None
+            well_filter_mode: Annotated[WellFilterMode, abbreviation('wfm')] = WellFilterMode.INCLUDE
+
+    Args:
+        name: The abbreviation string
+
+    Returns:
+        When used as class decorator: the class with _abbreviation attribute set
+        When used in Annotated: a marker object storing the abbreviation
+    """
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def __call__(self, cls: Type) -> Type:
+        """Class decorator usage: @abbreviation('wfc')"""
+        cls._abbreviation = self.name
+        # CRITICAL: Register immediately so @global_pipeline_config detects the correct value.
+        # Decorators apply bottom-up, so @abbreviation runs AFTER @global_pipeline_config.
+        # Without this, @global_pipeline_config would see the parent's _abbreviation.
+        GROUP_ABBREVIATIONS_REGISTRY[cls] = self.name
+        return cls
+
+    def __repr__(self) -> str:
+        return f"abbreviation({self.name!r})"
+
+
+def _extract_abbreviations_from_annotations(cls: Type) -> Dict[str, str]:
+    """
+    Extract field abbreviations from Annotated type hints.
+    
+    Scans class annotations for fields using Annotated[..., abbreviation('...')]
+    and returns a dict mapping field names to abbreviations.
+    
+    Walks the MRO from most-specific to least-specific, so child class
+    annotations override parent class annotations (provenance wins).
+    
+    Args:
+        cls: The class to scan
+        
+    Returns:
+        Dict mapping field names to abbreviation strings
+    """
+    from typing import get_origin, get_args
+    
+    field_abbreviations = {}
+    
+    # Walk MRO from most-specific to least-specific
+    # This ensures child class annotations override parent class annotations
+    for klass in cls.__mro__:
+        if klass is object:
+            continue
+            
+        # Get this class's own annotations (not inherited)
+        annotations = klass.__dict__.get('__annotations__', {})
+        
+        for field_name, field_type in annotations.items():
+            # Check if this is an Annotated type
+            origin = get_origin(field_type)
+            if origin is not None:
+                # Get the args - first is the actual type, rest are metadata
+                args = get_args(field_type)
+                if len(args) > 1:
+                    # Check metadata for abbreviation markers
+                    for metadata in args[1:]:
+                        if isinstance(metadata, abbreviation):
+                            # Child class definitions override parent class
+                            # because we walk MRO most-specific first
+                            field_abbreviations[field_name] = metadata.name
+                            break
+    
+    return field_abbreviations
+
+
 def get_group_abbreviation(config_type: Union[str, type]) -> str:
     """Look up group abbreviation from GROUP_ABBREVIATIONS_REGISTRY.
 
@@ -1094,17 +1181,31 @@ def get_group_abbreviation(config_type: Union[str, type]) -> str:
     Returns:
         Abbreviation string if found, otherwise falls back to class name prefix
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
     if isinstance(config_type, str):
         return config_type.split('_')[0] if config_type else "root"
 
+    # Debug: Log lookup attempt
+    logger.debug(f"🔍 get_group_abbreviation: looking up {config_type.__name__}")
+    logger.debug(f"🔍   MRO: {[c.__name__ for c in config_type.__mro__]}")
+    logger.debug(f"🔍   Registry keys: {[k.__name__ if hasattr(k, '__name__') else str(k) for k in GROUP_ABBREVIATIONS_REGISTRY.keys()]}")
+
     if config_type in GROUP_ABBREVIATIONS_REGISTRY:
-        return GROUP_ABBREVIATIONS_REGISTRY[config_type]
+        abbr = GROUP_ABBREVIATIONS_REGISTRY[config_type]
+        logger.debug(f"🔍   Found direct: {abbr}")
+        return abbr
 
     for base in config_type.__mro__[1:]:
         if base in GROUP_ABBREVIATIONS_REGISTRY:
-            return GROUP_ABBREVIATIONS_REGISTRY[base]
+            abbr = GROUP_ABBREVIATIONS_REGISTRY[base]
+            logger.debug(f"🔍   Found in MRO {base.__name__}: {abbr}")
+            return abbr
 
-    return config_type.__name__.split('_')[0]
+    fallback = config_type.__name__.split('_')[0]
+    logger.debug(f"🔍   Fallback: {fallback}")
+    return fallback
 
 
 def create_global_default_decorator(target_config_class: Type):
@@ -1165,12 +1266,21 @@ def create_global_default_decorator(target_config_class: Type):
                 PREVIEW_LABEL_REGISTRY[actual_cls] = preview_label
 
             # Register group abbreviation for config class name in grouped previews
-            if abbreviation is not None:
-                GROUP_ABBREVIATIONS_REGISTRY[actual_cls] = abbreviation
+            # Priority: explicit parameter > @abbreviation decorator > auto-generated
+            detected_class_abbr = getattr(actual_cls, '_abbreviation', None)
+            final_class_abbr = abbreviation or detected_class_abbr
+            logger.debug(f"🔍 @global_pipeline_config: {actual_cls.__name__} - detected={detected_class_abbr}, explicit={abbreviation}, final={final_class_abbr}")
+            if final_class_abbr is not None:
+                GROUP_ABBREVIATIONS_REGISTRY[actual_cls] = final_class_abbr
+                logger.debug(f"🔍   Registered {actual_cls.__name__} -> {final_class_abbr}")
 
             # Register field abbreviations for compact preview display
-            if field_abbreviations is not None:
-                FIELD_ABBREVIATIONS_REGISTRY[actual_cls] = field_abbreviations
+            # Priority: explicit parameter > @abbreviation in Annotated types
+            detected_field_abbrs = _extract_abbreviations_from_annotations(actual_cls)
+            final_field_abbrs = {**detected_field_abbrs, **(field_abbreviations or {})}
+            logger.debug(f"🔍   Field abbrs detected={detected_field_abbrs}, explicit={field_abbreviations}, final={final_field_abbrs}")
+            if final_field_abbrs:
+                FIELD_ABBREVIATIONS_REGISTRY[actual_cls] = final_field_abbrs
 
             # Check if class is abstract (has unimplemented abstract methods)
             # Abstract classes should NEVER be injected into GlobalPipelineConfig
@@ -1211,10 +1321,15 @@ def create_global_default_decorator(target_config_class: Type):
                 lazy_class._ui_hidden = True
             if preview_label is not None:
                 PREVIEW_LABEL_REGISTRY[lazy_class] = preview_label
-            if abbreviation is not None:
-                GROUP_ABBREVIATIONS_REGISTRY[lazy_class] = abbreviation
-            if field_abbreviations is not None:
-                FIELD_ABBREVIATIONS_REGISTRY[lazy_class] = field_abbreviations
+            # Copy class abbreviation to lazy class
+            # Priority: 1. explicit param, 2. registry lookup (set by @abbreviation), 3. detected from class
+            class_abbr_to_copy = abbreviation or GROUP_ABBREVIATIONS_REGISTRY.get(actual_cls) or detected_class_abbr
+            if class_abbr_to_copy is not None:
+                GROUP_ABBREVIATIONS_REGISTRY[lazy_class] = class_abbr_to_copy
+            # Copy field abbreviations to lazy class (from explicit param or detected from Annotated)
+            field_abbr_to_copy = field_abbreviations or detected_field_abbrs
+            if field_abbr_to_copy:
+                FIELD_ABBREVIATIONS_REGISTRY[lazy_class] = field_abbr_to_copy
 
             # Note: No Stage 3 post-processing needed!
             # - Base class: rebuilt via rebuild_with_none_defaults() above

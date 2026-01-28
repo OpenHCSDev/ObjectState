@@ -542,22 +542,43 @@ class ObjectStateRegistry:
 
         invalidated_paths: set[str] = set()
 
+        # DEBUG: Log entry into type matching
+        logger.debug(f"🔍 _invalidate_field_in_matching_states: state_scope={state.scope_id}, target_base_type={target_base_type.__name__}, field_name={field_name}")
+        logger.debug(f"🔍   state._path_to_type has {len(state._path_to_type)} entries")
+
         # Scan _path_to_type for matching container types
         for dotted_path, container_type in state._path_to_type.items():
             # Normalize container type
             container_base_type = get_base_type_for_lazy(container_type) or container_type
 
-            # Check if target_base_type is in the MRO (container inherits the field)
+            # FIX: Check exact type match first (same type instance), then check MRO inheritance
             type_matches = False
-            for mro_class in container_base_type.__mro__:
-                mro_base = get_base_type_for_lazy(mro_class) or mro_class
-                if mro_base == target_base_type:
-                    type_matches = True
-                    break
+            mro_list = []
+            
+            # First check exact match
+            if container_base_type == target_base_type:
+                type_matches = True
+                mro_list.append(f"EXACT_MATCH:{container_base_type.__name__}")
+            else:
+                # Check if target_base_type is in the MRO (container inherits the field)
+                for mro_class in container_base_type.__mro__:
+                    mro_base = get_base_type_for_lazy(mro_class) or mro_class
+                    mro_list.append(f"{mro_class.__name__}->{mro_base.__name__}")
+                    if mro_base == target_base_type:
+                        type_matches = True
+                        break
+
+            # DEBUG: Log type matching details for fields that end with the target field_name
+            if dotted_path.endswith(f'.{field_name}') or dotted_path == field_name:
+                logger.debug(f"🔍   Checking field: {dotted_path}")
+                logger.debug(f"🔍     container_type={container_type.__name__}, container_base_type={container_base_type.__name__}")
+                logger.debug(f"🔍     type_matches={type_matches}, target={target_base_type.__name__}")
+                logger.debug(f"🔍     MRO path: {mro_list[:5]}...")  # First 5 entries
 
             # If type matches and path ends with the field_name, invalidate it
             if type_matches and (dotted_path.endswith(f'.{field_name}') or dotted_path == field_name):
                 if dotted_path in state.parameters:
+                    logger.debug(f"🔄 INVALIDATING FIELD: {dotted_path} (in parameters)")
                     state.invalidate_field(dotted_path)
                     invalidated_paths.add(dotted_path)
 
@@ -565,6 +586,9 @@ class ObjectStateRegistry:
                     if invalidate_saved and dotted_path in state._saved_resolved:
                         del state._saved_resolved[dotted_path]
                         logger.debug(f"Invalidated saved_resolved cache for {dotted_path}")
+                else:
+                    logger.debug(f"⚠️ FIELD NOT IN PARAMETERS: {dotted_path} - skipping invalidation")
+                    logger.debug(f"⚠️   state.parameters keys: {list(state.parameters.keys())[:10]}...")
 
         # Trigger recompute immediately to detect if resolved values actually changed.
         # This ensures callbacks fire only when values change, not just when fields are invalidated.
@@ -1753,26 +1777,29 @@ class ObjectState:
 
         # Partial recompute for invalid fields only
         if self._invalid_fields:
+            logger.debug(f"🔄 _ensure_live_resolved: scope={self.scope_id}, recomputing {len(self._invalid_fields)} invalid fields: {list(self._invalid_fields)}")
             changed_paths = self._recompute_invalid_fields()
             self._invalid_fields.clear()
+        else:
+            logger.debug(f"🔄 _ensure_live_resolved: scope={self.scope_id}, no invalid fields to recompute")
+            changed_paths = set()
 
-            # Notify subscribers of which paths actually changed (flash events)
-            if notify_flash and changed_paths and self._on_resolved_changed_callbacks:
-                logger.debug(f"🔔 CALLBACK_LEAK_DEBUG: Notifying {len(self._on_resolved_changed_callbacks)} callbacks "
-                            f"for scope={self.scope_id}, changed_paths={changed_paths}")
-                for i, callback in enumerate(self._on_resolved_changed_callbacks):
-                    try:
-                        callback(changed_paths)
-                    except RuntimeError as e:
-                        # Qt widget was deleted - this indicates a leaked callback
-                        logger.warning(f"🔴 CALLBACK_LEAK_DEBUG: Dead callback #{i} detected! "
-                                     f"scope={self.scope_id}, error: {e}")
-                    except Exception as e:
-                        logger.warning(f"Error in resolved_changed callback #{i}: {e}")
+        # Notify subscribers of which paths actually changed (flash events)
+        # FIXED: Moved OUT of the else block so callbacks are notified when there ARE invalid fields!
+        if notify_flash and changed_paths and self._on_resolved_changed_callbacks:
+            logger.debug(f"🔔 CALLBACK_LEAK_DEBUG: Notifying {len(self._on_resolved_changed_callbacks)} callbacks "
+                        f"for scope={self.scope_id}, changed_paths={changed_paths}")
+            for i, callback in enumerate(self._on_resolved_changed_callbacks):
+                try:
+                    callback(changed_paths)
+                except RuntimeError as e:
+                    # Qt widget was deleted - this indicates a leaked callback
+                    logger.warning(f"🔴 CALLBACK_LEAK_DEBUG: Dead callback #{i} detected! "
+                                 f"scope={self.scope_id}, error: {e}")
+                except Exception as e:
+                    logger.warning(f"Error in resolved_changed callback #{i}: {e}")
 
-            return changed_paths
-
-        return set()  # No changes - cache was already valid
+        return changed_paths
 
     # DELETED: _create_nested_states() - No longer needed with flat storage
     # Nested ObjectStates are no longer created - flat storage handles all parameters
@@ -2280,6 +2307,7 @@ class ObjectState:
                 for dotted_path in inherited_fields:
                     container_type = self._path_to_type.get(dotted_path)
                     if container_type is None:
+                        logger.debug(f"⚠️ _recompute: {dotted_path} has no container_type in _path_to_type")
                         continue
                     # Skip non-lazy container types - only lazy dataclasses have inheritance resolution
                     # Non-lazy fields with None should stay as None (no resolution)
@@ -2287,6 +2315,7 @@ class ObjectState:
                     is_lazy_type = is_lazy(container_type) or getattr(container_type, '_has_lazy_resolution', False)
                     if not is_dataclass(container_type) or not is_lazy_type:
                         # Non-lazy field: just use raw value (None)
+                        logger.debug(f"⚠️ _recompute: {dotted_path} has non-lazy container_type={container_type.__name__}, using raw value=None")
                         old_val = self._live_resolved.get(dotted_path)
                         raw_val = self.parameters.get(dotted_path)
                         if old_val != raw_val:
@@ -2305,6 +2334,11 @@ class ObjectState:
                         logger.debug(
                             f"RECOMPUTE INHERITED CHANGED [{self.scope_id}] {dotted_path}: "
                             f"old={old_val!r} -> new={value!r}"
+                        )
+                    else:
+                        logger.debug(
+                            f"RECOMPUTE INHERITED UNCHANGED [{self.scope_id}] {dotted_path}: "
+                            f"old={old_val!r} == new={value!r}"
                         )
                     self._live_resolved[dotted_path] = value
 
@@ -2975,7 +3009,13 @@ class ObjectState:
                 if is_nested_dataclass:
                     # Nested dataclass: ALWAYS recursively reconstruct from flat storage
                     # This ensures we pick up changes to nested fields like 'well_filter_config.well_filter'
-                    field_updates[field_name] = self._reconstruct_from_prefix(field_name)
+                    logger.debug(f"🔧 to_object: Reconstructing nested dataclass '{field_name}' from flat storage")
+                    reconstructed = self._reconstruct_from_prefix(field_name)
+                    logger.debug(f"🔧 to_object: Reconstructed '{field_name}' type={type(reconstructed).__name__}")
+                    # Log some field values for debugging
+                    if hasattr(reconstructed, 'enabled'):
+                        logger.debug(f"🔧 to_object: '{field_name}'.enabled = {reconstructed.enabled}")
+                    field_updates[field_name] = reconstructed
                 else:
                     # Primitive field: use value directly from parameters
                     value = self.parameters.get(field_name)
