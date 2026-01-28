@@ -1078,6 +1078,34 @@ PREVIEW_LABEL_REGISTRY: Dict[Type, str] = {}
 # Used by UI to display compact field names in list item previews
 FIELD_ABBREVIATIONS_REGISTRY: Dict[Type, Dict[str, str]] = {}
 
+# Group abbreviations registry: Type -> abbreviation string
+# Used by UI to display compact config class names in grouped previews
+GROUP_ABBREVIATIONS_REGISTRY: Dict[Type, str] = {}
+
+
+def get_group_abbreviation(config_type: Union[str, type]) -> str:
+    """Look up group abbreviation from GROUP_ABBREVIATIONS_REGISTRY.
+
+    Handles both type objects and type name strings.
+
+    Args:
+        config_type: Config class or type name to get abbreviation for
+
+    Returns:
+        Abbreviation string if found, otherwise falls back to class name prefix
+    """
+    if isinstance(config_type, str):
+        return config_type.split('_')[0] if config_type else "root"
+
+    if config_type in GROUP_ABBREVIATIONS_REGISTRY:
+        return GROUP_ABBREVIATIONS_REGISTRY[config_type]
+
+    for base in config_type.__mro__[1:]:
+        if base in GROUP_ABBREVIATIONS_REGISTRY:
+            return GROUP_ABBREVIATIONS_REGISTRY[base]
+
+    return config_type.__name__.split('_')[0]
+
 
 def create_global_default_decorator(target_config_class: Type):
     """
@@ -1093,7 +1121,7 @@ def create_global_default_decorator(target_config_class: Type):
             'configs_to_inject': []
         }
 
-    def global_default_decorator(cls=None, *, optional: bool = False, inherit_as_none: bool = True, ui_hidden: bool = False, preview_label: Optional[str] = None, field_abbreviations: Optional[Dict[str, str]] = None):
+    def global_default_decorator(cls=None, *, optional: bool = False, inherit_as_none: bool = True, ui_hidden: bool = False, preview_label: Optional[str] = None, abbreviation: Optional[str] = None, field_abbreviations: Optional[Dict[str, str]] = None):
         """
         Decorator that can be used with or without parameters.
 
@@ -1104,6 +1132,8 @@ def create_global_default_decorator(target_config_class: Type):
             ui_hidden: Whether to hide from UI (apply decorator but don't inject into global config) (default: False)
             preview_label: Short label for list item previews (e.g., "NAP", "FIJI", "MAT"). If set,
                           config will appear in preview when enabled. Registered in PREVIEW_LABEL_REGISTRY.
+            abbreviation: Short abbreviation for config class name used in grouped previews (e.g., "pp" for PathPlanningConfig).
+                         Registered in GROUP_ABBREVIATIONS_REGISTRY.
             field_abbreviations: Dict mapping field names to abbreviations for compact display.
                           E.g., {'well_filter': 'wf', 'num_workers': 'W'}. Registered in FIELD_ABBREVIATIONS_REGISTRY.
         """
@@ -1133,6 +1163,10 @@ def create_global_default_decorator(target_config_class: Type):
             # Allows ABC to auto-discover which configs should appear in preview
             if preview_label is not None:
                 PREVIEW_LABEL_REGISTRY[actual_cls] = preview_label
+
+            # Register group abbreviation for config class name in grouped previews
+            if abbreviation is not None:
+                GROUP_ABBREVIATIONS_REGISTRY[actual_cls] = abbreviation
 
             # Register field abbreviations for compact preview display
             if field_abbreviations is not None:
@@ -1172,9 +1206,15 @@ def create_global_default_decorator(target_config_class: Type):
             config_module = sys.modules[actual_cls.__module__]
             setattr(config_module, lazy_class_name, lazy_class)
 
-            # Also mark lazy class with ui_hidden metadata
+            # Copy metadata to lazy class for UI compatibility
             if ui_hidden:
                 lazy_class._ui_hidden = True
+            if preview_label is not None:
+                PREVIEW_LABEL_REGISTRY[lazy_class] = preview_label
+            if abbreviation is not None:
+                GROUP_ABBREVIATIONS_REGISTRY[lazy_class] = abbreviation
+            if field_abbreviations is not None:
+                FIELD_ABBREVIATIONS_REGISTRY[lazy_class] = field_abbreviations
 
             # Note: No Stage 3 post-processing needed!
             # - Base class: rebuilt via rebuild_with_none_defaults() above
