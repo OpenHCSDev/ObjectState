@@ -21,6 +21,7 @@ import contextvars
 import dataclasses
 import inspect
 import logging
+import threading
 from contextlib import contextmanager
 from typing import Any, Dict, Union
 from dataclasses import fields, is_dataclass
@@ -1213,3 +1214,45 @@ def _is_compatible_config_type(value, expected_type) -> bool:
             return True
 
     return False
+
+
+def spawn_thread_with_context(
+    target,
+    daemon: bool = True,
+    name: str = None,
+    *args,
+    **kwargs,
+):
+    """Spawn a thread with current context propagated.
+
+    This ensures thread-local context (like GlobalPipelineConfig from
+    config framework) is accessible in spawned thread.
+
+    Python's threading module creates isolated thread-local storage, so contextvars
+    don't automatically propagate to spawned threads. This utility wraps
+    threading.Thread to propagate the current context using contextvars.copy_context().
+
+    Args:
+        target: The function to run in thread
+        daemon: Whether thread should be a daemon thread (default: True)
+        name: Optional thread name
+        *args: Positional arguments to pass to target
+        **kwargs: Keyword arguments to pass to target
+
+    Returns:
+        The spawned Thread object
+
+    Example:
+        >>> spawn_thread_with_context(my_function, arg1, kwarg=value)
+        >>> # Equivalent to:
+        >>> ctx = contextvars.copy_context()
+        >>> threading.Thread(target=ctx.run, args=(my_function, arg1), kwargs={'kwarg': value}).start()
+    """
+    ctx = contextvars.copy_context()
+    thread = threading.Thread(
+        target=lambda: ctx.run(target, *args, **kwargs),
+        daemon=daemon,
+        name=name,
+    )
+    thread.start()
+    return thread

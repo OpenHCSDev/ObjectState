@@ -136,6 +136,8 @@ from objectstate.context_manager import (
     is_scope_affected,
     # Context stack building (framework-agnostic)
     build_context_stack,
+    # Threading utility for context propagation
+    spawn_thread_with_context,
 )
 
 # Placeholder
@@ -196,6 +198,7 @@ __all__ = [
     'get_root_from_scope_key',
     'is_scope_affected',
     'build_context_stack',
+    'spawn_thread_with_context',
     # Placeholder
     'LazyDefaultPlaceholderService',
     # Global config
