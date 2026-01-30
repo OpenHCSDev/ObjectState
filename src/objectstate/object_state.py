@@ -11,6 +11,7 @@ Replaces LiveContextService._active_form_managers as the single source of truth.
 from contextlib import contextmanager
 from dataclasses import is_dataclass, fields as dataclass_fields
 import logging
+import re
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING, Generator
 import copy
 
@@ -1751,6 +1752,62 @@ class ObjectState:
                 callback()
             except Exception as e:
                 logger.warning(f"Error in state_changed callback: {e}")
+
+    def forward_to_parent_state(self, field_path: Optional[str] = None) -> None:
+        """Forward child state changes to parent state.
+
+        Notifies the parent state that a field has conceptually changed, causing
+        the parent's on_resolved_changed callbacks to fire (e.g., for UI flash).
+
+        Args:
+            field_path: Dotted path of the field that changed (e.g., 'func', 'config.value').
+                       If None, uses _parent_field_name if set, otherwise defaults to scope suffix.
+
+        Example:
+            # In child ObjectState callback
+            def on_child_changed(changed_paths):
+                child_state.forward_to_parent_state('func')  # Notify parent its 'func' changed
+
+        Raises:
+            RuntimeError: If called on a state without a parent state.
+        """
+        if self._parent_state is None:
+            raise RuntimeError(
+                f"Cannot forward to parent: state '{self.scope_id}' has no parent state"
+            )
+
+        # Reentrancy guard (pattern from ObjectState architectural fixes)
+        if getattr(self, '_forwarding_to_parent', False):
+            logger.debug(f"[ObjectState] Reentrancy guard blocked for {self.scope_id}")
+            return
+
+        self._forwarding_to_parent = True
+        try:
+            # Determine which parent field changed
+            # Priority: explicit field_path arg > _parent_field_name > auto-detect
+            parent_field = field_path or getattr(self, '_parent_field_name', None)
+            if parent_field is None:
+                # Auto-detect from scope: step::function_0 → 'function'
+                parts = self.scope_id.split('::')
+                if len(parts) >= 2:
+                    last = parts[-1]
+                    import re
+                    m = re.match(r'^(.+?)_\d+$', last)
+                    parent_field = m.group(1) if m else last
+
+            # Fire parent's callbacks directly with the changed field
+            if parent_field and self._parent_state._on_resolved_changed_callbacks:
+                changed_paths = {parent_field}
+                for cb in self._parent_state._on_resolved_changed_callbacks:
+                    try:
+                        cb(changed_paths)
+                    except Exception as e:
+                        logger.warning(f"Error in parent callback: {e}")
+                
+            logger.info(f"[ObjectState] Forwarded {self.scope_id}→parent, field='{parent_field}'")
+            
+        finally:
+            self._forwarding_to_parent = False
 
     def _ensure_live_resolved(self, notify_flash: bool = True) -> Set[str]:
         """Ensure _live_resolved cache is populated.

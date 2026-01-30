@@ -113,6 +113,7 @@ Contents
    quickstart
    architecture
    state_management
+   state_propagation
    provenance
    undo_redo
    architectural_fixes
