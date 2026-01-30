@@ -99,7 +99,10 @@ def rebuild_with_none_defaults(
     namespace = {}
     for key, value in cls.__dict__.items():
         if key.startswith('__') and key.endswith('__'):
-            continue  # Skip dunders (make_dataclass will generate them)
+            # Skip most dunders (make_dataclass will generate them)
+            # BUT preserve __registry_key__ for AutoRegisterMeta
+            if key != '__registry_key__':
+                continue
         if key == '__dataclass_fields__':
             continue  # Will be regenerated
         namespace[key] = value
@@ -114,6 +117,9 @@ def rebuild_with_none_defaults(
         for b in cls.__mro__[1:]
     )
 
+    # Get the original metaclass to preserve it
+    orig_metaclass = type(cls)
+
     # Create new class
     new_cls = make_dataclass(
         new_name or cls.__name__,
@@ -127,6 +133,18 @@ def rebuild_with_none_defaults(
     new_cls.__module__ = cls.__module__
     if new_name is None:
         new_cls.__qualname__ = cls.__qualname__
+
+    # Preserve original metaclass if it's not just type
+    # This is critical for AutoRegisterMeta and other custom metaclasses
+    if orig_metaclass is not type:
+        # Re-create the class with the original metaclass
+        # We need to do this because make_dataclass doesn't accept metaclass parameter
+        # But we must NOT re-apply @dataclass since make_dataclass already did that
+        new_cls = orig_metaclass(
+            new_cls.__name__,
+            new_cls.__bases__,
+            dict(new_cls.__dict__),
+        )
 
     return new_cls
 

@@ -2876,13 +2876,15 @@ class ObjectState:
             exclude_params: List of top-level parameter names to exclude
         """
         exclude_params = exclude_params or []
-        
+
         obj_type = type(obj)
         is_function = obj_type.__name__ == 'function'
 
         # Delegate signature default extraction to python_introspect (it must derive
         # defaults from the type/signature and avoid instance attribute reads).
         param_info = self._analyze_parameters(obj, exclude_params if not prefix else [])
+
+        logger.debug(f"🔧 _extract_all_parameters_flat: obj_type={obj_type.__name__}, prefix={prefix!r}, param_info keys={list(param_info.keys())}")
 
         for param_name, info in param_info.items():
             # Skip excluded parameters (only at top level)
