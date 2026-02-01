@@ -938,6 +938,8 @@ class ObjectStateRegistry:
             # PHASE 3: RESTORE state for all ObjectStates in snapshot
             # Track which scopes need window reopening (for PHASE 4)
             scopes_needing_window: Set[str] = set()
+            # Track which scopes have any parameter changes (for navigation, even if now clean)
+            scopes_with_changes: Set[str] = set()
 
             for scope_key, state_snap in snapshot.all_states.items():
                 state = cls._states.get(scope_key)
@@ -983,6 +985,7 @@ class ObjectStateRegistry:
                     )
                     state._last_changed_field = sorted_changes[0][0]
                     state._last_changed_paths = {item[0] for item in changed_param_keys}
+                    scopes_with_changes.add(scope_key)
                     logger.debug(f"⏱️ LAST_CHANGED_FIELD: {scope_key} field={state._last_changed_field} total_changes={len(changed_param_keys)}")
                 else:
                     state._last_changed_field = None
@@ -1026,16 +1029,16 @@ class ObjectStateRegistry:
             # PHASE 4: Fire time-travel completion callbacks
             # ALWAYS fire callbacks so subscribers can update their state (e.g., PlateManager
             # needs to refresh orchestrators dict even when no dirty states).
-            # Pass dirty_states for states with concrete unsaved work.
+            # Pass states_with_changes for navigation (includes clean->dirty AND dirty->clean transitions)
             if cls._on_time_travel_complete_callbacks:
-                dirty_states = [
+                states_with_changes = [
                     (scope_key, cls._states[scope_key])
-                    for scope_key in scopes_needing_window
+                    for scope_key in scopes_with_changes
                     if scope_key in cls._states
                 ]
-                logger.debug(f"⏱️ TIME_TRAVEL: Firing {len(cls._on_time_travel_complete_callbacks)} callback(s) with {len(dirty_states)} dirty state(s)")
+                logger.debug(f"⏱️ TIME_TRAVEL: Firing {len(cls._on_time_travel_complete_callbacks)} callback(s) with {len(states_with_changes)} changed state(s)")
                 for callback in cls._on_time_travel_complete_callbacks:
-                    callback(dirty_states, snapshot.triggering_scope)
+                    callback(states_with_changes, snapshot.triggering_scope)
         finally:
             cls._in_time_travel = False
 
