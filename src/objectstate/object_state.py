@@ -2457,6 +2457,10 @@ class ObjectState:
         return self._dirty_fields
 
     @property
+    def last_dirty_field(self) -> Optional[str]:
+        return getattr(self, "_last_dirty_field", None)
+
+    @property
     def signature_diff_fields(self) -> Set[str]:
         """Fields where raw != signature_default."""
         return self._signature_diff_fields
@@ -2531,6 +2535,12 @@ class ObjectState:
             # Symmetric difference: fields that changed dirty status in either direction
             changed_fields = new_dirty ^ self._dirty_fields
             self._dirty_fields = new_dirty
+            # Track latest changed field for navigation (prefer deterministic choice)
+            if changed_fields:
+                self._last_dirty_field = sorted(
+                    changed_fields,
+                    key=lambda field: (field == "func", -field.count("."), field),
+                )[0]
             return changed_fields
         return set()
 
