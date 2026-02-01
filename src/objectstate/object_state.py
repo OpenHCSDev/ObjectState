@@ -2418,7 +2418,23 @@ class ObjectState:
                     # Update provenance for this field
                     self._live_provenance[dotted_path] = (source_scope_id, source_type)
 
+        # Store for navigation - fields that changed value in this computation
+        self._last_changed_paths = changed_paths
+        if changed_paths:
+            self._last_changed_field = sorted(
+                changed_paths,
+                key=lambda field: (field == "func", -field.count("."), field),
+            )[0]
         return changed_paths
+
+    @property
+    def last_changed_field(self) -> Optional[str]:
+        """Field that most recently changed value (not just dirty status).
+        
+        This tracks any value change regardless of saved/unsaved state,
+        useful for time-travel navigation to show what changed in a transition.
+        """
+        return getattr(self, "_last_changed_field", None)
 
     def reset_parameter(self, param_name: str) -> None:
         """Reset parameter to signature default (None for lazy dataclasses).
