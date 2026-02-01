@@ -973,13 +973,16 @@ class ObjectStateRegistry:
                         changed_param_keys.append((param_key, before, after))
                         has_param_change = True
 
-                # Track last changed field for navigation (any value change, regardless of direction)
-                if changed_paths:
-                    state._last_changed_field = sorted(
-                        changed_paths,
-                        key=lambda field: (field == "func", -field.count("."), field),
-                    )[0]
-                    state._last_changed_paths = changed_paths
+                # Track last changed field for navigation (concrete parameter change only)
+                # Use changed_param_keys (actual param changes) not changed_paths (resolved value changes)
+                if changed_param_keys:
+                    # Sort: non-func first, deepest paths first
+                    sorted_changes = sorted(
+                        changed_param_keys,
+                        key=lambda item: (item[0] == "func", -item[0].count("."), item[0]),
+                    )
+                    state._last_changed_field = sorted_changes[0][0]
+                    state._last_changed_paths = {item[0] for item in changed_param_keys}
                 else:
                     state._last_changed_field = None
                     state._last_changed_paths = set()
