@@ -973,6 +973,17 @@ class ObjectStateRegistry:
                         changed_param_keys.append((param_key, before, after))
                         has_param_change = True
 
+                # Track last changed field for navigation (any value change, regardless of direction)
+                if changed_paths:
+                    state._last_changed_field = sorted(
+                        changed_paths,
+                        key=lambda field: (field == "func", -field.count("."), field),
+                    )[0]
+                    state._last_changed_paths = changed_paths
+                else:
+                    state._last_changed_field = None
+                    state._last_changed_paths = set()
+
                 # Log param changes for debugging (but don't use to decide window opening)
                 # Only scopes with CONCRETE unsaved work should open windows (see below)
                 if has_param_change and not was_restored_from_limbo:
