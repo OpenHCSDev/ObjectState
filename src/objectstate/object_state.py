@@ -983,9 +983,11 @@ class ObjectStateRegistry:
                     )
                     state._last_changed_field = sorted_changes[0][0]
                     state._last_changed_paths = {item[0] for item in changed_param_keys}
+                    logger.debug(f"⏱️ LAST_CHANGED_FIELD: {scope_key} field={state._last_changed_field} total_changes={len(changed_param_keys)}")
                 else:
                     state._last_changed_field = None
                     state._last_changed_paths = set()
+                    logger.debug(f"⏱️ LAST_CHANGED_FIELD: {scope_key} field=None (no param changes)")
 
                 # Log param changes for debugging (but don't use to decide window opening)
                 # Only scopes with CONCRETE unsaved work should open windows (see below)
