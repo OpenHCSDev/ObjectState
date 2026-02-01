@@ -1115,10 +1115,15 @@ class ObjectStateRegistry:
         return result
 
     @classmethod
-    def get_history_info(cls) -> List[Dict[str, Any]]:
+    def get_history_info(cls, filter_fn: Optional[Callable[[str], bool]] = None) -> List[Dict[str, Any]]:
         """Get human-readable history for UI display.
 
         Returns history for current branch, oldest first (index 0 = oldest, -1 = head).
+
+        Args:
+            filter_fn: Optional predicate function that takes a scope_id and returns True if the scope
+                     should be included in visible state counts. If None, no filtering is applied.
+                     Example: lambda scope_id: scope_id not in {"", "__plates__"}
         """
         import datetime
         history = cls.get_branch_history()
@@ -1127,6 +1132,17 @@ class ObjectStateRegistry:
 
         result = []
         for i, snapshot in enumerate(history):
+            # Filter visible states based on caller-provided predicate
+            if filter_fn is not None:
+                visible_states = [scope_id for scope_id in snapshot.all_states.keys()
+                                if filter_fn(scope_id)]
+            else:
+                visible_states = list(snapshot.all_states.keys())
+
+            if not visible_states:
+                # Skip this snapshot - no visible states
+                continue
+
             is_head = (i == head_index)
             is_current = (current_index == -1 and is_head) or (i == current_index)
             result.append({
@@ -1136,7 +1152,7 @@ class ObjectStateRegistry:
                 'label': snapshot.label or f"Snapshot #{i}",
                 'is_current': is_current,
                 'is_head': is_head,
-                'num_states': len(snapshot.all_states),
+                'num_states': len(visible_states),
                 'parent_id': snapshot.parent_id,
             })
         return result
@@ -2450,12 +2466,39 @@ class ObjectState:
         if self._live_resolved is None:
             return set()
         dirty = set()
+
+        def _normalize_func_value(value: Any) -> Any:
+            if value is None:
+                return None
+            if callable(value):
+                return value
+            if isinstance(value, list):
+                normalized = []
+                for item in value:
+                    if callable(item):
+                        normalized.append(item)
+                        continue
+                    if isinstance(item, tuple) and len(item) == 2 and callable(item[0]) and isinstance(item[1], dict):
+                        pruned_kwargs = {k: v for k, v in item[1].items() if v is not None}
+                        normalized.append(item[0] if not pruned_kwargs else (item[0], pruned_kwargs))
+                if len(normalized) == 1 and callable(normalized[0]):
+                    return normalized[0]
+                return normalized
+            return value
         for k in (self._live_resolved.keys() | self._saved_resolved.keys()):
             live_val = self._live_resolved.get(k)
             saved_val = self._saved_resolved.get(k)
+            if k == "func":
+                live_val = _normalize_func_value(live_val)
+                saved_val = _normalize_func_value(saved_val)
+
             if live_val != saved_val:
                 dirty.add(k)
                 logger.debug(f"🔴 DIRTY_FIELD: scope={self.scope_id!r} field={k!r} live={live_val!r} saved={saved_val!r}")
+            elif k == "func":
+                logger.debug(
+                    f"🟢 FUNC_CLEAN: scope={self.scope_id!r} live={live_val!r} saved={saved_val!r}"
+                )
         if dirty:
             logger.debug(f"🔴 DIRTY_SUMMARY: scope={self.scope_id!r} dirty_fields={dirty}")
         return dirty
@@ -2833,6 +2876,14 @@ class ObjectState:
             self._sync_materialized_state()
             return
 
+        # Coalesce all restore side-effects into a single snapshot
+        with ObjectStateRegistry.atomic(f"restore {self.scope_id}"):
+            self._restore_saved_impl()
+            return
+
+    def _restore_saved_impl(self) -> None:
+        """Internal restore implementation (wrapped by restore_saved atomic block)."""
+
         # Find parameters that differ from saved baseline AND capture their container types
         # BEFORE clearing parameters (we need _path_to_type)
         changed_params_with_types = []
@@ -2891,27 +2942,53 @@ class ObjectState:
                 field_name=leaf_field_name
             )
 
+        # Propagate restore to descendant ObjectStates so their parameters reflect saved baseline
+        # This ensures function ObjectStates are reset when their parent step is restored
+        descendant_scopes = [
+            scope
+            for scope in ObjectStateRegistry._states.keys()
+            if scope.startswith(f"{self.scope_id}::")
+        ]
+        for descendant_scope in descendant_scopes:
+            state = ObjectStateRegistry._states.get(descendant_scope)
+            if state:
+                state._restore_saved_impl()
+
         # Emit on_resolved_changed for changed params so SAME-LEVEL observers flash
         # (e.g., list item subscribed to this ObjectState sees the revert as a change)
+        did_atomic_restore = False
         if changed_params_with_types and self._on_resolved_changed_callbacks:
             changed_paths = {param_name for param_name, _, _ in changed_params_with_types}
             logger.debug(f"🔔 CALLBACK_LEAK_DEBUG: restore_saved notifying {len(self._on_resolved_changed_callbacks)} callbacks "
                         f"for scope={self.scope_id}, changed_paths={changed_paths}")
-            for i, callback in enumerate(self._on_resolved_changed_callbacks):
-                try:
-                    callback(changed_paths)
-                except RuntimeError as e:
-                    # Qt widget was deleted - this indicates a leaked callback
-                    logger.warning(f"🔴 CALLBACK_LEAK_DEBUG: Dead callback #{i} in restore_saved! "
-                                 f"scope={self.scope_id}, error: {e}")
-                except Exception as e:
-                    logger.warning(f"Error in resolved_changed callback #{i} during restore: {e}")
+            # Coalesce any updates triggered by callbacks into a single snapshot
+            if self._parent_state is None:
+                with ObjectStateRegistry.atomic(f"restore {self.scope_id}"):
+                    for i, callback in enumerate(self._on_resolved_changed_callbacks):
+                        try:
+                            callback(changed_paths)
+                        except RuntimeError as e:
+                            # Qt widget was deleted - this indicates a leaked callback
+                            logger.warning(f"🔴 CALLBACK_LEAK_DEBUG: Dead callback #{i} in restore_saved! "
+                                         f"scope={self.scope_id}, error: {e}")
+                        except Exception as e:
+                            logger.warning(f"Error in resolved_changed callback #{i} during restore: {e}")
+                did_atomic_restore = True
+            else:
+                for i, callback in enumerate(self._on_resolved_changed_callbacks):
+                    try:
+                        callback(changed_paths)
+                    except RuntimeError as e:
+                        logger.warning(f"🔴 CALLBACK_LEAK_DEBUG: Dead callback #{i} in restore_saved! "
+                                     f"scope={self.scope_id}, error: {e}")
+                    except Exception as e:
+                        logger.warning(f"Error in resolved_changed callback #{i} during restore: {e}")
 
         # Sync materialized state (single point for dirty/sig_diff update + notification)
         self._sync_materialized_state()
 
         # Record snapshot for time-travel (registry-level) - ONLY if there were changes
-        if changed_params_with_types:
+        if changed_params_with_types and not did_atomic_restore:
             ObjectStateRegistry.record_snapshot("restore", self.scope_id)
 
     def should_skip_updates(self) -> bool:
