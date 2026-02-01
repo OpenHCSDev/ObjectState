@@ -1578,6 +1578,12 @@ class ObjectState:
         self._dirty_fields: Set[str] = set()
         self._signature_diff_fields: Set[str] = set()
 
+        # === Change tracking for navigation (2 attributes) ===
+        # Track which field most recently changed VALUE (not just dirty status)
+        # Used for time-travel navigation to scroll to what changed in a transition
+        self._last_changed_field: Optional[str] = None
+        self._last_changed_paths: Set[str] = set()
+
         # === Flags (kept for batch operations) ===
         self._in_reset = False
         self._block_cross_window_updates = False
@@ -2425,16 +2431,18 @@ class ObjectState:
                 changed_paths,
                 key=lambda field: (field == "func", -field.count("."), field),
             )[0]
+        else:
+            self._last_changed_field = None
         return changed_paths
 
     @property
     def last_changed_field(self) -> Optional[str]:
         """Field that most recently changed value (not just dirty status).
-        
+
         This tracks any value change regardless of saved/unsaved state,
         useful for time-travel navigation to show what changed in a transition.
         """
-        return getattr(self, "_last_changed_field", None)
+        return self._last_changed_field
 
     def reset_parameter(self, param_name: str) -> None:
         """Reset parameter to signature default (None for lazy dataclasses).
@@ -2471,10 +2479,6 @@ class ObjectState:
     def dirty_fields(self) -> Set[str]:
         """Fields where resolved_live != resolved_saved."""
         return self._dirty_fields
-
-    @property
-    def last_dirty_field(self) -> Optional[str]:
-        return getattr(self, "_last_dirty_field", None)
 
     @property
     def signature_diff_fields(self) -> Set[str]:
@@ -2551,12 +2555,6 @@ class ObjectState:
             # Symmetric difference: fields that changed dirty status in either direction
             changed_fields = new_dirty ^ self._dirty_fields
             self._dirty_fields = new_dirty
-            # Track latest changed field for navigation (prefer deterministic choice)
-            if changed_fields:
-                self._last_dirty_field = sorted(
-                    changed_fields,
-                    key=lambda field: (field == "func", -field.count("."), field),
-                )[0]
             return changed_fields
         return set()
 
