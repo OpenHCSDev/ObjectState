@@ -29,13 +29,23 @@ Saved vs Live
 - ``_live_resolved`` represents "on screen" (after every edit and ancestor change).
 - ``mark_saved()`` updates saved baselines from current live values.
 - ``restore_saved()`` resets working values back to the saved snapshot.
-- ``is_dirty()`` compares current parameters to ``_saved_parameters`` to detect unsaved work.
+- ``dirty_fields`` tracks where ``_live_resolved`` differs from ``_saved_resolved`` (resolved / inherited view).
+- ``is_raw_dirty`` is a fast check for unsaved edits in raw parameters (``parameters`` vs ``_saved_parameters``).
+
+Reading resolved values
+~~~~~~~~~~~~~~~~~~~~~~
+ObjectState keeps both a *live* resolved snapshot and a *saved* resolved snapshot.
+Use the appropriate accessor depending on whether you want to include unsaved edits:
+
+- ``get_resolved_value(name)``: returns the live resolved value from ``_live_resolved`` (includes unsaved edits)
+- ``get_saved_resolved_value(name)``: returns the saved resolved value from ``_saved_resolved`` (excludes unsaved edits)
 
 Key methods
 ~~~~~~~~~~~
 - ``mark_saved()``: set current state as the new baseline
 - ``restore_saved()``: revert parameters/resolved values to saved baseline
-- ``is_dirty()``: true if parameters differ from saved parameters
+- ``dirty_fields``: resolved diffs (live vs saved) as a set of dotted field names
+- ``is_raw_dirty``: true if raw parameters differ from saved parameters
 - ``to_object()``: materialize a concrete object from the current parameters
 
 Lifecycle

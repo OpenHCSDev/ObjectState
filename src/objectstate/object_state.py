@@ -2167,6 +2167,23 @@ class ObjectState:
 
         return result
 
+    def get_saved_resolved_value(self, param_name: str) -> Any:
+        """Get saved resolved value for a field from the saved snapshot.
+
+        Unlike get_resolved_value() which returns live values (including unsaved edits),
+        this returns the saved baseline with inheritance applied. This is useful for
+        compilation and other operations that should only consider saved state.
+
+        Args:
+            param_name: Field name to resolve (can be dotted path like 'path_planning_config.well_filter')
+
+        Returns:
+            Saved resolved value from _saved_resolved snapshot
+        """
+        # Auto-detect delegate changes before resolving values
+        self._check_and_sync_delegate()
+        return self._saved_resolved.get(param_name)
+
     def get_provenance(self, param_name: str) -> Optional[Tuple[str, type]]:
         """Get the source scope_id and type for an inherited field value.
 
@@ -2503,6 +2520,11 @@ class ObjectState:
     def signature_diff_fields(self) -> Set[str]:
         """Fields where raw != signature_default."""
         return self._signature_diff_fields
+
+    @property
+    def is_raw_dirty(self) -> bool:
+        """Check if raw parameters differ from saved parameters (not resolved values)."""
+        return self.parameters != self._saved_parameters
 
     def _compute_dirty_fields(self) -> Set[str]:
         """Compute dirty set from live vs saved caches."""
