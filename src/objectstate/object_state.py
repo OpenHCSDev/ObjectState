@@ -786,6 +786,7 @@ class ObjectStateRegistry:
                 parameters=copy.deepcopy(state.parameters),
                 saved_parameters=copy.deepcopy(state._saved_parameters),
                 provenance=copy.deepcopy(state._live_provenance),
+                meta=copy.deepcopy(state.metadata),
             )
 
         # Determine parent_id for new snapshot
@@ -998,12 +999,41 @@ class ObjectStateRegistry:
                     for pk, pv_before, pv_after in changed_param_keys:
                         logger.debug(f"⏱️ PARAM_CHANGE: {scope_key} param={pk} before={pv_before!r} after={pv_after!r}")
 
+                # Persist per-field before/after values for UI navigation.
+                # This allows downstream code (e.g., OpenHCS time-travel UI) to
+                # determine which dict-pattern key changed inside fields like 'func'.
+                state._last_changed_values = {
+                    pk: (pv_before, pv_after) for pk, pv_before, pv_after in changed_param_keys
+                }
+
+                # Track UI / integration metadata changes for navigation.
+                prev_meta = copy.deepcopy(state.metadata)
+                next_meta = copy.deepcopy(state_snap.meta)
+                meta_changed_keys = set()
+                meta_changed_values = {}
+                for mk in set(prev_meta.keys()) | set(next_meta.keys()):
+                    before = prev_meta.get(mk)
+                    after = next_meta.get(mk)
+                    if before != after:
+                        meta_changed_keys.add(mk)
+                        meta_changed_values[mk] = (before, after)
+                state._last_changed_meta_keys = meta_changed_keys
+                state._last_changed_meta_values = meta_changed_values
+                if meta_changed_keys:
+                    scopes_with_changes.add(scope_key)
+                    logger.debug(
+                        "⏱️ META_CHANGE: %s keys=%s",
+                        scope_key,
+                        sorted(meta_changed_keys),
+                    )
+
                 # RESTORE state (including saved_parameters for concrete dirty detection)
                 state._saved_resolved = copy.deepcopy(state_snap.saved_resolved)
                 state._live_resolved = copy.deepcopy(state_snap.live_resolved)
                 state._live_provenance = copy.deepcopy(state_snap.provenance)
                 state.parameters = copy.deepcopy(state_snap.parameters)
                 state._saved_parameters = copy.deepcopy(state_snap.saved_parameters)
+                state.metadata = copy.deepcopy(state_snap.meta)
                 # Back-compat: old snapshots may not include saved_parameters.
                 if state._saved_parameters is None:
                     state._saved_parameters = copy.deepcopy(state.parameters)
@@ -1350,6 +1380,7 @@ class ObjectStateRegistry:
                             else state_data['parameters']
                         ),
                         provenance=state_data['provenance'],
+                        meta=state_data.get('meta') or {},
                     )
 
             snapshot = Snapshot(
@@ -1550,6 +1581,17 @@ class ObjectState:
         self._path_to_type: Dict[str, type] = {}  # Maps dotted paths to their container types
         self._cached_object: Optional[Any] = None  # Cached result of to_object()
         self._cached_object_applied: bool = False  # True if cached delegate was applied to object_instance
+
+        # UI / integration metadata (never participates in dirty detection)
+        self.metadata: Dict[str, Any] = {}
+
+        # Time-travel navigation helpers (set by ObjectStateRegistry time travel)
+        # Maps param_name -> (before, after) for the last time-travel transition.
+        self._last_changed_values: Dict[str, Tuple[Any, Any]] = {}
+
+        # Maps metadata key -> (before, after) for the last time-travel transition.
+        self._last_changed_meta_keys: Set[str] = set()
+        self._last_changed_meta_values: Dict[str, Tuple[Any, Any]] = {}
 
         # Extract parameters using FLAT extraction (dotted paths)
         # This replaces the old UnifiedParameterAnalyzer + _create_nested_states() approach
@@ -2174,15 +2216,86 @@ class ObjectState:
         this returns the saved baseline with inheritance applied. This is useful for
         compilation and other operations that should only consider saved state.
 
+        For container fields (dataclasses), this reconstructs the entire nested
+        dataclass with all sub-fields populated from saved resolved values.
+
         Args:
             param_name: Field name to resolve (can be dotted path like 'path_planning_config.well_filter')
 
         Returns:
-            Saved resolved value from _saved_resolved snapshot
+            Saved resolved value from _saved_resolved snapshot.
+            For dataclass fields, returns a reconstructed dataclass instance.
         """
         # Auto-detect delegate changes before resolving values
         self._check_and_sync_delegate()
+
+        # Ensure saved resolved cache is populated
+        if not self._saved_resolved:
+            self._saved_resolved = self._compute_resolved_snapshot(use_saved=True)
+
+        # Check if this is a container/dataclass field (has subfields in _saved_resolved)
+        prefix = f"{param_name}."
+        has_subfields = any(key.startswith(prefix) for key in self._saved_resolved.keys())
+
+        if has_subfields:
+            # This is a container field - reconstruct the dataclass
+            field_type = self._path_to_type.get(param_name)
+            if field_type is not None and is_dataclass(field_type):
+                return self._reconstruct_from_saved_resolved(param_name)
+
+        # Return the simple value (or None if not found)
         return self._saved_resolved.get(param_name)
+
+    def _reconstruct_from_saved_resolved(self, prefix: str) -> Any:
+        """Recursively reconstruct dataclass from saved resolved values.
+
+        Similar to _reconstruct_from_prefix but uses _saved_resolved instead of parameters.
+
+        Args:
+            prefix: Current path prefix (e.g., 'analysis_consolidation_config')
+
+        Returns:
+            Reconstructed dataclass instance with resolved values
+        """
+        # Determine the type to reconstruct
+        if not prefix:
+            obj_type = type(self._extraction_target)
+        else:
+            obj_type = self._path_to_type.get(prefix)
+            if obj_type is None:
+                raise ValueError(f"No type mapping for prefix: {prefix}")
+
+        prefix_dot = f'{prefix}.' if prefix else ''
+
+        # Collect direct fields and nested prefixes from saved resolved values
+        direct_fields = {}
+        nested_prefixes = set()
+
+        for path, value in self._saved_resolved.items():
+            if not path.startswith(prefix_dot):
+                continue
+
+            remainder = path[len(prefix_dot):]
+
+            if '.' in remainder:
+                # This is a nested field - collect the first component
+                first_component = remainder.split('.')[0]
+                nested_prefixes.add(first_component)
+            else:
+                # Direct field of this object
+                direct_fields[remainder] = value
+
+        # Reconstruct nested dataclasses first
+        for nested_name in nested_prefixes:
+            nested_path = f'{prefix_dot}{nested_name}'
+            nested_obj = self._reconstruct_from_saved_resolved(nested_path)
+            direct_fields[nested_name] = nested_obj
+
+        # Instantiate the dataclass with all resolved fields
+        # Note: We use the actual resolved values, not None placeholders
+        result = obj_type(**direct_fields)
+
+        return result
 
     def get_provenance(self, param_name: str) -> Optional[Tuple[str, type]]:
         """Get the source scope_id and type for an inherited field value.
@@ -2924,7 +3037,7 @@ class ObjectState:
             else:
                 logger.warning(f"🔧 mark_saved: Descendant scope {descendant_scope!r} not found in registry!")
 
-    def restore_saved(self) -> None:
+    def restore_saved(self, *, propagate_descendants: bool = True) -> None:
         """Restore parameters to the last saved baseline (from object_instance).
 
         UNIFIED: Works for any object_instance type.
@@ -2941,12 +3054,17 @@ class ObjectState:
             self._sync_materialized_state()
             return
 
-        # Coalesce all restore side-effects into a single snapshot
-        with ObjectStateRegistry.atomic(f"restore {self.scope_id}"):
-            self._restore_saved_impl()
+        # If there are no unsaved edits, restoring is a semantic no-op and should not
+        # create time-travel snapshots (noise).
+        if not self.is_raw_dirty:
             return
 
-    def _restore_saved_impl(self) -> None:
+        # Coalesce all restore side-effects into a single snapshot
+        with ObjectStateRegistry.atomic(f"restore {self.scope_id}"):
+            self._restore_saved_impl(propagate_descendants=propagate_descendants)
+            return
+
+    def _restore_saved_impl(self, *, propagate_descendants: bool = True) -> None:
         """Internal restore implementation (wrapped by restore_saved atomic block)."""
 
         # Find parameters that differ from saved baseline AND capture their container types
@@ -3007,17 +3125,24 @@ class ObjectState:
                 field_name=leaf_field_name
             )
 
-        # Propagate restore to descendant ObjectStates so their parameters reflect saved baseline
-        # This ensures function ObjectStates are reset when their parent step is restored
-        descendant_scopes = [
-            scope
-            for scope in ObjectStateRegistry._states.keys()
-            if scope.startswith(f"{self.scope_id}::")
-        ]
-        for descendant_scope in descendant_scopes:
-            state = ObjectStateRegistry._states.get(descendant_scope)
-            if state:
-                state._restore_saved_impl()
+        # Optionally propagate restore to descendant ObjectStates so their parameters reflect saved baseline.
+        #
+        # This is important when restoring a parent that *owns* descendant parameter state (e.g. Step -> function
+        # ObjectStates) so canceling the parent edit resets child ObjectStates.
+        #
+        # However, for delegation-based parents that act as context providers (e.g. orchestrator -> pipeline_config),
+        # restoring the parent should generally *not* restore descendant raw parameters (steps). Descendants should
+        # only have their resolved caches invalidated so they re-resolve against the restored context.
+        if propagate_descendants:
+            descendant_scopes = [
+                scope
+                for scope in ObjectStateRegistry._states.keys()
+                if scope.startswith(f"{self.scope_id}::")
+            ]
+            for descendant_scope in descendant_scopes:
+                state = ObjectStateRegistry._states.get(descendant_scope)
+                if state:
+                    state._restore_saved_impl(propagate_descendants=True)
 
         # Emit on_resolved_changed for changed params so SAME-LEVEL observers flash
         # (e.g., list item subscribed to this ObjectState sees the revert as a change)

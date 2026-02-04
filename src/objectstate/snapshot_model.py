@@ -29,6 +29,7 @@ class StateSnapshot:
     parameters: Dict  # Current concrete values
     saved_parameters: Dict  # Concrete values at last save (for concrete dirty detection)
     provenance: Dict
+    meta: Dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,7 @@ class Snapshot:
                     'parameters': ss.parameters,
                     'saved_parameters': ss.saved_parameters,
                     'provenance': ss.provenance,
+                    'meta': ss.meta,
                 }
                 for scope_id, ss in self.all_states.items()
             }
@@ -98,6 +100,7 @@ class Snapshot:
                     else state_data['parameters']
                 ),
                 provenance=state_data['provenance'],
+                meta=state_data.get('meta') or {},
             )
             for scope_id, state_data in data['states'].items()
         }
