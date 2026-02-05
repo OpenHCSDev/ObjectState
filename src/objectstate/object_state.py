@@ -2195,12 +2195,25 @@ class ObjectState:
             param_name: Field name to resolve (can be dotted path like 'path_planning_config.well_filter')
 
         Returns:
-            Resolved value from _live_resolved snapshot
+            Resolved value from _live_resolved snapshot.
+            For dataclass container fields, returns a reconstructed dataclass instance
+            with all sub-fields populated from live resolved values.
         """
         # Auto-detect delegate changes before resolving values
         self._check_and_sync_delegate()
         self._ensure_live_resolved()
         assert self._live_resolved is not None  # Guaranteed by _ensure_live_resolved
+
+        # Check if this is a container/dataclass field (has subfields in _live_resolved)
+        prefix = f"{param_name}."
+        has_subfields = any(key.startswith(prefix) for key in self._live_resolved.keys())
+
+        if has_subfields:
+            # This is a container field - reconstruct's dataclass from live resolved values
+            field_type = self._path_to_type.get(param_name)
+            if field_type is not None and is_dataclass(field_type):
+                return self._reconstruct_from_resolved(param_name, self._live_resolved)
+
         result = self._live_resolved.get(param_name)
 
         # DEBUG: Log well_filter resolution
@@ -2238,25 +2251,28 @@ class ObjectState:
         has_subfields = any(key.startswith(prefix) for key in self._saved_resolved.keys())
 
         if has_subfields:
-            # This is a container field - reconstruct the dataclass
+            # This is a container field - reconstruct's dataclass from saved resolved values
             field_type = self._path_to_type.get(param_name)
             if field_type is not None and is_dataclass(field_type):
-                return self._reconstruct_from_saved_resolved(param_name)
+                return self._reconstruct_from_resolved(param_name, self._saved_resolved)
 
         # Return the simple value (or None if not found)
         return self._saved_resolved.get(param_name)
 
-    def _reconstruct_from_saved_resolved(self, prefix: str) -> Any:
-        """Recursively reconstruct dataclass from saved resolved values.
+    def _reconstruct_from_live_resolved(self, prefix: str) -> Any:
+        """Recursively reconstruct dataclass from live resolved values.
 
-        Similar to _reconstruct_from_prefix but uses _saved_resolved instead of parameters.
+        Similar to _reconstruct_from_saved_resolved but uses _live_resolved instead.
+        Used by get_resolved_value() when requesting a container/dataclass field.
 
         Args:
-            prefix: Current path prefix (e.g., 'analysis_consolidation_config')
+            prefix: Current path prefix (e.g., 'napari_streaming_config')
 
         Returns:
-            Reconstructed dataclass instance with resolved values
+            Reconstructed dataclass instance with resolved values from _live_resolved
         """
+        from objectstate.lazy_factory import get_base_type_for_lazy
+
         # Determine the type to reconstruct
         if not prefix:
             obj_type = type(self._extraction_target)
@@ -2265,13 +2281,16 @@ class ObjectState:
             if obj_type is None:
                 raise ValueError(f"No type mapping for prefix: {prefix}")
 
+        # Normalize to base type for lazy dataclasses
+        obj_type = get_base_type_for_lazy(obj_type) or obj_type
+
         prefix_dot = f'{prefix}.' if prefix else ''
 
-        # Collect direct fields and nested prefixes from saved resolved values
+        # Collect direct fields and nested prefixes from live resolved values
         direct_fields = {}
         nested_prefixes = set()
 
-        for path, value in self._saved_resolved.items():
+        for path, value in self._live_resolved.items():
             if not path.startswith(prefix_dot):
                 continue
 
@@ -2288,11 +2307,67 @@ class ObjectState:
         # Reconstruct nested dataclasses first
         for nested_name in nested_prefixes:
             nested_path = f'{prefix_dot}{nested_name}'
-            nested_obj = self._reconstruct_from_saved_resolved(nested_path)
+            nested_obj = self._reconstruct_from_live_resolved(nested_path)
             direct_fields[nested_name] = nested_obj
 
         # Instantiate the dataclass with all resolved fields
-        # Note: We use the actual resolved values, not None placeholders
+        result = obj_type(**direct_fields)
+
+        return result
+
+    def _reconstruct_from_resolved(self, prefix: str, resolved_snapshot: Dict[str, Any]) -> Any:
+        """Recursively reconstruct dataclass from resolved snapshot.
+
+        Unified method for both live and saved resolved values. The only difference
+        is which snapshot dict is passed in (_live_resolved or _saved_resolved).
+
+        Args:
+            prefix: Current path prefix (e.g., 'analysis_consolidation_config')
+            resolved_snapshot: The snapshot dict to reconstruct from (_live_resolved or _saved_resolved)
+
+        Returns:
+            Reconstructed dataclass instance with resolved values
+        """
+        from objectstate.lazy_factory import get_base_type_for_lazy
+
+        # Determine the type to reconstruct
+        if not prefix:
+            obj_type = type(self._extraction_target)
+        else:
+            obj_type = self._path_to_type.get(prefix)
+            if obj_type is None:
+                raise ValueError(f"No type mapping for prefix: {prefix}")
+
+        # Normalize to base type for lazy dataclasses
+        obj_type = get_base_type_for_lazy(obj_type) or obj_type
+
+        prefix_dot = f'{prefix}.' if prefix else ''
+
+        # Collect direct fields and nested prefixes from resolved snapshot
+        direct_fields = {}
+        nested_prefixes = set()
+
+        for path, value in resolved_snapshot.items():
+            if not path.startswith(prefix_dot):
+                continue
+
+            remainder = path[len(prefix_dot):]
+
+            if '.' in remainder:
+                # This is a nested field - collect the first component
+                first_component = remainder.split('.')[0]
+                nested_prefixes.add(first_component)
+            else:
+                # Direct field of this object
+                direct_fields[remainder] = value
+
+        # Reconstruct nested dataclasses first
+        for nested_name in nested_prefixes:
+            nested_path = f'{prefix_dot}{nested_name}'
+            nested_obj = self._reconstruct_from_resolved(nested_path, resolved_snapshot)
+            direct_fields[nested_name] = nested_obj
+
+        # Instantiate the dataclass with all resolved fields
         result = obj_type(**direct_fields)
 
         return result
