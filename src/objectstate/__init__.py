@@ -68,6 +68,7 @@ _submodules = [
     'config',
     'live_context_resolver',
     'token_cache',
+    'object_state_registry',
     'object_state',
     'snapshot_model',
     'parametric_axes',
@@ -222,7 +223,8 @@ __description__ = 'Generic configuration framework for lazy dataclass resolution
 
 
 # Object state management
-from objectstate.object_state import ObjectState, ObjectStateRegistry
+from objectstate.object_state_registry import ObjectStateRegistry
+from objectstate.object_state import ObjectState
 
 # Snapshot model for time-travel
 from objectstate.snapshot_model import Snapshot, StateSnapshot, Timeline
