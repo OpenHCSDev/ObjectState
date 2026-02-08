@@ -477,7 +477,22 @@ class LazyMethodBindings:
             """
             # Stage 1: Get instance value
             value = object.__getattribute__(self, name)
-            if value is not None or name not in {f.name for f in fields(self.__class__)}:
+            # Fast path: non-None values never need resolution
+            if value is not None:
+                return value
+            # PERFORMANCE: Use pre-computed frozenset (O(1) lookup) instead of
+            # rebuilding {f.name for f in fields(self.__class__)} (O(n)) on every access.
+            # Use object.__getattribute__ for __class__ to avoid recursion.
+            # Lazily populate if not yet set (e.g. class created outside _create_lazy_dataclass_unified).
+            _cls = object.__getattribute__(self, '__class__')
+            try:
+                _fns = _cls._field_names_set
+            except AttributeError:
+                _ft = fields(_cls)
+                _fns = frozenset(f.name for f in _ft)
+                _cls._field_names_set = _fns
+                _cls._fields_by_name = {f.name: f for f in _ft}
+            if name not in _fns:
                 return value
 
             # Stage 2: Simple field path lookup in current scope's merged global
@@ -510,7 +525,13 @@ class LazyMethodBindings:
                     return resolved_value
 
                 # For nested dataclass fields, return lazy instance
-                field_obj = next((f for f in fields(self.__class__) if f.name == name), None)
+                # PERFORMANCE: O(1) dict lookup instead of O(n) linear scan
+                _fbm = getattr(self.__class__, '_fields_by_name', None)
+                if _fbm is None:
+                    _ft = fields(self.__class__)
+                    _fbm = {f.name: f for f in _ft}
+                    self.__class__._fields_by_name = _fbm
+                field_obj = _fbm.get(name)
                 if field_obj and is_dataclass(field_obj.type):
                     return field_obj.type()
 
@@ -535,7 +556,13 @@ class LazyMethodBindings:
                     return mro_value
 
                 # Also check inherited default metadata
-                field_obj = next((f for f in fields(self.__class__) if f.name == name), None)
+                # PERFORMANCE: O(1) dict lookup instead of O(n) linear scan
+                _fbm = getattr(self.__class__, '_fields_by_name', None)
+                if _fbm is None:
+                    _ft = fields(self.__class__)
+                    _fbm = {f.name: f for f in _ft}
+                    self.__class__._fields_by_name = _fbm
+                field_obj = _fbm.get(name)
                 if field_obj and '_inherited_default' in field_obj.metadata:
                     inherited = field_obj.metadata['_inherited_default']
                     if inherited is not MISSING:
@@ -719,20 +746,32 @@ class LazyDataclassFactory:
             frozen=base_is_frozen  # Match base class frozen status
         )
 
+        # PERFORMANCE: Pre-compute class-level metadata ONCE at class creation time
+        # instead of recomputing on every instance construction or attribute access.
+        import re
+        _s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', base_class.__name__)
+        _config_field_name = re.sub('([a-z0-9])([A-Z])', r'\1_\2', _s1).lower()
+        lazy_class._config_field_name_cls = _config_field_name
+        lazy_class._global_config_type_cls = global_config_type
+
+        # PERFORMANCE: Cache field names set and field-by-name dict per class.
+        # These are derived from dataclasses.fields() which is immutable after class creation.
+        # Avoids O(n) set creation on every __getattribute__ call and O(n) linear scan
+        # on every field lookup.
+        from dataclasses import fields as _dc_fields
+        _field_tuple = _dc_fields(lazy_class)
+        lazy_class._field_names_set = frozenset(f.name for f in _field_tuple)
+        lazy_class._fields_by_name = {f.name: f for f in _field_tuple}
+
         # Add constructor parameter tracking to detect user-set fields
         original_init = lazy_class.__init__
         def __init_with_tracking__(self, **kwargs):
             # Track which fields were explicitly passed to constructor
             object.__setattr__(self, '_explicitly_set_fields', set(kwargs.keys()))
-            # Store the global config type for inheritance resolution
+            # Store the global config type for inheritance resolution (read from class attr)
             object.__setattr__(self, '_global_config_type', global_config_type)
-            # Store the config field name for simple field path lookup
-            import re
-            def _camel_to_snake_local(name: str) -> str:
-                s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
-                return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
-            config_field_name = _camel_to_snake_local(base_class.__name__)
-            object.__setattr__(self, '_config_field_name', config_field_name)
+            # Store the config field name (read from pre-computed class attr)
+            object.__setattr__(self, '_config_field_name', type(self)._config_field_name_cls)
             original_init(self, **kwargs)
 
         lazy_class.__init__ = __init_with_tracking__

@@ -542,10 +542,12 @@ class ObjectStateRegistry:
         from objectstate.lazy_factory import get_base_type_for_lazy
 
         invalidated_paths: set[str] = set()
+        _debug = logger.isEnabledFor(logging.DEBUG)
 
         # DEBUG: Log entry into type matching
-        logger.debug(f"🔍 _invalidate_field_in_matching_states: state_scope={state.scope_id}, target_base_type={target_base_type.__name__}, field_name={field_name}")
-        logger.debug(f"🔍   state._path_to_type has {len(state._path_to_type)} entries")
+        if _debug:
+            logger.debug(f"🔍 _invalidate_field_in_matching_states: state_scope={state.scope_id}, target_base_type={target_base_type.__name__}, field_name={field_name}")
+            logger.debug(f"🔍   state._path_to_type has {len(state._path_to_type)} entries")
 
         # Scan _path_to_type for matching container types
         for dotted_path, container_type in state._path_to_type.items():
@@ -554,40 +556,38 @@ class ObjectStateRegistry:
 
             # FIX: Check exact type match first (same type instance), then check MRO inheritance
             type_matches = False
-            mro_list = []
-            
+
             # First check exact match
             if container_base_type == target_base_type:
                 type_matches = True
-                mro_list.append(f"EXACT_MATCH:{container_base_type.__name__}")
             else:
                 # Check if target_base_type is in the MRO (container inherits the field)
                 for mro_class in container_base_type.__mro__:
                     mro_base = get_base_type_for_lazy(mro_class) or mro_class
-                    mro_list.append(f"{mro_class.__name__}->{mro_base.__name__}")
                     if mro_base == target_base_type:
                         type_matches = True
                         break
 
             # DEBUG: Log type matching details for fields that end with the target field_name
-            if dotted_path.endswith(f'.{field_name}') or dotted_path == field_name:
+            if _debug and (dotted_path.endswith(f'.{field_name}') or dotted_path == field_name):
                 logger.debug(f"🔍   Checking field: {dotted_path}")
                 logger.debug(f"🔍     container_type={container_type.__name__}, container_base_type={container_base_type.__name__}")
                 logger.debug(f"🔍     type_matches={type_matches}, target={target_base_type.__name__}")
-                logger.debug(f"🔍     MRO path: {mro_list[:5]}...")  # First 5 entries
 
             # If type matches and path ends with the field_name, invalidate it
             if type_matches and (dotted_path.endswith(f'.{field_name}') or dotted_path == field_name):
                 if dotted_path in state.parameters:
-                    logger.debug(f"🔄 INVALIDATING FIELD: {dotted_path} (in parameters)")
+                    if _debug:
+                        logger.debug(f"🔄 INVALIDATING FIELD: {dotted_path} (in parameters)")
                     state.invalidate_field(dotted_path)
                     invalidated_paths.add(dotted_path)
 
                     # If invalidating saved baseline, remove from saved_resolved so it recomputes
                     if invalidate_saved and dotted_path in state._saved_resolved:
                         del state._saved_resolved[dotted_path]
-                        logger.debug(f"Invalidated saved_resolved cache for {dotted_path}")
-                else:
+                        if _debug:
+                            logger.debug(f"Invalidated saved_resolved cache for {dotted_path}")
+                elif _debug:
                     logger.debug(f"⚠️ FIELD NOT IN PARAMETERS: {dotted_path} - skipping invalidation")
                     logger.debug(f"⚠️   state.parameters keys: {list(state.parameters.keys())[:10]}...")
 

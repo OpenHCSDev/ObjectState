@@ -8,6 +8,7 @@ The resolver is completely generic and has no application-specific dependencies.
 """
 
 import logging
+import functools
 from typing import Any, Dict, Optional, Tuple
 from dataclasses import is_dataclass
 
@@ -66,11 +67,16 @@ def invalidate_mro_cache_for_field(changed_type: type, field_name: str) -> None:
         del _mro_resolution_cache[key]
 
 
+@functools.lru_cache(maxsize=None)
 def _normalize_to_base(t: type) -> type:
     """Normalize lazy type to its base type for comparison.
 
     LazyWellFilterConfig -> WellFilterConfig
     WellFilterConfig -> WellFilterConfig
+
+    PERFORMANCE: Results are cached with lru_cache since type->base_type
+    mappings are immutable after class creation. Import is hoisted to
+    avoid per-call import overhead.
     """
     from objectstate.lazy_factory import get_base_type_for_lazy
     return get_base_type_for_lazy(t) or t
@@ -129,6 +135,16 @@ def resolve_field_inheritance(
     # This works for both LazyDataclass types AND concrete dataclasses with None fields.
     obj_base = _normalize_to_base(obj_type)
 
+    # PERFORMANCE: Check MRO resolution cache before doing the full walk.
+    # Cache key uses (obj_type, field_name, config_identity) where config_identity
+    # captures which config instances are active. Cache is cleared on context push/pop.
+    _cache_key = (obj_type, field_name, tuple((k, id(v)) for k, v in available_configs.items()))
+    _cached = _mro_resolution_cache.get(_cache_key, _CACHE_SENTINEL)
+    if _cached is not _CACHE_SENTINEL:
+        return _cached
+
+    _debug = logger.isEnabledFor(logging.DEBUG)
+
     if needs_resolution:
         for config_key, config_instance in available_configs.items():
             # Normalize both sides: LazyWellFilterConfig matches WellFilterConfig
@@ -137,10 +153,12 @@ def resolve_field_inheritance(
                 try:
                     field_value = object.__getattribute__(config_instance, field_name)
                     if field_value is not None:
-                        if field_name == 'well_filter':
-                            logger.debug(f"🔍 CONCRETE VALUE: {obj_type.__name__}.{field_name} = {field_value}")
-                        if field_name == 'num_workers':
-                            logger.debug(f"🔍 SAME-TYPE MATCH: {obj_type.__name__}.{field_name} = {field_value!r} (type={type(field_value).__name__}) FROM config_key={config_key}, config_type={type(config_instance).__name__}")
+                        if _debug:
+                            if field_name == 'well_filter':
+                                logger.debug(f"🔍 CONCRETE VALUE: {obj_type.__name__}.{field_name} = {field_value}")
+                            if field_name == 'num_workers':
+                                logger.debug(f"🔍 SAME-TYPE MATCH: {obj_type.__name__}.{field_name} = {field_value!r} (type={type(field_value).__name__}) FROM config_key={config_key}, config_type={type(config_instance).__name__}")
+                        _mro_resolution_cache[_cache_key] = field_value
                         return field_value
                 except AttributeError:
                     continue
@@ -148,7 +166,7 @@ def resolve_field_inheritance(
     # Step 2: MRO-based inheritance - traverse MRO from most to least specific
     # Skip the first entry (self type) since we already checked it above (for lazy) or want to skip it (for concrete)
     # This finds PARENT class configs with concrete values (sibling inheritance)
-    if field_name in ['output_dir_suffix', 'sub_dir', 'well_filter', 'well_filter_mode']:
+    if _debug and field_name in ('output_dir_suffix', 'sub_dir', 'well_filter', 'well_filter_mode'):
         logger.debug(f"🔍 MRO-INHERITANCE: Resolving {obj_type.__name__}.{field_name}")
         logger.debug(f"🔍 MRO-INHERITANCE: MRO = {[cls.__name__ for cls in obj_type.__mro__]}")
 
@@ -164,15 +182,18 @@ def resolve_field_inheritance(
             if instance_base == mro_base:
                 try:
                     value = object.__getattribute__(config_instance, field_name)
-                    if field_name in ['output_dir_suffix', 'sub_dir', 'well_filter', 'well_filter_mode']:
-                        logger.debug(f"🔍 MRO-INHERITANCE: {mro_class.__name__}.{field_name} = {value}")
-                    if field_name == 'num_workers':
-                        logger.debug(f"🔍 MRO-INHERITANCE: {mro_class.__name__}.{field_name} = {value!r} (type={type(value).__name__})")
-                    if value is not None:
-                        if field_name in ['output_dir_suffix', 'sub_dir', 'well_filter', 'well_filter_mode']:
-                            logger.debug(f"🔍 MRO-INHERITANCE: FOUND {mro_class.__name__}.{field_name}: {value} (returning)")
+                    if _debug:
+                        if field_name in ('output_dir_suffix', 'sub_dir', 'well_filter', 'well_filter_mode'):
+                            logger.debug(f"🔍 MRO-INHERITANCE: {mro_class.__name__}.{field_name} = {value}")
                         if field_name == 'num_workers':
-                            logger.debug(f"🔍 MRO-INHERITANCE: RETURNING {mro_class.__name__}.{field_name} = {value!r}")
+                            logger.debug(f"🔍 MRO-INHERITANCE: {mro_class.__name__}.{field_name} = {value!r} (type={type(value).__name__})")
+                    if value is not None:
+                        if _debug:
+                            if field_name in ('output_dir_suffix', 'sub_dir', 'well_filter', 'well_filter_mode'):
+                                logger.debug(f"🔍 MRO-INHERITANCE: FOUND {mro_class.__name__}.{field_name}: {value} (returning)")
+                            if field_name == 'num_workers':
+                                logger.debug(f"🔍 MRO-INHERITANCE: RETURNING {mro_class.__name__}.{field_name} = {value!r}")
+                        _mro_resolution_cache[_cache_key] = value
                         return value
                 except AttributeError:
                     continue
@@ -180,8 +201,9 @@ def resolve_field_inheritance(
     # No Step 3: If MRO walk finds nothing, return None.
     # "If we wanted static class defaults, it wouldn't have been overridden to None"
     # For LazyDataclass, class defaults are all None anyway (via rebuild_with_none_defaults).
-    if field_name in ['output_dir_suffix', 'sub_dir', 'well_filter']:
+    if _debug and field_name in ('output_dir_suffix', 'sub_dir', 'well_filter'):
         logger.debug(f"🔍 NO-RESOLUTION: {obj_type.__name__}.{field_name} = None")
+    _mro_resolution_cache[_cache_key] = None
     return None
 
 
@@ -248,7 +270,9 @@ def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any,
     # - MRO inheritance only applies when NO concrete value exists in the hierarchy
     #   for the specific config type being resolved
 
-    if field_name == 'well_filter':
+    _debug = logger.isEnabledFor(logging.DEBUG)
+
+    if _debug and field_name == 'well_filter':
         logger.debug(f"🔍 resolve_with_provenance: container={container_base.__name__}, field={field_name}, layers={len(layers)}")
         logger.debug(f"🔍 resolve_with_provenance: mro_types={[t.__name__ for t in mro_types]}")
 
@@ -271,21 +295,21 @@ def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any,
     # This gives hierarchy precedence: inner/child scopes override outer/parent scopes
     # REVERSED ORDER: Walk from inner to outer so more specific scopes override general scopes
     for scope_id, layer_configs in reversed(all_layer_configs):
-        if field_name == 'well_filter':
+        if _debug and field_name == 'well_filter':
             logger.debug(f"🔍   Phase 1 - Layer scope={scope_id!r}, checking same-type only (inner to outer)")
 
         for config_instance in layer_configs.values():
             instance_base = _normalize_to_base(type(config_instance))
-            if field_name in ('well_filter', 'enabled') and instance_base == container_base:
+            if _debug and field_name in ('well_filter', 'enabled') and instance_base == container_base:
                 logger.debug(f"🔍     FOUND same-type config: {instance_base.__name__} @ scope={scope_id}")
             if instance_base == container_base:  # Same-type only, no MRO
                 try:
                     value = object.__getattribute__(config_instance, field_name)
-                    if field_name in ('well_filter', 'enabled'):
+                    if _debug and field_name in ('well_filter', 'enabled'):
                         logger.debug(f"🔍     {container_base.__name__}.{field_name} @ scope={scope_id} = {value!r} (from object.__getattribute__)")
                     if value is not None:
                         # Found concrete value in hierarchy - return immediately
-                        if field_name in ('well_filter', 'enabled'):
+                        if _debug and field_name in ('well_filter', 'enabled'):
                             logger.debug(f"🔍     FOUND concrete value in hierarchy at scope={scope_id!r}, returning {value!r}")
                         return value, scope_id, container_base
                     # Don't set fallback here - let Phase 2 walk MRO to find
@@ -304,7 +328,7 @@ def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any,
     #
     # Therefore: for each MRO type (most→least specific), scan scopes (inner→outer)
     # looking for the first non-None value.
-    if field_name == 'well_filter':
+    if _debug and field_name == 'well_filter':
         logger.debug(f"🔍   Phase 2 - MRO fallback, walking layers inner to outer")
 
     # Track where the "highest-precedence" field exists even if None, so callers
@@ -330,7 +354,7 @@ def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any,
                 except AttributeError:
                     continue
 
-                if field_name == 'well_filter':
+                if _debug and field_name == 'well_filter':
                     logger.debug(f"🔍     MRO: {mro_type.__name__}.{field_name} @ {scope_id!r} = {value!r}")
 
                 if value is not None:

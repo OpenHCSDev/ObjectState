@@ -19,6 +19,7 @@ Key components:
 
 import contextvars
 import dataclasses
+import functools
 import inspect
 import logging
 import threading
@@ -225,16 +226,19 @@ def config_context(obj, mask_with_none: bool = False, use_live_global: bool = Tr
     merged_token = current_temp_global.set(merged_config)
     type_token = context_type_stack.set(new_types)
     layer_token = context_layer_stack.set(new_layers)
-    # PERFORMANCE: Clear extract cache on context push (new merged config)
+    # PERFORMANCE: Clear caches on context push (new merged config)
     clear_extract_all_configs_cache()
+    from objectstate.dual_axis_resolver import clear_mro_resolution_cache
+    clear_mro_resolution_cache()
     try:
         yield
     finally:
         current_temp_global.reset(merged_token)
         context_type_stack.reset(type_token)
         context_layer_stack.reset(layer_token)
-        # PERFORMANCE: Clear extract cache on context pop
+        # PERFORMANCE: Clear caches on context pop
         clear_extract_all_configs_cache()
+        clear_mro_resolution_cache()
 
 
 def get_context_type_stack():
@@ -280,11 +284,15 @@ def get_context_layer_stack() -> Tuple[Tuple[str, Any], ...]:
     return context_layer_stack.get()
 
 
+@functools.lru_cache(maxsize=None)
 def _normalize_type(t):
     """Normalize a type by getting its base type if it's a lazy variant.
 
     This function is defined here to avoid circular imports with lazy_factory.
     The actual get_base_type_for_lazy is imported lazily when needed.
+
+    PERFORMANCE: Results are cached with lru_cache since type->base_type
+    mappings are immutable after class creation.
     """
     try:
         from objectstate.lazy_factory import get_base_type_for_lazy
@@ -648,14 +656,15 @@ def build_context_stack(
 
     obj_type_name = obj_type.__name__
 
-    # Build ancestor list for logging - support both old and new format
-    if ancestor_objects_with_scopes:
-        ancestor_types = [type(o).__name__ for _, o in ancestor_objects_with_scopes]
-    elif ancestor_objects:
-        ancestor_types = [type(o).__name__ for o in ancestor_objects]
-    else:
-        ancestor_types = []
-    logger.debug(f"🔧 build_context_stack: obj={obj_type_name}, ancestors={ancestor_types}")
+    # PERFORMANCE: Only build ancestor list for logging when DEBUG is enabled
+    if logger.isEnabledFor(logging.DEBUG):
+        if ancestor_objects_with_scopes:
+            ancestor_types = [type(o).__name__ for _, o in ancestor_objects_with_scopes]
+        elif ancestor_objects:
+            ancestor_types = [type(o).__name__ for o in ancestor_objects]
+        else:
+            ancestor_types = []
+        logger.debug(f"🔧 build_context_stack: obj={obj_type_name}, ancestors={ancestor_types}")
 
     # 1. Global context layer (least specific)
     # ALWAYS use LIVE thread-local for global config - it's the SINGLE SOURCE OF TRUTH
@@ -1093,6 +1102,8 @@ def extract_all_configs(context_obj) -> Dict[str, Any]:
 
     # Type-driven extraction: Use dataclass field annotations to find config fields
     if is_dataclass(type(context_obj)):
+        # PERFORMANCE: Hoist import out of the per-field loop
+        from objectstate.lazy_factory import get_base_type_for_lazy
         for field_info in fields(type(context_obj)):
             field_type = field_info.type
             field_name = field_info.name
@@ -1107,7 +1118,6 @@ def extract_all_configs(context_obj) -> Dict[str, Any]:
                     if field_value is not None:
                         # CRITICAL: Use base type for lazy configs so MRO matching works
                         # LazyWellFilterConfig should be stored as WellFilterConfig
-                        from objectstate.lazy_factory import get_base_type_for_lazy
                         instance_type = type(field_value)
                         base_type = get_base_type_for_lazy(instance_type) or instance_type
                         configs[base_type.__name__] = field_value
@@ -1122,7 +1132,8 @@ def extract_all_configs(context_obj) -> Dict[str, Any]:
 
     # Cache result
     _extract_all_configs_cache[obj_id] = configs
-    logger.debug(f"Extracted {len(configs)} configs: {list(configs.keys())}")
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(f"Extracted {len(configs)} configs: {list(configs.keys())}")
     return configs
 
 
