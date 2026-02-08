@@ -1,4 +1,13 @@
 """Pytest configuration and shared fixtures."""
+import sys
+from pathlib import Path
+
+# Ensure tests exercise the in-repo ObjectState implementation (external/ObjectState/src)
+# rather than any globally installed `objectstate` package.
+_SRC_DIR = Path(__file__).resolve().parents[1] / "src"
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+
 import pytest
 from dataclasses import dataclass
 from objectstate import set_base_config_type

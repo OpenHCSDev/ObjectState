@@ -31,7 +31,7 @@ Usage:
     ChildStep.__axes__["priority"]  # 1 (defined here)
 """
 
-from typing import Dict, Any, Tuple, Optional, Type
+from typing import Dict, Any, Tuple, Optional, Callable
 from types import MappingProxyType
 import weakref
 
@@ -95,6 +95,37 @@ class AxesMeta(type):
             axes_str = ', '.join(f"{k}={v!r}" for k, v in cls.__axes__.items())
             return f"<class '{cls.__name__}' axes=({axes_str})>"
         return super().__repr__()
+
+
+# =============================================================================
+# DECORATOR + BASE CLASS (used by tests / ergonomic API)
+# =============================================================================
+
+
+def with_axes(**axes: Any) -> Callable[[type], type]:
+    """Class decorator that attaches axes metadata.
+
+    The decorated class is recreated using :class:`AxesMeta` so it gains:
+    - ``__axes__`` (MappingProxyType)
+    - convenience attributes (``__scope__``, ``__priority__``, etc.)
+    """
+
+    def _decorator(cls: type) -> type:
+        # Recreate class using AxesMeta. Filter out internal descriptors.
+        namespace = {
+            k: v
+            for k, v in cls.__dict__.items()
+            if k not in {"__dict__", "__weakref__"}
+        }
+        return AxesMeta(cls.__name__, cls.__bases__, namespace, axes=axes)
+
+    return _decorator
+
+
+class AxesBase(metaclass=AxesMeta):
+    """Opt-in base class enabling ``class Foo(AxesBase, axes={...})`` syntax."""
+
+    pass
 
 
 # =============================================================================

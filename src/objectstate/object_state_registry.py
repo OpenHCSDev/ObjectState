@@ -216,9 +216,16 @@ class ObjectStateRegistry:
                 scopes_to_delete.append(key)
 
         # Delete all matching scopes and fire callbacks
+        # NOTE: Unlike plain unregister(), this is often used for hierarchical deletes.
+        # When history is enabled we must preserve removed states for time-travel (undo/redo),
+        # otherwise snapshots may reference scopes that can no longer be resurrected.
         for key in scopes_to_delete:
             state = cls._states.pop(key)
-            logger.debug(f"Unregistered ObjectState (cascade): scope={key}")
+            if cls._history_enabled:
+                cls._graveyard[key] = state
+                logger.debug(f"Unregistered ObjectState (cascade): scope={key} (moved to graveyard)")
+            else:
+                logger.debug(f"Unregistered ObjectState (cascade): scope={key}")
             # Fire callbacks for UI binding
             cls._fire_unregister_callbacks(key, state)
 
