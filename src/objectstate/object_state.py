@@ -225,6 +225,8 @@ class ObjectState:
         # === Flags (kept for batch operations) ===
         self._in_reset = False
         self._block_cross_window_updates = False
+        self._forwarding_to_parent = False
+        self._parent_field_name: Optional[str] = None
 
         # === State Change Callbacks ===
         # Callbacks notified when materialized state changes (dirty/signature diffs)
@@ -341,6 +343,12 @@ class ObjectState:
         return True
 
     @property
+    def has_delegate(self) -> bool:
+        """Return whether this state extracts parameters through an object delegate."""
+
+        return self._delegate_attr is not None
+
+    @property
     def saved_object(self) -> Any:
         """Get the saved baseline object with the correct type.
 
@@ -437,7 +445,7 @@ class ObjectState:
             )
 
         # Reentrancy guard (pattern from ObjectState architectural fixes)
-        if getattr(self, '_forwarding_to_parent', False):
+        if self._forwarding_to_parent:
             logger.debug(f"[ObjectState] Reentrancy guard blocked for {self.scope_id}")
             return
 
@@ -445,7 +453,7 @@ class ObjectState:
         try:
             # Determine which parent field changed
             # Priority: explicit field_path arg > _parent_field_name > auto-detect
-            parent_field = field_path or getattr(self, '_parent_field_name', None)
+            parent_field = field_path or self._parent_field_name
             if parent_field is None:
                 # Auto-detect from scope: step::function_0 → 'function'
                 parts = self.scope_id.split('::')
@@ -1257,8 +1265,6 @@ class ObjectState:
         # This ensures reset goes back to None for lazy fields, not saved concrete values
         default_value = self._signature_defaults.get(param_name)
         self.update_parameter(param_name, default_value)
-
-
 
     def get_current_values(self) -> Dict[str, Any]:
         """
