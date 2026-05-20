@@ -722,7 +722,11 @@ class LazyDataclassFactory:
         # Determine inheritance: always include LazyDataclass, optionally include base_class
         if has_unsafe_metaclass:
             # Base class has unsafe custom metaclass - don't inherit, just copy interface
-            print(f"🔧 LAZY FACTORY: {base_class.__name__} has custom metaclass {base_metaclass.__name__}, avoiding inheritance")
+            logger.debug(
+                "Lazy factory: %s has custom metaclass %s, avoiding inheritance",
+                base_class.__name__,
+                base_metaclass.__name__,
+            )
             bases = (LazyDataclass,)  # Only inherit from LazyDataclass
         else:
             # Safe to inherit from regular dataclass
@@ -1568,7 +1572,6 @@ def auto_create_decorator(global_config_class):
     # Lazy global config will be created after field injection
 
     return global_config_class
-
 
 
 

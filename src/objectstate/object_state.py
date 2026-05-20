@@ -12,6 +12,11 @@ import logging
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import copy
 
+from objectstate.object_state_metadata import (
+    ObjectStateMetadataContract,
+    ObjectStateMetadataContractRegistry,
+    ObjectStateMetadataStore,
+)
 from objectstate.object_state_registry import ObjectStateRegistry
 
 logger = logging.getLogger(__name__)
@@ -159,8 +164,10 @@ class ObjectState:
         self._cached_object: Optional[Any] = None  # Cached result of to_object()
         self._cached_object_applied: bool = False  # True if cached delegate was applied to object_instance
 
-        # UI / integration metadata (never participates in dirty detection)
-        self.metadata: Dict[str, Any] = {}
+        # UI / integration metadata (never participates in dirty detection).
+        # Namespaced extension keys are contract-checked so time-travel cannot
+        # silently snapshot or restore extension state it does not understand.
+        self.metadata: ObjectStateMetadataStore = ObjectStateMetadataStore(self.scope_id)
 
         # Time-travel navigation helpers (set by ObjectStateRegistry time travel)
         # Maps param_name -> (before, after) for the last time-travel transition.
@@ -212,7 +219,8 @@ class ObjectState:
         self._saved_resolved: Dict[str, Any] = {}
         self._saved_parameters: Dict[str, Any] = {}  # Immutable snapshot for diff on restore
 
-        # === Materialized diffs (2 attributes) ===
+        # === Materialized diffs (3 attributes) ===
+        self._raw_dirty = False
         self._dirty_fields: Set[str] = set()
         self._signature_diff_fields: Set[str] = set()
 
@@ -249,7 +257,7 @@ class ObjectState:
 
         # CRITICAL: Initialize _saved_parameters BEFORE _compute_resolved_snapshot(use_saved=True)
         # because that method reads from _saved_parameters to get raw values.
-        self._saved_parameters = copy.deepcopy(self.parameters)
+        self._saved_parameters = self._copy_parameters_for_saved_baseline()
 
         # CRITICAL: Compute saved_resolved using SAVED ancestor context, not LIVE.
         # This ensures saved baseline represents "what would this object's values be
@@ -276,6 +284,30 @@ class ObjectState:
         # NOTE: Don't record "init" snapshot here - each ObjectState would create a separate
         # snapshot missing other ObjectStates created later. Instead, the first edit will
         # record the baseline state automatically (see record_snapshot logic).
+
+    def set_extension_metadata(
+        self,
+        contract: ObjectStateMetadataContract,
+        value: Any,
+    ) -> None:
+        """Write extension metadata through a registered time-travel contract."""
+
+        ObjectStateMetadataContractRegistry.register(contract)
+        self.metadata[contract.key] = value
+
+    def validate_metadata_contracts(self, operation: str) -> None:
+        """Raise if ObjectState metadata contains unregistered extension keys."""
+
+        ObjectStateMetadataContractRegistry.validate_mapping(
+            scope_id=self.scope_id,
+            metadata=self.metadata,
+            operation=operation,
+        )
+
+    def copy_metadata_for_snapshot(self) -> Dict[str, Any]:
+        """Return validated metadata payload for StateSnapshot."""
+
+        return self.metadata.copy_for_snapshot()
 
     @property
     def context_obj(self) -> Optional[Any]:
@@ -332,9 +364,8 @@ class ObjectState:
         logger.debug(f"🐛 _check_and_sync_delegate: AFTER extract - parameters is None={self.parameters is None}, len={len(self.parameters) if self.parameters else 'N/A'}")
 
         # Update saved parameters to match
-        import copy
         logger.debug(f"🐛 _check_and_sync_delegate: About to copy parameters to _saved_parameters")
-        self._saved_parameters = copy.deepcopy(self.parameters)
+        self._saved_parameters = self._copy_parameters_for_saved_baseline()
         logger.debug(f"🐛 _check_and_sync_delegate: AFTER copy - _saved_parameters is None={self._saved_parameters is None}")
 
         # Invalidate caches since parameters changed
@@ -347,6 +378,71 @@ class ObjectState:
         """Return whether this state extracts parameters through an object delegate."""
 
         return self._delegate_attr is not None
+
+    def _copy_parameters_for_saved_baseline(self) -> Dict[str, Any]:
+        """Snapshot raw parameters without cloning callable identity values.
+
+        Callables are semantic identities in FunctionStep declarations. A plain
+        deepcopy can rebuild callable wrapper instances through ``__reduce__``,
+        making live and saved function specs unequal immediately after load.
+        """
+        memo: Dict[int, Any] = {}
+        self._seed_callable_identity_memo(self.parameters, memo, set())
+        return copy.deepcopy(self.parameters, memo)
+
+    @classmethod
+    def copy_parameter_pair_preserving_callable_identity(
+        cls,
+        parameters: Dict[str, Any],
+        saved_parameters: Dict[str, Any],
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Copy live/saved raw parameters as one identity-preserving pair.
+
+        Time-travel snapshots must preserve callable identity relationships across
+        `parameters` and `_saved_parameters`. Copying the two dicts independently
+        can rebuild callable wrappers twice and make a clean state appear dirty.
+        """
+
+        memo: Dict[int, Any] = {}
+        seen: Set[int] = set()
+        cls._seed_callable_identity_memo(parameters, memo, seen)
+        cls._seed_callable_identity_memo(saved_parameters, memo, seen)
+        return copy.deepcopy(parameters, memo), copy.deepcopy(saved_parameters, memo)
+
+    @classmethod
+    def _seed_callable_identity_memo(
+        cls,
+        value: Any,
+        memo: Dict[int, Any],
+        seen: Set[int],
+    ) -> None:
+        value_id = id(value)
+        if value_id in seen:
+            return
+        seen.add(value_id)
+
+        if callable(value):
+            memo[value_id] = value
+            return
+
+        if isinstance(value, dict):
+            for key, item in value.items():
+                cls._seed_callable_identity_memo(key, memo, seen)
+                cls._seed_callable_identity_memo(item, memo, seen)
+            return
+
+        if isinstance(value, (list, tuple, set, frozenset)):
+            for item in value:
+                cls._seed_callable_identity_memo(item, memo, seen)
+            return
+
+        if is_dataclass(value) and not isinstance(value, type):
+            for field in dataclass_fields(value):
+                cls._seed_callable_identity_memo(
+                    object.__getattribute__(value, field.name),
+                    memo,
+                    seen,
+                )
 
     @property
     def saved_object(self) -> Any:
@@ -472,7 +568,11 @@ class ObjectState:
                     except Exception as e:
                         logger.warning(f"Error in parent callback: {e}")
                 
-            logger.info(f"[ObjectState] Forwarded {self.scope_id}→parent, field='{parent_field}'")
+            logger.debug(
+                "[ObjectState] Forwarded %s to parent, field=%r",
+                self.scope_id,
+                parent_field,
+            )
             
         finally:
             self._forwarding_to_parent = False
@@ -1106,8 +1206,7 @@ class ObjectState:
         )
 
         # Update saved parameters to match
-        import copy
-        self._saved_parameters = copy.deepcopy(self.parameters)
+        self._saved_parameters = self._copy_parameters_for_saved_baseline()
 
         # Invalidate caches
         self.invalidate_cache()
@@ -1297,6 +1396,14 @@ class ObjectState:
         """Check if raw parameters differ from saved parameters (not resolved values)."""
         return self.parameters != self._saved_parameters
 
+    def _update_raw_dirty(self) -> bool:
+        """Recompute raw dirty state, return True if it changed."""
+        new_raw_dirty = self.is_raw_dirty
+        if new_raw_dirty != self._raw_dirty:
+            self._raw_dirty = new_raw_dirty
+            return True
+        return False
+
     def _compute_dirty_fields(self) -> Set[str]:
         """Compute dirty set from live vs saved caches."""
         if self._live_resolved is None:
@@ -1391,6 +1498,7 @@ class ObjectState:
         Flash behavior: Fires on_resolved_changed for fields that changed dirty status.
         This ensures flash animation triggers when fields become clean (not just dirty).
         """
+        raw_dirty_changed = self._update_raw_dirty()
         dirty_status_changed_fields = self._update_dirty_fields()
         sig_diff_changed = self._update_signature_diff_fields()
 
@@ -1402,7 +1510,7 @@ class ObjectState:
                 except Exception as e:
                     logger.warning(f"Error in resolved_changed callback during dirty sync: {e}")
 
-        if dirty_status_changed_fields or sig_diff_changed:
+        if raw_dirty_changed or dirty_status_changed_fields or sig_diff_changed:
             self._notify_state_changed()
 
     # ==================== SAVED STATE / DIRTY TRACKING ====================
@@ -1463,7 +1571,7 @@ class ObjectState:
         logger.debug(f"🐛 _compute_resolved_snapshot: scope={self.scope_id!r}, use_saved={use_saved}, _saved_parameters is None={self._saved_parameters is None}, parameters is None={self.parameters is None}")
         if use_saved and self._saved_parameters is None:
             logger.warning(f"🐛 _compute_resolved_snapshot: _saved_parameters is None for scope={self.scope_id!r}, using parameters as fallback")
-            self._saved_parameters = copy.deepcopy(self.parameters)
+            self._saved_parameters = self._copy_parameters_for_saved_baseline()
         if self.parameters is None:
             logger.warning(f"🐛 _compute_resolved_snapshot: parameters is None for scope={self.scope_id!r}, initializing to empty dict")
             self.parameters = {}
@@ -1608,7 +1716,7 @@ class ObjectState:
                 self._extraction_target = self.object_instance  # Keep in sync
 
         # Update saved parameters (after object_instance update, before invalidation)
-        self._saved_parameters = copy.deepcopy(self.parameters)
+        self._saved_parameters = self._copy_parameters_for_saved_baseline()
 
         # NOW invalidate descendant caches AFTER object_instance is updated
         # This ensures descendants see the NEW object_instance when they recompute
@@ -1722,6 +1830,18 @@ class ObjectState:
             self._restore_saved_impl(propagate_descendants=propagate_descendants)
             return
 
+    def _restore_live_global_context_from_saved(self) -> None:
+        """Keep global live thread-local aligned after cancelling edits."""
+        obj_type = type(self.object_instance)
+        if not getattr(obj_type, "_is_global_config", False):
+            return
+
+        from objectstate.context_manager import clear_current_temp_global
+        from objectstate.global_config import set_live_global_config
+
+        set_live_global_config(obj_type, copy.deepcopy(self._extraction_target))
+        clear_current_temp_global()
+
     def _restore_saved_impl(self, *, propagate_descendants: bool = True) -> None:
         """Internal restore implementation (wrapped by restore_saved atomic block)."""
 
@@ -1758,7 +1878,8 @@ class ObjectState:
 
         # CRITICAL: Also restore _saved_parameters to match current parameters
         # After restore, parameters == saved (both extracted from object_instance)
-        self._saved_parameters = copy.deepcopy(self.parameters)
+        self._saved_parameters = self._copy_parameters_for_saved_baseline()
+        self._restore_live_global_context_from_saved()
 
         self.invalidate_cache()
         # Invalidate cached reconstructed object (may contain unsaved edits)

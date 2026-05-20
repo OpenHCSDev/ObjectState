@@ -3,17 +3,69 @@ ObjectStateRegistry: Singleton registry of all ObjectState instances.
 Replaces LiveContextService._active_form_managers as the single source of truth.
 """
 from contextlib import contextmanager
-from dataclasses import is_dataclass
+from dataclasses import dataclass, is_dataclass
 import logging
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING, Generator
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING, Generator, TypeAlias
 import copy
 
+from objectstate.object_state_metadata import ObjectStateMetadataStore
 from objectstate.snapshot_model import Snapshot, StateSnapshot, Timeline
 
 if TYPE_CHECKING:
     from objectstate.object_state import ObjectState
 
+TimeTravelStateEntry: TypeAlias = Tuple[str, 'ObjectState']
+TimeTravelCompleteCallback: TypeAlias = Callable[[List[TimeTravelStateEntry], Optional[str]], None]
+
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class TimeTravelTransaction:
+    """Nominal request to move the registry to one snapshot."""
+
+    snapshot_id: str
+    snapshot: Snapshot
+    snapshot_scopes: Set[str]
+    current_scopes: Set[str]
+
+
+@dataclass(frozen=True)
+class TimeTravelScopeReconciliation:
+    """Scope membership changes required before restoring snapshot values."""
+
+    moved_to_limbo: Set[str]
+    restored_scopes: Set[str]
+
+
+@dataclass(frozen=True)
+class TimeTravelScopeChange:
+    """Per-scope facts produced by restoring one ObjectState."""
+
+    changed_paths: Set[str]
+    changed_param_keys: Set[str]
+    meta_changed_keys: Set[str]
+    is_concrete_dirty: bool
+
+    @property
+    def needs_navigation(self) -> bool:
+        return bool(self.changed_param_keys or self.meta_changed_keys)
+
+
+@dataclass(frozen=True)
+class TimeTravelChangeSet:
+    """Authoritative result of a completed time-travel restore."""
+
+    triggering_scope: Optional[str]
+    scope_changes: Dict[str, TimeTravelScopeChange]
+
+    def legacy_entries(self, states: Dict[str, 'ObjectState']) -> List[TimeTravelStateEntry]:
+        """Project to the existing callback payload shape."""
+        return [
+            (scope_key, states[scope_key])
+            for scope_key, change in self.scope_changes.items()
+            if change.needs_navigation and scope_key in states
+        ]
 
 
 class ObjectStateRegistry:
@@ -40,7 +92,7 @@ class ObjectStateRegistry:
     # Callbacks receive (dirty_states, triggering_scope) where:
     # - dirty_states: list of (scope_id, ObjectState) tuples with unsaved changes
     # - triggering_scope: scope_id that triggered the snapshot (may be None)
-    _on_time_travel_complete_callbacks: List[Callable[[List[Tuple[str, 'ObjectState']], Optional[str]], None]] = []
+    _on_time_travel_complete_callbacks: List[TimeTravelCompleteCallback] = []
 
     # History changed callbacks - fired when history is modified (snapshot added or time-travel)
     # Used by TimeTravelWidget to stay in sync without polling
@@ -71,7 +123,7 @@ class ObjectStateRegistry:
             cls._on_unregister_callbacks.remove(callback)
 
     @classmethod
-    def add_time_travel_complete_callback(cls, callback: Callable[[List[Tuple[str, 'ObjectState']], Optional[str]], None]) -> None:
+    def add_time_travel_complete_callback(cls, callback: TimeTravelCompleteCallback) -> None:
         """Subscribe to time-travel completion events.
 
         Callback receives (dirty_states, triggering_scope) where:
@@ -82,7 +134,7 @@ class ObjectStateRegistry:
             cls._on_time_travel_complete_callbacks.append(callback)
 
     @classmethod
-    def remove_time_travel_complete_callback(cls, callback: Callable[[List[Tuple[str, 'ObjectState']], Optional[str]], None]) -> None:
+    def remove_time_travel_complete_callback(cls, callback: TimeTravelCompleteCallback) -> None:
         """Unsubscribe from time-travel completion events."""
         if callback in cls._on_time_travel_complete_callbacks:
             cls._on_time_travel_complete_callbacks.remove(callback)
@@ -102,29 +154,26 @@ class ObjectStateRegistry:
     @classmethod
     def _fire_history_changed_callbacks(cls) -> None:
         """Fire all history changed callbacks."""
-        for callback in cls._on_history_changed_callbacks:
+        cls._fire_callbacks(cls._on_history_changed_callbacks, "history_changed")
+
+    @classmethod
+    def _fire_callbacks(cls, callbacks: List[Callable], role: str, *args: Any) -> None:
+        """Fire callback family with uniform error handling."""
+        for callback in callbacks:
             try:
-                callback()
+                callback(*args)
             except Exception as e:
-                logger.warning(f"Error in history_changed callback: {e}")
+                logger.warning(f"Error in {role} callback: {e}")
 
     @classmethod
     def _fire_register_callbacks(cls, scope_key: str, state: 'ObjectState') -> None:
         """Fire all registered callbacks for ObjectState registration."""
-        for callback in cls._on_register_callbacks:
-            try:
-                callback(scope_key, state)
-            except Exception as e:
-                logger.warning(f"Error in register callback: {e}")
+        cls._fire_callbacks(cls._on_register_callbacks, "register", scope_key, state)
 
     @classmethod
     def _fire_unregister_callbacks(cls, scope_key: str, state: 'ObjectState') -> None:
         """Fire all registered callbacks for ObjectState unregistration."""
-        for callback in cls._on_unregister_callbacks:
-            try:
-                callback(scope_key, state)
-            except Exception as e:
-                logger.warning(f"Error in unregister callback: {e}")
+        cls._fire_callbacks(cls._on_unregister_callbacks, "unregister", scope_key, state)
 
     @classmethod
     def _normalize_scope_id(cls, scope_id: Optional[str]) -> str:
@@ -393,7 +442,12 @@ class ObjectStateRegistry:
         return objects
 
     @classmethod
-    def get_ancestor_objects_with_scopes(cls, scope_id: Optional[str], use_saved: bool = False, skip_delegate_sync: bool = False) -> List[Tuple[str, Any]]:
+    def get_ancestor_objects_with_scopes(
+        cls,
+        scope_id: Optional[str],
+        use_saved: bool = False,
+        skip_delegate_sync: bool = False,
+    ) -> List[Tuple[str, Any]]:
         """Get (scope_id, object) tuples from this scope and all ancestors.
 
         Similar to get_ancestor_objects() but includes the scope_id for each object.
@@ -626,6 +680,7 @@ class ObjectStateRegistry:
     # Atomic operation state - when >0, snapshots are deferred until operation completes
     _atomic_depth: int = 0
     _atomic_label: Optional[str] = None  # Label for the coalesced snapshot
+    _atomic_triggering_scope: Optional[str] = None
 
     # Limbo: ObjectStates temporarily removed during time-travel
     # When traveling to a snapshot, ObjectStates not in that snapshot are moved here.
@@ -645,7 +700,7 @@ class ObjectStateRegistry:
 
     @classmethod
     @contextmanager
-    def atomic(cls, label: str) -> Generator[None, None, None]:
+    def atomic(cls, label: str, scope_id: Optional[str] = None) -> Generator[None, None, None]:
         """Context manager for atomic operations that should be a single undo step.
 
         All ObjectState changes within this context are coalesced into a single
@@ -664,10 +719,14 @@ class ObjectStateRegistry:
 
         Args:
             label: Human-readable label for the coalesced snapshot
+            scope_id: Optional semantic owner of the mutation. When omitted,
+                the first scoped snapshot request inside the atomic block becomes
+                the owner.
         """
         cls._atomic_depth += 1
         if cls._atomic_depth == 1:
             cls._atomic_label = label
+            cls._atomic_triggering_scope = scope_id
 
         try:
             yield
@@ -676,8 +735,10 @@ class ObjectStateRegistry:
             if cls._atomic_depth == 0:
                 # Outermost atomic block - record the coalesced snapshot
                 final_label = cls._atomic_label or label
+                triggering_scope = cls._atomic_triggering_scope
                 cls._atomic_label = None
-                cls.record_snapshot(final_label)
+                cls._atomic_triggering_scope = None
+                cls.record_snapshot(final_label, triggering_scope)
 
     @classmethod
     def get_branch_history(cls, branch_name: Optional[str] = None) -> List[Snapshot]:
@@ -752,6 +813,8 @@ class ObjectStateRegistry:
         # ATOMIC OPERATIONS: Defer snapshot until atomic block exits
         # The atomic() context manager will call record_snapshot() when it completes
         if cls._atomic_depth > 0:
+            if scope_id is not None and cls._atomic_triggering_scope is None:
+                cls._atomic_triggering_scope = scope_id
             logger.debug(f"⏱️ ATOMIC: Deferring snapshot '{label}' (depth={cls._atomic_depth})")
             return
 
@@ -780,13 +843,20 @@ class ObjectStateRegistry:
         # Capture ALL registered ObjectStates as StateSnapshot dataclasses
         all_states: Dict[str, StateSnapshot] = {}
         for key, state in cls._states.items():
+            state.validate_metadata_contracts("snapshot")
+            parameters, saved_parameters = (
+                state.copy_parameter_pair_preserving_callable_identity(
+                    state.parameters,
+                    state._saved_parameters,
+                )
+            )
             all_states[key] = StateSnapshot(
                 saved_resolved=copy.deepcopy(state._saved_resolved),
                 live_resolved=copy.deepcopy(state._live_resolved) if state._live_resolved else {},
-                parameters=copy.deepcopy(state.parameters),
-                saved_parameters=copy.deepcopy(state._saved_parameters),
+                parameters=parameters,
+                saved_parameters=saved_parameters,
                 provenance=copy.deepcopy(state._live_provenance),
-                meta=copy.deepcopy(state.metadata),
+                meta=state.copy_metadata_for_snapshot(),
             )
 
         # Determine parent_id for new snapshot
@@ -882,6 +952,309 @@ class ObjectStateRegistry:
             logger.debug(f"⏱️ PRUNE: Removed {len(unreachable)} unreachable snapshots")
 
     @classmethod
+    def _build_time_travel_transaction(cls, snapshot_id: str) -> TimeTravelTransaction | None:
+        if snapshot_id not in cls._snapshots:
+            logger.error(f"⏱️ TIME_TRAVEL: Snapshot {snapshot_id} not found")
+            return None
+
+        snapshot = cls._snapshots[snapshot_id]
+        return TimeTravelTransaction(
+            snapshot_id=snapshot_id,
+            snapshot=snapshot,
+            snapshot_scopes=set(snapshot.all_states.keys()),
+            current_scopes=set(cls._states.keys()),
+        )
+
+    @classmethod
+    def _reconcile_time_travel_scopes(
+        cls,
+        transaction: TimeTravelTransaction,
+    ) -> TimeTravelScopeReconciliation:
+        moved_to_limbo: Set[str] = set()
+        restored_scopes: Set[str] = set()
+
+        for scope_key in transaction.current_scopes - transaction.snapshot_scopes:
+            state = cls._states.pop(scope_key)
+            cls._time_travel_limbo[scope_key] = state
+            cls._fire_unregister_callbacks(scope_key, state)
+            moved_to_limbo.add(scope_key)
+            logger.debug(f"⏱️ TIME_TRAVEL: Moved to limbo: {scope_key}")
+
+        for scope_key in transaction.snapshot_scopes - transaction.current_scopes:
+            state = cls._pop_time_travel_restored_state(scope_key)
+            if state is None:
+                continue
+            cls._states[scope_key] = state
+            cls._fire_register_callbacks(scope_key, state)
+            restored_scopes.add(scope_key)
+
+        return TimeTravelScopeReconciliation(
+            moved_to_limbo=moved_to_limbo,
+            restored_scopes=restored_scopes,
+        )
+
+    @classmethod
+    def _pop_time_travel_restored_state(cls, scope_key: str) -> Optional['ObjectState']:
+        if scope_key in cls._time_travel_limbo:
+            logger.debug(f"⏱️ TIME_TRAVEL: Restored from limbo: {scope_key}")
+            return cls._time_travel_limbo.pop(scope_key)
+
+        if scope_key in cls._graveyard:
+            logger.debug(f"⏱️ TIME_TRAVEL: Resurrected from graveyard: {scope_key}")
+            return cls._graveyard.pop(scope_key)
+
+        logger.error(f"⏱️ TIME_TRAVEL: Cannot restore {scope_key} - not in limbo or graveyard")
+        return None
+
+    @classmethod
+    def _restore_time_travel_states(
+        cls,
+        transaction: TimeTravelTransaction,
+        reconciliation: TimeTravelScopeReconciliation,
+    ) -> TimeTravelChangeSet:
+        scope_changes: Dict[str, TimeTravelScopeChange] = {}
+
+        for scope_key, state_snap in transaction.snapshot.all_states.items():
+            state = cls._states.get(scope_key)
+            if not state:
+                continue
+
+            scope_changes[scope_key] = cls._restore_time_travel_state(
+                scope_key=scope_key,
+                state=state,
+                state_snap=state_snap,
+                was_restored_from_limbo=scope_key in reconciliation.restored_scopes,
+            )
+
+        return TimeTravelChangeSet(
+            triggering_scope=transaction.snapshot.triggering_scope,
+            scope_changes=scope_changes,
+        )
+
+    @classmethod
+    def _restore_time_travel_state(
+        cls,
+        *,
+        scope_key: str,
+        state: 'ObjectState',
+        state_snap: StateSnapshot,
+        was_restored_from_limbo: bool,
+    ) -> TimeTravelScopeChange:
+        current_params = state.parameters.copy() if state.parameters else {}
+        current_live = state._live_resolved.copy() if state._live_resolved else {}
+
+        changed_paths = cls._time_travel_changed_paths(
+            current_live=current_live,
+            target_live=state_snap.live_resolved,
+        )
+        changed_param_values = cls._time_travel_changed_param_values(
+            current_params=current_params,
+            target_params=state_snap.parameters,
+        )
+        changed_paths.update(changed_param_values.keys())
+
+        cls._apply_time_travel_navigation_state(
+            scope_key=scope_key,
+            state=state,
+            changed_param_values=changed_param_values,
+        )
+        cls._log_time_travel_param_changes(
+            scope_key=scope_key,
+            changed_param_values=changed_param_values,
+            was_restored_from_limbo=was_restored_from_limbo,
+        )
+
+        meta_changed_values = cls._time_travel_changed_meta_values(
+            current_meta=state.metadata,
+            target_meta=state_snap.meta,
+        )
+        cls._apply_time_travel_meta_state(
+            scope_key=scope_key,
+            state=state,
+            meta_changed_values=meta_changed_values,
+        )
+
+        cls._apply_time_travel_snapshot_state(state, state_snap)
+        is_concrete_dirty = state.parameters != state._saved_parameters
+        if is_concrete_dirty:
+            cls._log_time_travel_concrete_dirty(scope_key, state)
+
+        return TimeTravelScopeChange(
+            changed_paths=changed_paths,
+            changed_param_keys=set(changed_param_values.keys()),
+            meta_changed_keys=set(meta_changed_values.keys()),
+            is_concrete_dirty=is_concrete_dirty,
+        )
+
+    @staticmethod
+    def _time_travel_changed_paths(
+        *,
+        current_live: Dict,
+        target_live: Dict,
+    ) -> Set[str]:
+        return {
+            key
+            for key in set(target_live.keys()) | set(current_live.keys())
+            if target_live.get(key) != current_live.get(key)
+        }
+
+    @staticmethod
+    def _time_travel_changed_param_values(
+        *,
+        current_params: Dict,
+        target_params: Dict,
+    ) -> Dict[str, Tuple[Any, Any]]:
+        changed: Dict[str, Tuple[Any, Any]] = {}
+        for param_key in set(target_params.keys()) | set(current_params.keys()):
+            before = current_params.get(param_key)
+            after = target_params.get(param_key)
+            if is_dataclass(before) or is_dataclass(after):
+                continue
+            if before != after:
+                changed[param_key] = (before, after)
+        return changed
+
+    @classmethod
+    def _apply_time_travel_navigation_state(
+        cls,
+        *,
+        scope_key: str,
+        state: 'ObjectState',
+        changed_param_values: Dict[str, Tuple[Any, Any]],
+    ) -> None:
+        if not changed_param_values:
+            state._last_changed_field = None
+            state._last_changed_paths = set()
+            state._last_changed_values = {}
+            logger.debug(f"⏱️ LAST_CHANGED_FIELD: {scope_key} field=None (no param changes)")
+            return
+
+        sorted_changes = sorted(
+            changed_param_values.keys(),
+            key=lambda field: (field == "func", -field.count("."), field),
+        )
+        state._last_changed_field = sorted_changes[0]
+        state._last_changed_paths = set(changed_param_values.keys())
+        state._last_changed_values = copy.deepcopy(changed_param_values)
+        logger.debug(
+            "⏱️ LAST_CHANGED_FIELD: %s field=%s total_changes=%d",
+            scope_key,
+            state._last_changed_field,
+            len(changed_param_values),
+        )
+
+    @staticmethod
+    def _log_time_travel_param_changes(
+        *,
+        scope_key: str,
+        changed_param_values: Dict[str, Tuple[Any, Any]],
+        was_restored_from_limbo: bool,
+    ) -> None:
+        if was_restored_from_limbo:
+            return
+        for param_key, (before, after) in changed_param_values.items():
+            logger.debug(
+                "⏱️ PARAM_CHANGE: %s param=%s before=%r after=%r",
+                scope_key,
+                param_key,
+                before,
+                after,
+            )
+
+    @staticmethod
+    def _time_travel_changed_meta_values(
+        *,
+        current_meta: Dict,
+        target_meta: Dict,
+    ) -> Dict[str, Tuple[Any, Any]]:
+        changed: Dict[str, Tuple[Any, Any]] = {}
+        prev_meta = copy.deepcopy(current_meta)
+        next_meta = copy.deepcopy(target_meta)
+        for meta_key in set(prev_meta.keys()) | set(next_meta.keys()):
+            before = prev_meta.get(meta_key)
+            after = next_meta.get(meta_key)
+            if before != after:
+                changed[meta_key] = (before, after)
+        return changed
+
+    @staticmethod
+    def _apply_time_travel_meta_state(
+        *,
+        scope_key: str,
+        state: 'ObjectState',
+        meta_changed_values: Dict[str, Tuple[Any, Any]],
+    ) -> None:
+        state._last_changed_meta_keys = set(meta_changed_values.keys())
+        state._last_changed_meta_values = meta_changed_values
+        if meta_changed_values:
+            logger.debug("⏱️ META_CHANGE: %s keys=%s", scope_key, sorted(meta_changed_values))
+
+    @staticmethod
+    def _apply_time_travel_snapshot_state(
+        state: 'ObjectState',
+        state_snap: StateSnapshot,
+    ) -> None:
+        parameters, saved_parameters = (
+            state.copy_parameter_pair_preserving_callable_identity(
+                state_snap.parameters,
+                state_snap.saved_parameters,
+            )
+        )
+        state._saved_resolved = copy.deepcopy(state_snap.saved_resolved)
+        state._live_resolved = copy.deepcopy(state_snap.live_resolved)
+        state._live_provenance = copy.deepcopy(state_snap.provenance)
+        state.parameters = parameters
+        state._saved_parameters = saved_parameters
+        state.metadata = ObjectStateMetadataStore.from_snapshot(
+            scope_id=state.scope_id,
+            metadata=state_snap.meta,
+        )
+        if state._saved_parameters is None:
+            state._saved_parameters = copy.deepcopy(state.parameters)
+        state._sync_materialized_state()
+
+    @staticmethod
+    def _log_time_travel_concrete_dirty(scope_key: str, state: 'ObjectState') -> None:
+        for param_key in set(state.parameters.keys()) | set(state._saved_parameters.keys()):
+            parameter_value = state.parameters.get(param_key)
+            saved_value = state._saved_parameters.get(param_key)
+            if parameter_value != saved_value:
+                logger.debug(
+                    "⏱️ CONCRETE_DIRTY: %s param=%s params=%r saved_params=%r",
+                    scope_key,
+                    param_key,
+                    parameter_value,
+                    saved_value,
+                )
+
+    @classmethod
+    def _notify_time_travel_state_callbacks(cls, change_set: TimeTravelChangeSet) -> None:
+        for scope_key, change in change_set.scope_changes.items():
+            state = cls._states.get(scope_key)
+            if state is None:
+                continue
+            if change.changed_paths and state._on_resolved_changed_callbacks:
+                for callback in state._on_resolved_changed_callbacks:
+                    callback(change.changed_paths)
+
+    @classmethod
+    def _fire_time_travel_complete_callbacks(
+        cls,
+        change_set: TimeTravelChangeSet,
+    ) -> None:
+        if not cls._on_time_travel_complete_callbacks:
+            return
+
+        states_with_changes = change_set.legacy_entries(cls._states)
+        logger.debug(
+            "⏱️ TIME_TRAVEL: Firing %d callback(s) with %d changed state(s)",
+            len(cls._on_time_travel_complete_callbacks),
+            len(states_with_changes),
+        )
+        for callback in cls._on_time_travel_complete_callbacks:
+            callback(states_with_changes, change_set.triggering_scope)
+
+    @classmethod
     def time_travel_to_snapshot(cls, snapshot_id: str) -> bool:
         """Travel ALL ObjectStates to a specific snapshot by ID.
 
@@ -895,185 +1268,26 @@ class ObjectStateRegistry:
         Returns:
             True if travel succeeded.
         """
-        if snapshot_id not in cls._snapshots:
-            logger.error(f"⏱️ TIME_TRAVEL: Snapshot {snapshot_id} not found")
+        transaction = cls._build_time_travel_transaction(snapshot_id)
+        if transaction is None:
             return False
 
-        snapshot = cls._snapshots[snapshot_id]
         cls._current_head = snapshot_id
-
-        # Set flag so PFM knows to refresh widget values
         cls._in_time_travel = True
         try:
-            snapshot_scopes = set(snapshot.all_states.keys())
-            current_scopes = set(cls._states.keys())
-
-            # PHASE 1: UNREGISTER ObjectStates not in snapshot (move to limbo)
-            scopes_to_limbo = current_scopes - snapshot_scopes
-            for scope_key in scopes_to_limbo:
-                state = cls._states.pop(scope_key)
-                cls._time_travel_limbo[scope_key] = state
-                cls._fire_unregister_callbacks(scope_key, state)
-                logger.debug(f"⏱️ TIME_TRAVEL: Moved to limbo: {scope_key}")
-
-            # PHASE 2: RE-REGISTER ObjectStates from limbo or graveyard
-            # Track scopes restored in this phase - they shouldn't trigger window reopening
-            scopes_restored_from_limbo: Set[str] = set()
-            scopes_to_register = snapshot_scopes - current_scopes
-            for scope_key in scopes_to_register:
-                # Try limbo first (time-travel within session), then graveyard (deleted objects)
-                if scope_key in cls._time_travel_limbo:
-                    state = cls._time_travel_limbo.pop(scope_key)
-                    logger.debug(f"⏱️ TIME_TRAVEL: Restored from limbo: {scope_key}")
-                elif scope_key in cls._graveyard:
-                    state = cls._graveyard.pop(scope_key)
-                    logger.debug(f"⏱️ TIME_TRAVEL: Resurrected from graveyard: {scope_key}")
-                else:
-                    # This should not happen - snapshot references a scope we never had
-                    logger.error(f"⏱️ TIME_TRAVEL: Cannot restore {scope_key} - not in limbo or graveyard")
-                    continue
-                cls._states[scope_key] = state
-                cls._fire_register_callbacks(scope_key, state)
-                scopes_restored_from_limbo.add(scope_key)
-
-            # PHASE 3: RESTORE state for all ObjectStates in snapshot
-            # Track which scopes need window reopening (for PHASE 4)
-            scopes_needing_window: Set[str] = set()
-            # Track which scopes have any parameter changes (for navigation, even if now clean)
-            scopes_with_changes: Set[str] = set()
-
-            for scope_key, state_snap in snapshot.all_states.items():
-                state = cls._states.get(scope_key)
-                if not state:
-                    continue
-
-                # Was this scope just restored from limbo in PHASE 2?
-                was_restored_from_limbo = scope_key in scopes_restored_from_limbo
-
-                current_params = state.parameters.copy() if state.parameters else {}
-                target_live = state_snap.live_resolved
-                current_live = state._live_resolved.copy() if state._live_resolved else {}
-
-                # Find changed resolved values
-                changed_paths = set()
-                all_keys = set(target_live.keys()) | set(current_live.keys())
-                for key in all_keys:
-                    if target_live.get(key) != current_live.get(key):
-                        changed_paths.add(key)
-
-                # Find changed raw parameters (ONLY leaf fields, skip container dataclasses)
-                has_param_change = False
-                changed_param_keys = []
-                all_param_keys = set(state_snap.parameters.keys()) | set(current_params.keys())
-                for param_key in all_param_keys:
-                    before = current_params.get(param_key)
-                    after = state_snap.parameters.get(param_key)
-                    # Skip container dataclasses - they're structural, not editable values
-                    if is_dataclass(before) or is_dataclass(after):
-                        continue
-                    if before != after:
-                        changed_paths.add(param_key)
-                        changed_param_keys.append((param_key, before, after))
-                        has_param_change = True
-
-                # Track last changed field for navigation (concrete parameter change only)
-                # Use changed_param_keys (actual param changes) not changed_paths (resolved value changes)
-                if changed_param_keys:
-                    # Sort: non-func first, deepest paths first
-                    sorted_changes = sorted(
-                        changed_param_keys,
-                        key=lambda item: (item[0] == "func", -item[0].count("."), item[0]),
-                    )
-                    state._last_changed_field = sorted_changes[0][0]
-                    state._last_changed_paths = {item[0] for item in changed_param_keys}
-                    scopes_with_changes.add(scope_key)
-                    logger.debug(f"⏱️ LAST_CHANGED_FIELD: {scope_key} field={state._last_changed_field} total_changes={len(changed_param_keys)}")
-                else:
-                    state._last_changed_field = None
-                    state._last_changed_paths = set()
-                    logger.debug(f"⏱️ LAST_CHANGED_FIELD: {scope_key} field=None (no param changes)")
-
-                # Log param changes for debugging (but don't use to decide window opening)
-                # Only scopes with CONCRETE unsaved work should open windows (see below)
-                if has_param_change and not was_restored_from_limbo:
-                    for pk, pv_before, pv_after in changed_param_keys:
-                        logger.debug(f"⏱️ PARAM_CHANGE: {scope_key} param={pk} before={pv_before!r} after={pv_after!r}")
-
-                # Persist per-field before/after values for UI navigation.
-                # This allows downstream code (e.g., OpenHCS time-travel UI) to
-                # determine which dict-pattern key changed inside fields like 'func'.
-                state._last_changed_values = {
-                    pk: (pv_before, pv_after) for pk, pv_before, pv_after in changed_param_keys
-                }
-
-                # Track UI / integration metadata changes for navigation.
-                prev_meta = copy.deepcopy(state.metadata)
-                next_meta = copy.deepcopy(state_snap.meta)
-                meta_changed_keys = set()
-                meta_changed_values = {}
-                for mk in set(prev_meta.keys()) | set(next_meta.keys()):
-                    before = prev_meta.get(mk)
-                    after = next_meta.get(mk)
-                    if before != after:
-                        meta_changed_keys.add(mk)
-                        meta_changed_values[mk] = (before, after)
-                state._last_changed_meta_keys = meta_changed_keys
-                state._last_changed_meta_values = meta_changed_values
-                if meta_changed_keys:
-                    scopes_with_changes.add(scope_key)
-                    logger.debug(
-                        "⏱️ META_CHANGE: %s keys=%s",
-                        scope_key,
-                        sorted(meta_changed_keys),
-                    )
-
-                # RESTORE state (including saved_parameters for concrete dirty detection)
-                state._saved_resolved = copy.deepcopy(state_snap.saved_resolved)
-                state._live_resolved = copy.deepcopy(state_snap.live_resolved)
-                state._live_provenance = copy.deepcopy(state_snap.provenance)
-                state.parameters = copy.deepcopy(state_snap.parameters)
-                state._saved_parameters = copy.deepcopy(state_snap.saved_parameters)
-                state.metadata = copy.deepcopy(state_snap.meta)
-                # Back-compat: old snapshots may not include saved_parameters.
-                if state._saved_parameters is None:
-                    state._saved_parameters = copy.deepcopy(state.parameters)
-                state._sync_materialized_state()
-
-                # ALL scopes: include if CONCRETE dirty after restore (unsaved work exists)
-                # Concrete dirty = parameters != saved_parameters (raw values, not resolved)
-                is_concrete_dirty = state.parameters != state._saved_parameters
-                if is_concrete_dirty:
-                    # Log which params differ for debugging
-                    for k in set(state.parameters.keys()) | set(state._saved_parameters.keys()):
-                        p_val = state.parameters.get(k)
-                        sp_val = state._saved_parameters.get(k)
-                        if p_val != sp_val:
-                            logger.debug(f"⏱️ CONCRETE_DIRTY: {scope_key} param={k} params={p_val!r} saved_params={sp_val!r}")
-                    scopes_needing_window.add(scope_key)
-
-                # Notify UI
-                if changed_paths and state._on_resolved_changed_callbacks:
-                    for callback in state._on_resolved_changed_callbacks:
-                        callback(changed_paths)
-
-            # PHASE 4: Fire time-travel completion callbacks
-            # ALWAYS fire callbacks so subscribers can update their state (e.g., PlateManager
-            # needs to refresh orchestrators dict even when no dirty states).
-            # Pass states_with_changes for navigation (includes clean->dirty AND dirty->clean transitions)
-            if cls._on_time_travel_complete_callbacks:
-                states_with_changes = [
-                    (scope_key, cls._states[scope_key])
-                    for scope_key in scopes_with_changes
-                    if scope_key in cls._states
-                ]
-                logger.debug(f"⏱️ TIME_TRAVEL: Firing {len(cls._on_time_travel_complete_callbacks)} callback(s) with {len(states_with_changes)} changed state(s)")
-                for callback in cls._on_time_travel_complete_callbacks:
-                    callback(states_with_changes, snapshot.triggering_scope)
+            reconciliation = cls._reconcile_time_travel_scopes(transaction)
+            change_set = cls._restore_time_travel_states(transaction, reconciliation)
+            cls._notify_time_travel_state_callbacks(change_set)
+            cls._fire_time_travel_complete_callbacks(change_set)
         finally:
             cls._in_time_travel = False
 
         cls._fire_history_changed_callbacks()
-        logger.info(f"⏱️ TIME_TRAVEL: Traveled to {snapshot.label} ({snapshot_id[:8]})")
+        logger.info(
+            "⏱️ TIME_TRAVEL: Traveled to %s (%s)",
+            transaction.snapshot.label,
+            snapshot_id[:8],
+        )
         return True
 
     @classmethod
@@ -1437,5 +1651,3 @@ class ObjectStateRegistry:
             data = json.load(f)
         cls.import_history_from_dict(data)
         logger.info(f"⏱️ Loaded {len(cls._snapshots)} snapshots from {filepath}")
-
-

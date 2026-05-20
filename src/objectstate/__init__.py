@@ -71,6 +71,7 @@ _submodules = [
     'object_state_registry',
     'object_state',
     'snapshot_model',
+    'object_state_metadata',
     'parametric_axes',
     'reified_generics',
 ]
@@ -225,6 +226,11 @@ __description__ = 'Generic configuration framework for lazy dataclass resolution
 # Object state management
 from objectstate.object_state_registry import ObjectStateRegistry
 from objectstate.object_state import ObjectState
+from objectstate.object_state_metadata import (
+    ObjectStateMetadataContract,
+    ObjectStateMetadataContractRegistry,
+    ObjectStateMetadataStore,
+)
 
 # Snapshot model for time-travel
 from objectstate.snapshot_model import Snapshot, StateSnapshot, Timeline
@@ -240,6 +246,9 @@ __all__ += [
     # Object state
     'ObjectState',
     'ObjectStateRegistry',
+    'ObjectStateMetadataContract',
+    'ObjectStateMetadataContractRegistry',
+    'ObjectStateMetadataStore',
     # Snapshot model
     'Snapshot',
     'StateSnapshot', 
