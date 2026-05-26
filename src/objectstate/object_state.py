@@ -1122,6 +1122,54 @@ class ObjectState:
 
         return None
 
+    def project_ui_visible_field_path(self, container_type: type, field_name: str) -> Optional[str]:
+        """Project a container type and field name to the visible UI field path.
+
+        Hidden configuration classes can own inherited values even when the form
+        renders a visible subclass. ObjectState owns the path/type index, so this
+        method is the authority for remapping hidden source types to a visible
+        field path.
+        """
+        from objectstate.lazy_factory import get_base_type_for_lazy
+        from objectstate.ui_visibility import UIVisibilityRegistry
+
+        container_base = get_base_type_for_lazy(container_type) or container_type
+        if UIVisibilityRegistry.is_hidden(container_base):
+            return self._find_visible_subclass_field_path(container_base, field_name)
+
+        path_prefix = self.find_path_for_type(container_type)
+        if path_prefix is None:
+            return None
+
+        field_path = f"{path_prefix}.{field_name}" if path_prefix else field_name
+        if field_path not in self._path_to_type and field_path not in self.parameters:
+            return None
+        return field_path
+
+    def _find_visible_subclass_field_path(self, hidden_type: type, field_name: str) -> Optional[str]:
+        """Find a rendered field path for a hidden config type via a visible subclass."""
+        from objectstate.lazy_factory import get_base_type_for_lazy
+        from objectstate.ui_visibility import UIVisibilityRegistry
+
+        hidden_base = get_base_type_for_lazy(hidden_type) or hidden_type
+        for path, typ in self._path_to_type.items():
+            if "." in path:
+                continue
+
+            typ_base = get_base_type_for_lazy(typ) or typ
+            if not isinstance(typ_base, type):
+                continue
+            if UIVisibilityRegistry.is_hidden(typ_base):
+                continue
+            if hidden_base not in typ_base.__mro__:
+                continue
+
+            field_path = f"{path}.{field_name}"
+            if field_path in self._path_to_type or field_path in self.parameters:
+                return field_path
+
+        return None
+
     def resolve_for_type(self, container_type: type, field_name: str) -> Any:
         """Resolve a field value given the container type and field name.
 

@@ -10,6 +10,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, fields, is_dataclass, make_dataclass, MISSING, field
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar, Union
 
+from objectstate.ui_visibility import mark_ui_hidden_config
+
 # Note: dual_axis_resolver_recursive and lazy_placeholder imports kept inline to avoid circular imports
 
 
@@ -1333,11 +1335,11 @@ def create_global_default_decorator(target_config_class: Type):
             field_name = _camel_to_snake(actual_cls.__name__)
             lazy_class_name = f"{LAZY_CONFIG_PREFIX}{actual_cls.__name__}"
 
-            # Mark class with ui_hidden metadata for UI layer to check
+            # Mark class with typed ui_hidden metadata for UI layer to check
             # This allows the config to remain in the context (for lazy resolution)
             # while being hidden from UI rendering
             if ui_hidden:
-                actual_cls._ui_hidden = True
+                mark_ui_hidden_config(actual_cls)
 
             # Register preview label for UI list item previews
             # Allows ABC to auto-discover which configs should appear in preview
@@ -1403,7 +1405,7 @@ def create_global_default_decorator(target_config_class: Type):
 
             # Copy metadata to lazy class for UI compatibility
             if ui_hidden:
-                lazy_class._ui_hidden = True
+                mark_ui_hidden_config(lazy_class)
             if preview_label is not None:
                 PREVIEW_LABEL_REGISTRY[lazy_class] = preview_label
             # Copy class abbreviation to lazy class
@@ -1572,6 +1574,5 @@ def auto_create_decorator(global_config_class):
     # Lazy global config will be created after field injection
 
     return global_config_class
-
 
 

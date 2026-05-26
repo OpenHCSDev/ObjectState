@@ -232,6 +232,19 @@ from objectstate.object_state_metadata import (
     ObjectStateMetadataStore,
 )
 
+from objectstate.ui_visibility import (
+    UIParameterVisibilityPolicy,
+    UIParameterVisibilityRequest,
+    UISpecialFieldRegistry,
+    UIVisibilityRegistry,
+    has_ui_special_field,
+    is_ui_hidden_config_candidate,
+    is_ui_hidden_config_type,
+    mark_ui_special_fields,
+    mark_ui_hidden_config,
+    should_hide_ui_parameter,
+)
+
 # Snapshot model for time-travel
 from objectstate.snapshot_model import Snapshot, StateSnapshot, Timeline
 
@@ -249,6 +262,16 @@ __all__ += [
     'ObjectStateMetadataContract',
     'ObjectStateMetadataContractRegistry',
     'ObjectStateMetadataStore',
+    'UIParameterVisibilityPolicy',
+    'UIParameterVisibilityRequest',
+    'UISpecialFieldRegistry',
+    'UIVisibilityRegistry',
+    'has_ui_special_field',
+    'is_ui_hidden_config_candidate',
+    'is_ui_hidden_config_type',
+    'mark_ui_special_fields',
+    'mark_ui_hidden_config',
+    'should_hide_ui_parameter',
     # Snapshot model
     'Snapshot',
     'StateSnapshot', 
