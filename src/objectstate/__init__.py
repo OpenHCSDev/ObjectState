@@ -56,7 +56,10 @@ import importlib
 import sys
 
 # Keep objectstate and openhcs.config_framework pointing to the same package instance
-_alias_prefix = 'openhcs.config_framework' if __name__ == 'objectstate' else 'objectstate'
+if __name__ == 'objectstate':
+    _alias_prefix = 'openhcs.config_framework'
+else:
+    _alias_prefix = 'objectstate'
 sys.modules[_alias_prefix] = sys.modules[__name__]
 
 _submodules = [
@@ -74,6 +77,7 @@ _submodules = [
     'object_state_metadata',
     'parametric_axes',
     'reified_generics',
+    'field_access',
 ]
 
 for _mod in _submodules:
@@ -83,7 +87,7 @@ for _mod in _submodules:
         continue
     # Ensure both namespaces resolve to the same submodule object
     sys.modules[f'{_alias_prefix}.{_mod}'] = _module
-    setattr(sys.modules[_alias_prefix], _mod, _module)
+    sys.modules[_alias_prefix].__dict__[_mod] = _module
 
 # Factory
 from objectstate.lazy_factory import (
@@ -168,6 +172,9 @@ from objectstate.live_context_resolver import LiveContextResolver
 # Token cache
 from objectstate.token_cache import TokenCache, SingleValueTokenCache, CacheKey
 
+# Field access authority
+from objectstate.field_access import DataclassFieldAccess, DottedFieldPath, FieldAccessError
+
 __all__ = [
     # Factory
     'LazyDataclassFactory',
@@ -216,6 +223,10 @@ __all__ = [
     'TokenCache',
     'SingleValueTokenCache',
     'CacheKey',
+    # Field access authority
+    'DataclassFieldAccess',
+    'DottedFieldPath',
+    'FieldAccessError',
 ]
 
 __version__ = '1.0.17'
