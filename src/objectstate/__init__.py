@@ -73,6 +73,7 @@ _submodules = [
     'token_cache',
     'object_state_registry',
     'object_state',
+    'edit_session',
     'snapshot_model',
     'object_state_metadata',
     'parametric_axes',
@@ -175,6 +176,9 @@ from objectstate.token_cache import TokenCache, SingleValueTokenCache, CacheKey
 # Field access authority
 from objectstate.field_access import DataclassFieldAccess, DottedFieldPath, FieldAccessError
 
+# ObjectState edit boundary
+from objectstate.edit_session import ObjectStateEditSession
+
 __all__ = [
     # Factory
     'LazyDataclassFactory',
@@ -227,6 +231,8 @@ __all__ = [
     'DataclassFieldAccess',
     'DottedFieldPath',
     'FieldAccessError',
+    # ObjectState edit boundary
+    'ObjectStateEditSession',
 ]
 
 __version__ = '1.0.17'

@@ -741,6 +741,52 @@ class ObjectStateRegistry:
                 cls.record_snapshot(final_label, triggering_scope)
 
     @classmethod
+    @contextmanager
+    def atomic_success(
+        cls,
+        label: str,
+        scope_id: Optional[str] = None,
+    ) -> Generator[None, None, None]:
+        """Record one coalesced snapshot only when the atomic body succeeds.
+
+        This shares the same coalescing state as ``atomic`` so nested ordinary
+        atomic blocks defer into the outer success-only operation. If the body
+        raises, the outermost success-only operation unwinds without recording
+        a partial snapshot.
+        """
+        cls._atomic_depth += 1
+        if cls._atomic_depth == 1:
+            cls._atomic_label = label
+            cls._atomic_triggering_scope = scope_id
+
+        succeeded = False
+        try:
+            yield
+            succeeded = True
+        finally:
+            cls._atomic_depth -= 1
+            if cls._atomic_depth == 0:
+                final_label = cls._atomic_label or label
+                triggering_scope = cls._atomic_triggering_scope
+                cls._atomic_label = None
+                cls._atomic_triggering_scope = None
+                if succeeded:
+                    cls.record_snapshot(final_label, triggering_scope)
+
+    @classmethod
+    def ensure_baseline_snapshot(cls, label: str = "init") -> None:
+        """Create the initial baseline snapshot when history is empty."""
+        if not cls._history_enabled:
+            return
+        if cls._in_time_travel:
+            return
+        if cls._snapshots:
+            return
+        import time
+
+        cls._record_snapshot_internal(label, time.time(), None)
+
+    @classmethod
     def get_branch_history(cls, branch_name: Optional[str] = None) -> List[Snapshot]:
         """Get ordered history for a branch by walking parent_id chain.
 
