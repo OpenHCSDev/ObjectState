@@ -49,6 +49,8 @@ def invalidate_mro_cache_for_field(changed_type: type, field_name: str) -> None:
     """
     if not _mro_resolution_cache:
         return
+    if not isinstance(changed_type, type):
+        return
 
     from objectstate.lazy_factory import get_base_type_for_lazy
     base_changed = get_base_type_for_lazy(changed_type) or changed_type
@@ -60,6 +62,8 @@ def invalidate_mro_cache_for_field(changed_type: type, field_name: str) -> None:
             continue
         # Check if obj_type could inherit from changed_type
         obj_base = get_base_type_for_lazy(obj_type) or obj_type
+        if not isinstance(obj_base, type):
+            continue
         if base_changed in obj_base.__mro__:
             keys_to_remove.append(key)
 

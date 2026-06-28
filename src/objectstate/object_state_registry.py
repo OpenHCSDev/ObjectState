@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 TimeTravelStateEntry: TypeAlias = Tuple[str, 'ObjectState']
 TimeTravelCompleteCallback: TypeAlias = Callable[[List[TimeTravelStateEntry], Optional[str]], None]
+ParameterOwner: TypeAlias = type | Callable[..., Any]
 
 logger = logging.getLogger(__name__)
 
@@ -506,7 +507,7 @@ class ObjectStateRegistry:
     def invalidate_by_type_and_scope(
         cls,
         scope_id: Optional[str],
-        changed_type: type,
+        changed_type: ParameterOwner,
         field_name: str,
         invalidate_saved: bool = False
     ) -> None:
@@ -532,12 +533,16 @@ class ObjectStateRegistry:
         from objectstate.dual_axis_resolver import invalidate_mro_cache_for_field
 
         # PERFORMANCE: Targeted cache invalidation - only clear entries for this field/type
-        invalidate_mro_cache_for_field(changed_type, field_name)
+        if isinstance(changed_type, type):
+            invalidate_mro_cache_for_field(changed_type, field_name)
 
         changed_scope = cls._normalize_scope_id(scope_id)
 
         # Normalize to base type for comparison (LazyX → X)
-        base_changed_type = get_base_type_for_lazy(changed_type) or changed_type
+        if isinstance(changed_type, type):
+            base_changed_type = get_base_type_for_lazy(changed_type) or changed_type
+        else:
+            base_changed_type = changed_type
 
         # DEBUG: Log invalidation for well_filter
         if field_name == 'well_filter':
@@ -570,7 +575,7 @@ class ObjectStateRegistry:
     def _invalidate_field_in_matching_states(
         cls,
         state: 'ObjectState',
-        target_base_type: type,
+        target_base_type: ParameterOwner,
         field_name: str,
         invalidate_saved: bool = False
     ) -> None:
@@ -606,7 +611,10 @@ class ObjectStateRegistry:
         # Scan _path_to_type for matching container types
         for dotted_path, container_type in state._path_to_type.items():
             # Normalize container type
-            container_base_type = get_base_type_for_lazy(container_type) or container_type
+            if isinstance(container_type, type):
+                container_base_type = get_base_type_for_lazy(container_type) or container_type
+            else:
+                container_base_type = container_type
 
             # FIX: Check exact type match first (same type instance), then check MRO inheritance
             type_matches = False
@@ -614,7 +622,7 @@ class ObjectStateRegistry:
             # First check exact match
             if container_base_type == target_base_type:
                 type_matches = True
-            else:
+            elif isinstance(container_base_type, type) and isinstance(target_base_type, type):
                 # Check if target_base_type is in the MRO (container inherits the field)
                 for mro_class in container_base_type.__mro__:
                     mro_base = get_base_type_for_lazy(mro_class) or mro_class
@@ -1175,13 +1183,7 @@ class ObjectStateRegistry:
             logger.debug(f"⏱️ LAST_CHANGED_FIELD: {scope_key} field=None (no param changes)")
             return
 
-        sorted_changes = sorted(
-            changed_param_values.keys(),
-            key=lambda field: (field == "func", -field.count("."), field),
-        )
-        state._last_changed_field = sorted_changes[0]
-        state._last_changed_paths = set(changed_param_values.keys())
-        state._last_changed_values = copy.deepcopy(changed_param_values)
+        state._set_last_changed_values(changed_param_values)
         logger.debug(
             "⏱️ LAST_CHANGED_FIELD: %s field=%s total_changes=%d",
             scope_key,

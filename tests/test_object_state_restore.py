@@ -7,6 +7,7 @@ from objectstate import (
     ObjectState,
     ObjectStateRegistry,
     get_live_global_config,
+    mark_global_config_type,
     set_base_config_type,
     set_global_config_for_editing,
 )
@@ -19,7 +20,7 @@ def test_restore_saved_resets_live_global_context_for_descendants():
     class GlobalConfig:
         threshold: int = 1
 
-    GlobalConfig._is_global_config = True
+    mark_global_config_type(GlobalConfig)
     set_base_config_type(GlobalConfig)
     LazyGlobalConfig = LazyDataclassFactory.make_lazy_simple(GlobalConfig)
 

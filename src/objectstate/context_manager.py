@@ -582,7 +582,7 @@ def _inject_context_layer(
     Inject a context layer into the stack.
 
     Handles dataclass instantiation with SimpleNamespace fallback.
-    For types that can't be reconstructed (e.g., FunctionStep needs 'func' arg),
+    For types that can't be reconstructed from editable values alone,
     injects stored object + SimpleNamespace so type tracking works and live values win.
 
     Args:
@@ -927,7 +927,7 @@ def merge_configs(base, overrides: Dict[str, Any]):
 
     try:
         # CRITICAL: Do NOT filter out None values!
-        # In OpenHCS, None has semantic meaning: "inherit from parent context"
+        # None can be a semantic value such as "inherit from parent context".
         # When an override dict contains None, it means "reset this field to None"
         # which should override the base value with None for lazy resolution.
 

@@ -105,6 +105,7 @@ from objectstate.lazy_factory import (
     # Global config type checking
     GlobalConfigBase,
     GlobalConfigMeta,
+    mark_global_config_type,
     # Abbreviation decorator for config classes and fields
     abbreviation,
     is_global_config_type,
@@ -194,6 +195,7 @@ __all__ = [
     # Global config type checking
     'GlobalConfigBase',
     'GlobalConfigMeta',
+    'mark_global_config_type',
     'is_global_config_type',
     'is_global_config_instance',
     # Resolver

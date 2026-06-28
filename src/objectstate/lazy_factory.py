@@ -278,24 +278,33 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
+_GLOBAL_CONFIG_TYPES: set[type] = set()
+
+
+def mark_global_config_type(config_type: Type) -> Type:
+    """Register config_type as an ObjectState global-config authority."""
+    _GLOBAL_CONFIG_TYPES.add(config_type)
+    config_type._is_global_config = True
+    return config_type
+
+
 class GlobalConfigMeta(type):
     """
-    Metaclass that makes isinstance(obj, GlobalConfigBase) work by checking _is_global_config marker.
+    Metaclass that makes isinstance(obj, GlobalConfigBase) use the global config registry.
 
     This enables type-safe isinstance checks without inheritance:
         if isinstance(config, GlobalConfigBase):  # Returns True for GlobalPipelineConfig
                                                    # Returns False for PipelineConfig (lazy version)
     """
     def __instancecheck__(cls, instance):
-        # Check if the instance's type has the _is_global_config marker
-        return hasattr(type(instance), '_is_global_config') and type(instance)._is_global_config
+        return is_global_config_type(type(instance))
 
 
 class GlobalConfigBase(metaclass=GlobalConfigMeta):
     """
     Virtual base class for all global config types.
 
-    Uses custom metaclass to check _is_global_config marker instead of actual inheritance.
+    Uses custom metaclass to check the global config registry instead of actual inheritance.
     This prevents lazy versions (PipelineConfig) from being considered global configs.
 
     Usage:
@@ -342,7 +351,7 @@ def is_global_config_type(config_type: Type) -> bool:
     Returns:
         True if the type is marked as a global config, False otherwise
     """
-    return hasattr(config_type, '_is_global_config') and config_type._is_global_config
+    return config_type in _GLOBAL_CONFIG_TYPES
 
 
 def is_global_config_instance(config_instance: Any) -> bool:
@@ -1504,10 +1513,10 @@ def _inject_multiple_fields_into_dataclass(target_class: Type, configs: List[Dic
     new_class.__module__ = target_class.__module__
 
 
-    # CRITICAL: Preserve _is_global_config marker for GlobalPipelineConfig
-    # This marker is set by @auto_create_decorator but lost when make_dataclass creates a new class
-    if hasattr(target_class, '_is_global_config') and target_class._is_global_config:
-        new_class._is_global_config = True
+    # Preserve global-config registration across dataclass recreation.
+    # Registration is set by @auto_create_decorator but lost when make_dataclass creates a new class.
+    if is_global_config_type(target_class):
+        mark_global_config_type(new_class)
     # Sibling inheritance is now handled by the dual-axis resolver system
 
     # Direct module replacement
@@ -1561,8 +1570,8 @@ def auto_create_decorator(global_config_class):
     if not global_config_class.__name__.startswith(GLOBAL_CONFIG_PREFIX):
         raise ValueError(f"Global config class '{global_config_class.__name__}' must start with '{GLOBAL_CONFIG_PREFIX}' prefix")
 
-    # Mark this class as a global config for isinstance checks via GlobalConfigBase
-    global_config_class._is_global_config = True
+    # Mark this class as a global config for isinstance checks via GlobalConfigBase.
+    mark_global_config_type(global_config_class)
 
     decorator_name = _camel_to_snake(global_config_class.__name__)
     decorator = create_global_default_decorator(global_config_class)
@@ -1574,5 +1583,3 @@ def auto_create_decorator(global_config_class):
     # Lazy global config will be created after field injection
 
     return global_config_class
-
-
