@@ -19,6 +19,7 @@ from objectstate.object_state_metadata import (
     ObjectStateMetadataStore,
 )
 from objectstate.object_state_registry import ObjectStateRegistry
+from objectstate.field_access import DataclassFieldAccess
 
 logger = logging.getLogger(__name__)
 
@@ -759,6 +760,28 @@ class ObjectState:
         finally:
             self._in_reset = False
 
+    def _dataclass_parameter_updates(self, prefix: str, value: Any) -> Dict[str, Any]:
+        """Flatten a dataclass container update into registered child parameters."""
+        if value is None or not is_dataclass(type(value)):
+            return {}
+
+        prefix_dot = f"{prefix}."
+        if not any(
+            path.startswith(prefix_dot)
+            for path in self.parameters
+            if path != prefix
+        ):
+            return {}
+
+        updates: Dict[str, Any] = {}
+        for field in dataclass_fields(value):
+            field_path = f"{prefix_dot}{field.name}"
+            field_value = DataclassFieldAccess.raw_value(value, field.name)
+            if field_path in self.parameters:
+                updates[field_path] = field_value
+            updates.update(self._dataclass_parameter_updates(field_path, field_value))
+        return updates
+
     def update_parameter(self, param_name: str, value: Any) -> None:
         """Update parameter value in state.
 
@@ -785,16 +808,27 @@ class ObjectState:
             )
             return
 
+        child_updates = self._dataclass_parameter_updates(param_name, value)
+
         # EARLY EXIT: No change, no invalidation, no flash
         current_value = self.parameters[param_name]
-        if current_value == value:
+        changed_params = {
+            child_path
+            for child_path, child_value in child_updates.items()
+            if self.parameters.get(child_path) != child_value
+        }
+        if current_value != value:
+            changed_params.add(param_name)
+        if not changed_params:
             return
 
         # Update state directly (no type conversion - that's VIEW responsibility)
         self.parameters[param_name] = value
+        for child_path, child_value in child_updates.items():
+            self.parameters[child_path] = child_value
 
         # SELF-INVALIDATION: Mark this field as needing recompute in our own cache
-        self._invalid_fields.add(param_name)
+        self._invalid_fields.update(changed_params)
         self._cached_object = None  # Invalidate cached reconstructed object
         self._cached_object_applied = False
 
@@ -850,24 +884,25 @@ class ObjectState:
             except Exception as e:
                 logger.warning(f"Failed to update LIVE thread-local: {e}")
 
-        # SCOPE + TYPE + FIELD AWARE INVALIDATION:
-        # Get the CONTAINER type for this field (e.g., WellFilterConfig for 'well_filter_config.well_filter')
-        # This is critical for sibling inheritance: when WellFilterConfig.well_filter changes,
-        # we need to invalidate PathPlanningConfig.well_filter (which inherits from WellFilterConfig)
-        container_type = self._path_to_type.get(param_name, type(self.object_instance))
+        for changed_param in changed_params:
+            # SCOPE + TYPE + FIELD AWARE INVALIDATION:
+            # Get the CONTAINER type for this field (e.g., WellFilterConfig for 'well_filter_config.well_filter')
+            # This is critical for sibling inheritance: when WellFilterConfig.well_filter changes,
+            # we need to invalidate PathPlanningConfig.well_filter (which inherits from WellFilterConfig)
+            container_type = self._path_to_type.get(changed_param, type(self.object_instance))
 
-        # Extract leaf field name for invalidation matching
-        leaf_field_name = param_name.split('.')[-1] if '.' in param_name else param_name
+            # Extract leaf field name for invalidation matching
+            leaf_field_name = changed_param.split('.')[-1] if '.' in changed_param else changed_param
 
-        # DEBUG: Log invalidation for well_filter
-        if 'well_filter' in param_name:
-            logger.debug(f"🔍 Invalidating descendants: scope={self.scope_id}, type={container_type.__name__}, field={leaf_field_name}")
+            # DEBUG: Log invalidation for well_filter
+            if 'well_filter' in changed_param:
+                logger.debug(f"🔍 Invalidating descendants: scope={self.scope_id}, type={container_type.__name__}, field={leaf_field_name}")
 
-        ObjectStateRegistry.invalidate_by_type_and_scope(
-            scope_id=self.scope_id,
-            changed_type=container_type,
-            field_name=leaf_field_name
-        )
+            ObjectStateRegistry.invalidate_by_type_and_scope(
+                scope_id=self.scope_id,
+                changed_type=container_type,
+                field_name=leaf_field_name
+            )
 
         # Increment global token for LiveContextService.collect() cache invalidation
         ObjectStateRegistry.increment_token(notify=False)
@@ -1509,6 +1544,14 @@ class ObjectState:
         # This ensures reset goes back to None for lazy fields, not saved concrete values
         default_value = self._signature_defaults.get(param_name)
         self.update_parameter(param_name, default_value)
+
+    def signature_default(self, param_name: str) -> Any:
+        """Return the signature default recorded for one flat parameter path."""
+        if param_name not in self._signature_defaults:
+            raise KeyError(
+                f"No signature default recorded for parameter {param_name!r}."
+            )
+        return self._signature_defaults[param_name]
 
     def get_current_values(self) -> Dict[str, Any]:
         """

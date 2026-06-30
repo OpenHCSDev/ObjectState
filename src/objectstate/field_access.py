@@ -44,6 +44,16 @@ class DataclassFieldAccess:
             )
         return frozenset(field.name for field in fields(dataclass_type))
 
+    @staticmethod
+    def init_field_names(instance_or_type) -> tuple[str, ...]:
+        dataclass_type = instance_or_type if isinstance(instance_or_type, type) else type(instance_or_type)
+        if not is_dataclass(dataclass_type):
+            raise TypeError(
+                "DataclassFieldAccess requires a dataclass instance or type; "
+                f"got {dataclass_type!r}."
+            )
+        return tuple(field.name for field in fields(dataclass_type) if field.init)
+
     @classmethod
     def has_field(cls, instance_or_type, field_name: str) -> bool:
         return field_name in cls.field_names(instance_or_type)
@@ -103,3 +113,13 @@ class DataclassFieldAccess:
         for field_name in field_names:
             if cls.has_field(instance, field_name):
                 yield field_name, cls.raw_value(instance, field_name)
+
+    @classmethod
+    def raw_init_values(cls, instance, constructor_type: type | None = None) -> dict[str, object]:
+        """Return raw values for dataclass fields accepted by a constructor."""
+
+        field_owner = constructor_type or type(instance)
+        return {
+            field_name: cls.raw_value(instance, field_name)
+            for field_name in cls.init_field_names(field_owner)
+        }
