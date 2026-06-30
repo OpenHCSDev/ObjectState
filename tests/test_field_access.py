@@ -1,3 +1,4 @@
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 import pytest
@@ -22,6 +23,18 @@ class SlottedConfig:
     name: str = "slotted"
 
 
+class AbstractFieldConfig(ABC):
+    @property
+    @abstractmethod
+    def value(self) -> int:
+        """Field exposed by concrete slotted dataclasses."""
+
+
+@dataclass(frozen=True, slots=True)
+class SlottedAbstractConfig(AbstractFieldConfig):
+    value: int = 11
+
+
 def test_raw_value_reads_regular_dataclass_field() -> None:
     config = RegularConfig(child=NestedConfig())
 
@@ -32,6 +45,12 @@ def test_raw_value_reads_slotted_dataclass_field() -> None:
     config = SlottedConfig(child=NestedConfig())
 
     assert DataclassFieldAccess.raw_value(config, "name") == "slotted"
+
+
+def test_raw_value_reads_slotted_field_when_abc_adds_instance_dict() -> None:
+    config = SlottedAbstractConfig()
+
+    assert DataclassFieldAccess.raw_value(config, "value") == 11
 
 
 def test_raw_path_traverses_dotted_field_path() -> None:

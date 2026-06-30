@@ -69,9 +69,7 @@ class DataclassFieldAccess:
         if cls._has_instance_dict(type(instance)):
             storage = vars(instance)
             if field_name not in storage:
-                raise FieldAccessError(
-                    f"{type(instance).__name__}.{field_name} is not stored on the instance."
-                )
+                return cls._slot_field_value(instance, field_name)
             return storage[field_name]
 
         return cls._slot_field_value(instance, field_name)
