@@ -387,6 +387,7 @@ class ObjectStateRegistry:
 
     _token: int = 0  # Cache invalidation token
     _change_callbacks: List[Callable[[], None]] = []  # Change listeners
+    _resolved_changed_callbacks: List[Callable[[str, Set[str]], None]] = []
 
     @classmethod
     def get_token(cls) -> int:
@@ -448,6 +449,41 @@ class ObjectStateRegistry:
         if callback in cls._change_callbacks:
             cls._change_callbacks.remove(callback)
             logger.debug(f"Disconnected change listener: {callback}")
+
+    @classmethod
+    def add_resolved_changed_callback(
+        cls,
+        callback: Callable[[str, Set[str]], None],
+    ) -> None:
+        """Subscribe to resolved-value changes from any registered ObjectState."""
+        if callback not in cls._resolved_changed_callbacks:
+            cls._resolved_changed_callbacks.append(callback)
+
+    @classmethod
+    def remove_resolved_changed_callback(
+        cls,
+        callback: Callable[[str, Set[str]], None],
+    ) -> None:
+        """Unsubscribe from registry-wide resolved-value changes."""
+        if callback in cls._resolved_changed_callbacks:
+            cls._resolved_changed_callbacks.remove(callback)
+
+    @classmethod
+    def notify_resolved_changed(
+        cls,
+        scope_id: Optional[str],
+        changed_paths: Set[str],
+    ) -> None:
+        """Publish resolved changes through the registry-level authority."""
+        if not changed_paths:
+            return
+        scope_key = cls._normalize_scope_id(scope_id)
+        cls._fire_callbacks(
+            cls._resolved_changed_callbacks,
+            "resolved_changed",
+            scope_key,
+            set(changed_paths),
+        )
 
     # ========== ANCESTOR OBJECT COLLECTION ==========
 
@@ -676,8 +712,6 @@ class ObjectStateRegistry:
             field_name: Field to invalidate
             invalidate_saved: If True, also invalidate saved_resolved cache for this field
         """
-        from objectstate.lazy_factory import get_base_type_for_lazy
-
         invalidated_paths: set[str] = set()
         _debug = logger.isEnabledFor(logging.DEBUG)
 
@@ -686,50 +720,20 @@ class ObjectStateRegistry:
             logger.debug(f"🔍 _invalidate_field_in_matching_states: state_scope={state.scope_id}, target_base_type={target_base_type.__name__}, field_name={field_name}")
             logger.debug(f"🔍   state._path_to_type has {len(state._path_to_type)} entries")
 
-        # Scan _path_to_type for matching container types
-        for dotted_path, container_type in state._path_to_type.items():
-            # Normalize container type
-            if isinstance(container_type, type):
-                container_base_type = get_base_type_for_lazy(container_type) or container_type
-            else:
-                container_base_type = container_type
+        for dotted_path in state.inheritance_field_paths(
+            target_base_type,
+            field_name,
+        ):
+            if _debug:
+                logger.debug(f"🔄 INVALIDATING FIELD: {dotted_path} (in parameters)")
+            state.invalidate_field(dotted_path)
+            invalidated_paths.add(dotted_path)
 
-            # FIX: Check exact type match first (same type instance), then check MRO inheritance
-            type_matches = False
-
-            # First check exact match
-            if container_base_type == target_base_type:
-                type_matches = True
-            elif isinstance(container_base_type, type) and isinstance(target_base_type, type):
-                # Check if target_base_type is in the MRO (container inherits the field)
-                for mro_class in container_base_type.__mro__:
-                    mro_base = get_base_type_for_lazy(mro_class) or mro_class
-                    if mro_base == target_base_type:
-                        type_matches = True
-                        break
-
-            # DEBUG: Log type matching details for fields that end with the target field_name
-            if _debug and (dotted_path.endswith(f'.{field_name}') or dotted_path == field_name):
-                logger.debug(f"🔍   Checking field: {dotted_path}")
-                logger.debug(f"🔍     container_type={container_type.__name__}, container_base_type={container_base_type.__name__}")
-                logger.debug(f"🔍     type_matches={type_matches}, target={target_base_type.__name__}")
-
-            # If type matches and path ends with the field_name, invalidate it
-            if type_matches and (dotted_path.endswith(f'.{field_name}') or dotted_path == field_name):
-                if dotted_path in state.parameters:
-                    if _debug:
-                        logger.debug(f"🔄 INVALIDATING FIELD: {dotted_path} (in parameters)")
-                    state.invalidate_field(dotted_path)
-                    invalidated_paths.add(dotted_path)
-
-                    # If invalidating saved baseline, remove from saved_resolved so it recomputes
-                    if invalidate_saved and dotted_path in state._saved_resolved:
-                        del state._saved_resolved[dotted_path]
-                        if _debug:
-                            logger.debug(f"Invalidated saved_resolved cache for {dotted_path}")
-                elif _debug:
-                    logger.debug(f"⚠️ FIELD NOT IN PARAMETERS: {dotted_path} - skipping invalidation")
-                    logger.debug(f"⚠️   state.parameters keys: {list(state.parameters.keys())[:10]}...")
+            # If invalidating saved baseline, remove from saved_resolved so it recomputes
+            if invalidate_saved and dotted_path in state._saved_resolved:
+                del state._saved_resolved[dotted_path]
+                if _debug:
+                    logger.debug(f"Invalidated saved_resolved cache for {dotted_path}")
 
         # Trigger recompute immediately to detect if resolved values actually changed.
         # This ensures callbacks fire only when values change, not just when fields are invalidated.
@@ -1359,9 +1363,11 @@ class ObjectStateRegistry:
             state = cls._states.get(scope_key)
             if state is None:
                 continue
-            if change.changed_paths and state._on_resolved_changed_callbacks:
-                for callback in state._on_resolved_changed_callbacks:
-                    callback(change.changed_paths)
+            if change.changed_paths:
+                state._notify_resolved_changed(
+                    change.changed_paths,
+                    context="time_travel",
+                )
 
     @classmethod
     def _fire_time_travel_complete_callbacks(

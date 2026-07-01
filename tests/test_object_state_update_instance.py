@@ -1,6 +1,6 @@
 """ObjectState replacement lifecycle tests."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pytest
 
@@ -28,6 +28,7 @@ def _reset_registry() -> None:
     ObjectStateRegistry._atomic_label = None
     ObjectStateRegistry._atomic_triggering_scope = None
     ObjectStateRegistry._token = 0
+    ObjectStateRegistry._resolved_changed_callbacks.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -41,6 +42,16 @@ def reset_registry() -> None:
 class PlainConfig:
     threshold: int = 1
     label: str = "old"
+
+
+@dataclass(frozen=True)
+class DataclassLeaf:
+    name: str
+
+
+@dataclass
+class ConfigWithDataclassLeaf:
+    leaf: DataclassLeaf | None = None
 
 
 class DelegatedHost:
@@ -63,6 +74,71 @@ def test_update_object_instance_notifies_resolved_changes_and_saved_baseline():
     assert state.dirty_fields == set()
     assert state.is_raw_dirty is False
     assert state.last_changed_field == "threshold"
+
+
+def test_update_object_instance_publishes_registry_resolved_change_without_local_subscriber():
+    state = ObjectState(PlainConfig(), scope_id="config")
+    events: list[tuple[str, set[str]]] = []
+
+    def on_registry_change(scope_id: str, changed_paths: set[str]) -> None:
+        events.append((scope_id, set(changed_paths)))
+
+    ObjectStateRegistry.add_resolved_changed_callback(on_registry_change)
+
+    try:
+        state.update_object_instance(PlainConfig(threshold=2))
+    finally:
+        ObjectStateRegistry.remove_resolved_changed_callback(on_registry_change)
+
+    assert events == [("config", {"threshold"})]
+
+
+def test_dataclass_leaf_value_is_not_treated_as_flat_container():
+    LazyConfigWithDataclassLeaf = LazyDataclassFactory.make_lazy_simple(
+        ConfigWithDataclassLeaf
+    )
+    state = ObjectState(LazyConfigWithDataclassLeaf(), scope_id="config")
+    ObjectStateRegistry.register(state, _skip_snapshot=True)
+
+    value = DataclassLeaf("explicit")
+    state.update_parameter("leaf", value)
+
+    assert state.get_resolved_value("leaf") == value
+    assert state.dirty_fields == {"leaf"}
+
+    state.mark_saved()
+
+    assert state.get_saved_resolved_value("leaf") == value
+    assert state.dirty_fields == set()
+
+
+def test_same_state_sibling_inheritance_invalidates_dataclass_leaf():
+    @dataclass
+    class ParentConfig:
+        leaf: DataclassLeaf | None = None
+
+    @dataclass
+    class ChildConfig(ParentConfig):
+        leaf: DataclassLeaf | None = None
+
+    LazyParentConfig = LazyDataclassFactory.make_lazy_simple(ParentConfig)
+    LazyChildConfig = LazyDataclassFactory.make_lazy_simple(ChildConfig)
+
+    @dataclass
+    class RootConfig:
+        parent_config: LazyParentConfig = field(default_factory=LazyParentConfig)
+        child_config: LazyChildConfig = field(default_factory=LazyChildConfig)
+
+    state = ObjectState(RootConfig(), scope_id="config")
+    ObjectStateRegistry.register(state, _skip_snapshot=True)
+
+    assert state.get_resolved_value("child_config.leaf") is None
+
+    value = DataclassLeaf("inherited")
+    state.update_parameter("parent_config.leaf", value)
+
+    assert state.get_resolved_value("parent_config.leaf") == value
+    assert state.get_resolved_value("child_config.leaf") == value
 
 
 def test_delegate_replacement_refreshes_saved_resolved_and_default_diff():

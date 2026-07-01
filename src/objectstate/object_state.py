@@ -530,6 +530,48 @@ class ObjectState:
             except Exception as e:
                 logger.warning(f"Error in state_changed callback: {e}")
 
+    def _notify_resolved_changed(
+        self,
+        changed_paths: Set[str],
+        *,
+        context: str,
+    ) -> None:
+        """Publish resolved-value changes to registry and local subscribers."""
+        if not changed_paths:
+            return
+
+        ObjectStateRegistry.notify_resolved_changed(self.scope_id, changed_paths)
+        if not self._on_resolved_changed_callbacks:
+            return
+
+        logger.debug(
+            "🔔 CALLBACK_LEAK_DEBUG: Notifying %d callbacks for scope=%s, "
+            "context=%s, changed_paths=%s",
+            len(self._on_resolved_changed_callbacks),
+            self.scope_id,
+            context,
+            changed_paths,
+        )
+        for i, callback in enumerate(list(self._on_resolved_changed_callbacks)):
+            try:
+                callback(changed_paths)
+            except RuntimeError as e:
+                logger.warning(
+                    "🔴 CALLBACK_LEAK_DEBUG: Dead callback #%d detected! "
+                    "scope=%s, context=%s, error: %s",
+                    i,
+                    self.scope_id,
+                    context,
+                    e,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Error in resolved_changed callback #%d during %s: %s",
+                    i,
+                    context,
+                    e,
+                )
+
     def forward_to_parent_state(self, field_path: Optional[str] = None) -> None:
         """Forward child state changes to parent state.
 
@@ -572,14 +614,11 @@ class ObjectState:
                     m = re.match(r'^(.+?)_\d+$', last)
                     parent_field = m.group(1) if m else last
 
-            # Fire parent's callbacks directly with the changed field
-            if parent_field and self._parent_state._on_resolved_changed_callbacks:
-                changed_paths = {parent_field}
-                for cb in self._parent_state._on_resolved_changed_callbacks:
-                    try:
-                        cb(changed_paths)
-                    except Exception as e:
-                        logger.warning(f"Error in parent callback: {e}")
+            if parent_field:
+                self._parent_state._notify_resolved_changed(
+                    {parent_field},
+                    context="forward_to_parent_state",
+                )
                 
             logger.debug(
                 "[ObjectState] Forwarded %s to parent, field=%r",
@@ -622,20 +661,11 @@ class ObjectState:
             logger.debug(f"🔄 _ensure_live_resolved: scope={self.scope_id}, no invalid fields to recompute")
             changed_paths = set()
 
-        # Notify subscribers of which paths actually changed (flash events)
-        # FIXED: Moved OUT of the else block so callbacks are notified when there ARE invalid fields!
-        if notify_flash and changed_paths and self._on_resolved_changed_callbacks:
-            logger.debug(f"🔔 CALLBACK_LEAK_DEBUG: Notifying {len(self._on_resolved_changed_callbacks)} callbacks "
-                        f"for scope={self.scope_id}, changed_paths={changed_paths}")
-            for i, callback in enumerate(self._on_resolved_changed_callbacks):
-                try:
-                    callback(changed_paths)
-                except RuntimeError as e:
-                    # Qt widget was deleted - this indicates a leaked callback
-                    logger.warning(f"🔴 CALLBACK_LEAK_DEBUG: Dead callback #{i} detected! "
-                                 f"scope={self.scope_id}, error: {e}")
-                except Exception as e:
-                    logger.warning(f"Error in resolved_changed callback #{i}: {e}")
+        if notify_flash and changed_paths:
+            self._notify_resolved_changed(
+                changed_paths,
+                context="_ensure_live_resolved",
+            )
 
         return changed_paths
 
@@ -782,6 +812,59 @@ class ObjectState:
             updates.update(self._dataclass_parameter_updates(field_path, field_value))
         return updates
 
+    def _is_flat_container_parameter(self, param_name: str, value: Any) -> bool:
+        """Return whether a flat parameter entry represents a dataclass container."""
+
+        if value is None or not is_dataclass(type(value)):
+            return False
+        prefix = f"{param_name}."
+        return any(path.startswith(prefix) for path in self.parameters)
+
+    def inheritance_field_paths(
+        self,
+        target_type: ParameterOwner,
+        field_name: str,
+    ) -> tuple[str, ...]:
+        """Return flat field paths whose container type can inherit target_type."""
+
+        from objectstate.lazy_factory import get_base_type_for_lazy
+
+        if isinstance(target_type, type):
+            target_base_type = get_base_type_for_lazy(target_type) or target_type
+        else:
+            target_base_type = target_type
+
+        paths: list[str] = []
+        for dotted_path, container_type in self._path_to_type.items():
+            if dotted_path not in self.parameters:
+                continue
+            if not (dotted_path.endswith(f".{field_name}") or dotted_path == field_name):
+                continue
+
+            if isinstance(container_type, type):
+                container_base_type = (
+                    get_base_type_for_lazy(container_type) or container_type
+                )
+            else:
+                container_base_type = container_type
+
+            type_matches = container_base_type == target_base_type
+            if (
+                not type_matches
+                and isinstance(container_base_type, type)
+                and isinstance(target_base_type, type)
+            ):
+                type_matches = any(
+                    (get_base_type_for_lazy(mro_class) or mro_class)
+                    == target_base_type
+                    for mro_class in container_base_type.__mro__
+                )
+
+            if type_matches:
+                paths.append(dotted_path)
+
+        return tuple(paths)
+
     def update_parameter(self, param_name: str, value: Any) -> None:
         """Update parameter value in state.
 
@@ -827,8 +910,15 @@ class ObjectState:
         for child_path, child_value in child_updates.items():
             self.parameters[child_path] = child_value
 
-        # SELF-INVALIDATION: Mark this field as needing recompute in our own cache
-        self._invalid_fields.update(changed_params)
+        # SELF-INVALIDATION: Mark changed fields and same-state inherited siblings.
+        local_invalidations = set(changed_params)
+        for changed_param in changed_params:
+            container_type = self._path_to_type.get(changed_param, type(self.object_instance))
+            leaf_field_name = changed_param.split('.')[-1] if '.' in changed_param else changed_param
+            local_invalidations.update(
+                self.inheritance_field_paths(container_type, leaf_field_name)
+            )
+        self._invalid_fields.update(local_invalidations)
         self._cached_object = None  # Invalidate cached reconstructed object
         self._cached_object_applied = False
 
@@ -1360,22 +1450,10 @@ class ObjectState:
 
         self._set_last_changed_values(changed_values)
 
-        if changed_paths and self._on_resolved_changed_callbacks:
-            for i, callback in enumerate(list(self._on_resolved_changed_callbacks)):
-                try:
-                    callback(changed_paths)
-                except RuntimeError as e:
-                    logger.warning(
-                        "Dead resolved_changed callback #%d during object replacement: %s",
-                        i,
-                        e,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Error in resolved_changed callback #%d during object replacement: %s",
-                        i,
-                        e,
-                    )
+        self._notify_resolved_changed(
+            changed_paths,
+            context="update_object_instance",
+        )
 
         self._sync_materialized_state()
 
@@ -1425,8 +1503,7 @@ class ObjectState:
             # Safety check: skip any container entries that might have leaked in
             # (containers should NOT be in parameters — only leaf fields are tracked)
             raw_value = self.parameters[name]
-            is_container = raw_value is not None and is_dataclass(type(raw_value))
-            if is_container:
+            if self._is_flat_container_parameter(name, raw_value):
                 continue
             if raw_value is not None:
                 explicit_fields.append(name)
@@ -1715,13 +1792,10 @@ class ObjectState:
         dirty_status_changed_fields = self._update_dirty_fields()
         sig_diff_changed = self._update_signature_diff_fields()
 
-        # Fire flash for fields that changed dirty status (became dirty OR clean)
-        if dirty_status_changed_fields and self._on_resolved_changed_callbacks:
-            for callback in list(self._on_resolved_changed_callbacks):
-                try:
-                    callback(dirty_status_changed_fields)
-                except Exception as e:
-                    logger.warning(f"Error in resolved_changed callback during dirty sync: {e}")
+        self._notify_resolved_changed(
+            dirty_status_changed_fields,
+            context="_sync_materialized_state",
+        )
 
         if raw_dirty_changed or dirty_status_changed_fields or sig_diff_changed:
             self._notify_state_changed()
@@ -1811,7 +1885,10 @@ class ObjectState:
 
                 # Check if this path is a CONTAINER entry (value is a nested dataclass)
                 # vs a LEAF field (value is primitive, even if container_type is a dataclass)
-                is_container_entry = raw_value is not None and is_dataclass(type(raw_value))
+                is_container_entry = self._is_flat_container_parameter(
+                    dotted_path,
+                    raw_value,
+                )
 
                 if is_container_entry:
                     # Container-level entry - SKIP from snapshot
@@ -1883,8 +1960,7 @@ class ObjectState:
                 # Skip container entries (nested dataclass instances)
                 if param_name in self.parameters:
                     raw_value = self.parameters.get(param_name)
-                    is_container = raw_value is not None and is_dataclass(type(raw_value))
-                    if is_container:
+                    if self._is_flat_container_parameter(param_name, raw_value):
                         continue
 
                 # Get the old value by navigating dotted path on the extraction target
@@ -1906,8 +1982,7 @@ class ObjectState:
         for param_name in self.parameters.keys():
             # Skip container entries
             raw_value = self.parameters.get(param_name)
-            is_container = raw_value is not None and is_dataclass(type(raw_value))
-            if is_container:
+            if self._is_flat_container_parameter(param_name, raw_value):
                 continue
 
             old_value = old_instance_values.get(param_name)
@@ -2140,32 +2215,21 @@ class ObjectState:
         # Emit on_resolved_changed for changed params so SAME-LEVEL observers flash
         # (e.g., list item subscribed to this ObjectState sees the revert as a change)
         did_atomic_restore = False
-        if changed_params_with_types and self._on_resolved_changed_callbacks:
+        if changed_params_with_types:
             changed_paths = {param_name for param_name, _, _ in changed_params_with_types}
-            logger.debug(f"🔔 CALLBACK_LEAK_DEBUG: restore_saved notifying {len(self._on_resolved_changed_callbacks)} callbacks "
-                        f"for scope={self.scope_id}, changed_paths={changed_paths}")
             # Coalesce any updates triggered by callbacks into a single snapshot
             if self._parent_state is None:
                 with ObjectStateRegistry.atomic(f"restore {self.scope_id}"):
-                    for i, callback in enumerate(self._on_resolved_changed_callbacks):
-                        try:
-                            callback(changed_paths)
-                        except RuntimeError as e:
-                            # Qt widget was deleted - this indicates a leaked callback
-                            logger.warning(f"🔴 CALLBACK_LEAK_DEBUG: Dead callback #{i} in restore_saved! "
-                                         f"scope={self.scope_id}, error: {e}")
-                        except Exception as e:
-                            logger.warning(f"Error in resolved_changed callback #{i} during restore: {e}")
+                    self._notify_resolved_changed(
+                        changed_paths,
+                        context="restore_saved",
+                    )
                 did_atomic_restore = True
             else:
-                for i, callback in enumerate(self._on_resolved_changed_callbacks):
-                    try:
-                        callback(changed_paths)
-                    except RuntimeError as e:
-                        logger.warning(f"🔴 CALLBACK_LEAK_DEBUG: Dead callback #{i} in restore_saved! "
-                                     f"scope={self.scope_id}, error: {e}")
-                    except Exception as e:
-                        logger.warning(f"Error in resolved_changed callback #{i} during restore: {e}")
+                self._notify_resolved_changed(
+                    changed_paths,
+                    context="restore_saved",
+                )
 
         # Sync materialized state (single point for dirty/sig_diff update + notification)
         self._sync_materialized_state()
