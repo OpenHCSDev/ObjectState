@@ -69,6 +69,16 @@ class TimeTravelChangeSet:
         ]
 
 
+@dataclass(frozen=True)
+class DeferredFieldInvalidation:
+    """One coalescible live-cache invalidation request."""
+
+    scope_id: str
+    changed_type: ParameterOwner
+    field_name: str
+    invalidate_saved: bool = False
+
+
 class ObjectStateRegistry:
     """Singleton registry of all ObjectState instances.
 
@@ -88,6 +98,8 @@ class ObjectStateRegistry:
     # Callbacks receive (scope_id: str, object_state: ObjectState)
     _on_register_callbacks: List[Callable[[str, 'ObjectState'], None]] = []
     _on_unregister_callbacks: List[Callable[[str, 'ObjectState'], None]] = []
+    _deferred_invalidation_depth: int = 0
+    _deferred_invalidations: Set[DeferredFieldInvalidation] = set()
 
     # Time-travel completion callbacks - UI subscribes to reopen windows for dirty states
     # Callbacks receive (dirty_states, triggering_scope) where:
@@ -156,6 +168,42 @@ class ObjectStateRegistry:
     def _fire_history_changed_callbacks(cls) -> None:
         """Fire all history changed callbacks."""
         cls._fire_callbacks(cls._on_history_changed_callbacks, "history_changed")
+
+    @classmethod
+    @contextmanager
+    def defer_live_invalidations(cls) -> Generator[None, None, None]:
+        """Queue descendant live-cache invalidations for an explicit later flush."""
+        cls._deferred_invalidation_depth += 1
+        try:
+            yield
+        finally:
+            cls._deferred_invalidation_depth -= 1
+
+    @classmethod
+    def has_deferred_invalidations(cls) -> bool:
+        """Return whether live-cache invalidations are waiting to be flushed."""
+        return bool(cls._deferred_invalidations)
+
+    @classmethod
+    def flush_deferred_invalidations(cls) -> None:
+        """Apply queued descendant invalidations once, after edit bursts settle."""
+        if not cls._deferred_invalidations:
+            return
+
+        requests = tuple(cls._deferred_invalidations)
+        cls._deferred_invalidations.clear()
+        previous_depth = cls._deferred_invalidation_depth
+        cls._deferred_invalidation_depth = 0
+        try:
+            for request in requests:
+                cls._invalidate_by_type_and_scope_now(
+                    scope_id=request.scope_id,
+                    changed_type=request.changed_type,
+                    field_name=request.field_name,
+                    invalidate_saved=request.invalidate_saved,
+                )
+        finally:
+            cls._deferred_invalidation_depth = previous_depth
 
     @classmethod
     def _fire_callbacks(cls, callbacks: List[Callable], role: str, *args: Any) -> None:
@@ -331,6 +379,8 @@ class ObjectStateRegistry:
         cls._states.clear()
         cls._time_travel_limbo.clear()
         cls._graveyard.clear()
+        cls._deferred_invalidations.clear()
+        cls._deferred_invalidation_depth = 0
         logger.debug("Cleared all ObjectStates from registry, limbo, and graveyard")
 
     # ========== TOKEN MANAGEMENT AND CHANGE NOTIFICATION ==========
@@ -529,6 +579,34 @@ class ObjectStateRegistry:
             field_name: The specific field that changed
             invalidate_saved: If True, also invalidate saved_resolved cache for descendants
         """
+        changed_scope = cls._normalize_scope_id(scope_id)
+        if cls._deferred_invalidation_depth > 0:
+            cls._deferred_invalidations.add(
+                DeferredFieldInvalidation(
+                    scope_id=changed_scope,
+                    changed_type=changed_type,
+                    field_name=field_name,
+                    invalidate_saved=invalidate_saved,
+                )
+            )
+            return
+
+        cls._invalidate_by_type_and_scope_now(
+            scope_id=changed_scope,
+            changed_type=changed_type,
+            field_name=field_name,
+            invalidate_saved=invalidate_saved,
+        )
+
+    @classmethod
+    def _invalidate_by_type_and_scope_now(
+        cls,
+        scope_id: Optional[str],
+        changed_type: ParameterOwner,
+        field_name: str,
+        invalidate_saved: bool = False,
+    ) -> None:
+        """Immediate implementation for scope/type/field-aware invalidation."""
         from objectstate.lazy_factory import get_base_type_for_lazy
         from objectstate.dual_axis_resolver import invalidate_mro_cache_for_field
 
