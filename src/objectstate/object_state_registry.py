@@ -10,6 +10,7 @@ import copy
 
 from objectstate.object_state_metadata import ObjectStateMetadataStore
 from objectstate.snapshot_model import Snapshot, StateSnapshot, Timeline
+from objectstate.time_travel_profile import TimeTravelProfiler
 
 if TYPE_CHECKING:
     from objectstate.object_state import ObjectState
@@ -27,6 +28,7 @@ class TimeTravelTransaction:
 
     snapshot_id: str
     snapshot: Snapshot
+    source_snapshot_id: Optional[str]
     snapshot_scopes: Set[str]
     current_scopes: Set[str]
 
@@ -50,7 +52,31 @@ class TimeTravelScopeChange:
 
     @property
     def needs_navigation(self) -> bool:
-        return bool(self.changed_param_keys or self.meta_changed_keys)
+        return bool(self.changed_paths or self.meta_changed_keys)
+
+
+@dataclass(frozen=True)
+class TimeTravelStateDiff:
+    """Per-state snapshot delta used to keep time-travel restores targeted."""
+
+    changed_paths: Set[str]
+    changed_param_values: Dict[str, Tuple[Any, Any]]
+    notification_changed_values: Dict[str, Tuple[Any, Any]]
+    meta_changed_values: Dict[str, Tuple[Any, Any]]
+    saved_parameters_changed: bool
+    saved_resolved_changed: bool
+    provenance_changed: bool
+
+    @property
+    def requires_snapshot_apply(self) -> bool:
+        return bool(
+            self.changed_paths
+            or self.changed_param_values
+            or self.meta_changed_values
+            or self.saved_parameters_changed
+            or self.saved_resolved_changed
+            or self.provenance_changed
+        )
 
 
 @dataclass(frozen=True)
@@ -100,6 +126,7 @@ class ObjectStateRegistry:
     _on_unregister_callbacks: List[Callable[[str, 'ObjectState'], None]] = []
     _deferred_invalidation_depth: int = 0
     _deferred_invalidations: Set[DeferredFieldInvalidation] = set()
+    _snapshot_dirty_scopes: Set[str] = set()
 
     # Time-travel completion callbacks - UI subscribes to reopen windows for dirty states
     # Callbacks receive (dirty_states, triggering_scope) where:
@@ -225,6 +252,11 @@ class ObjectStateRegistry:
         cls._fire_callbacks(cls._on_unregister_callbacks, "unregister", scope_key, state)
 
     @classmethod
+    def mark_snapshot_dirty_scope(cls, scope_id: Optional[str]) -> None:
+        """Mark a scope whose materialized state must be copied into the next snapshot."""
+        cls._snapshot_dirty_scopes.add(cls._normalize_scope_id(scope_id))
+
+    @classmethod
     def _normalize_scope_id(cls, scope_id: Optional[str]) -> str:
         """Normalize scope_id: None and "" both represent global scope."""
         return scope_id if scope_id is not None else ""
@@ -251,9 +283,9 @@ class ObjectStateRegistry:
         # Fire callbacks for UI binding
         cls._fire_register_callbacks(key, state)
 
-        # Record snapshot for time-travel (captures new ObjectState in registry)
-        if not _skip_snapshot:
-            cls.record_snapshot(f"register {type(state.object_instance).__name__}", key)
+        # Structural registration is not a user-edit boundary. Callers that
+        # create/delete user-visible objects record one explicit operation
+        # snapshot around the mutation.
 
     @classmethod
     def unregister(cls, state: 'ObjectState', _skip_snapshot: bool = False) -> None:
@@ -265,7 +297,6 @@ class ObjectStateRegistry:
         """
         key = cls._normalize_scope_id(state.scope_id)
         if key in cls._states:
-            obj_type_name = type(state.object_instance).__name__
             removed_state = cls._states.pop(key)
 
             # Move to graveyard instead of deleting - enables time travel to past snapshots
@@ -276,9 +307,8 @@ class ObjectStateRegistry:
             # Fire callbacks for UI binding
             cls._fire_unregister_callbacks(key, state)
 
-            # Record snapshot for time-travel (captures ObjectState removal)
-            if not _skip_snapshot:
-                cls.record_snapshot(f"unregister {obj_type_name}", key)
+            # Structural unregistration is not a user-edit boundary. The
+            # graveyard preserves state for explicit operation snapshots.
 
     @classmethod
     def unregister_scope_and_descendants(cls, scope_id: Optional[str], _skip_snapshot: bool = False) -> int:
@@ -329,9 +359,8 @@ class ObjectStateRegistry:
 
         if scopes_to_delete:
             logger.info(f"Cascade unregistered {len(scopes_to_delete)} ObjectState(s) for scope={scope_key}")
-            # Record single snapshot for cascade unregister (captures all removals at once)
-            if not _skip_snapshot:
-                cls.record_snapshot(f"unregister_cascade ({len(scopes_to_delete)} scopes)", scope_key)
+            # Structural unregister is not a user-edit boundary. User-visible
+            # deletes wrap the full mutation in ObjectStateRegistry.atomic(...).
 
         return len(scopes_to_delete)
 
@@ -375,13 +404,23 @@ class ObjectStateRegistry:
 
     @classmethod
     def clear(cls) -> None:
-        """Clear all registered states, limbo, and graveyard. For testing only."""
+        """Clear all registered state and history. For testing/session reset only."""
         cls._states.clear()
         cls._time_travel_limbo.clear()
         cls._graveyard.clear()
         cls._deferred_invalidations.clear()
         cls._deferred_invalidation_depth = 0
-        logger.debug("Cleared all ObjectStates from registry, limbo, and graveyard")
+        cls._snapshot_dirty_scopes.clear()
+        cls._snapshots.clear()
+        cls._timelines.clear()
+        cls._current_head = None
+        cls._current_timeline = "main"
+        cls._atomic_depth = 0
+        cls._atomic_label = None
+        cls._atomic_triggering_scope = None
+        cls._atomic_snapshot_requested = False
+        cls._atomic_entry_signature = None
+        logger.debug("Cleared ObjectState registry, history, limbo, and graveyard")
 
     # ========== TOKEN MANAGEMENT AND CHANGE NOTIFICATION ==========
 
@@ -739,7 +778,7 @@ class ObjectStateRegistry:
         # This ensures callbacks fire only when values change, not just when fields are invalidated.
         # Prevents false flashes when Reset is clicked on already-reset fields.
         if invalidated_paths:
-            state._ensure_live_resolved(notify_flash=True)
+            changed_paths = state._ensure_live_resolved(notify_flash=False)
 
             # If we invalidated saved baseline, recompute it now with fresh ancestor values
             if invalidate_saved:
@@ -749,9 +788,9 @@ class ObjectStateRegistry:
                 logger.debug(f"Recomputed saved_resolved baseline after invalidation")
 
                 if old_saved_resolved != state._saved_resolved:
-                    state._sync_materialized_state()
+                    state._sync_materialized_state(changed_value_fields=changed_paths)
             else:
-                state._sync_materialized_state()
+                state._sync_materialized_state(changed_value_fields=changed_paths)
 
     # ========== REGISTRY-LEVEL TIME-TRAVEL (DAG Model) ==========
 
@@ -771,6 +810,8 @@ class ObjectStateRegistry:
     _atomic_depth: int = 0
     _atomic_label: Optional[str] = None  # Label for the coalesced snapshot
     _atomic_triggering_scope: Optional[str] = None
+    _atomic_snapshot_requested: bool = False
+    _atomic_entry_signature: Optional[Tuple[Tuple[str, int, Dict[str, Any], Dict[str, Any]], ...]] = None
 
     # Limbo: ObjectStates temporarily removed during time-travel
     # When traveling to a snapshot, ObjectStates not in that snapshot are moved here.
@@ -817,6 +858,8 @@ class ObjectStateRegistry:
         if cls._atomic_depth == 1:
             cls._atomic_label = label
             cls._atomic_triggering_scope = scope_id
+            cls._atomic_snapshot_requested = False
+            cls._atomic_entry_signature = cls._registry_mutation_signature()
 
         try:
             yield
@@ -826,9 +869,13 @@ class ObjectStateRegistry:
                 # Outermost atomic block - record the coalesced snapshot
                 final_label = cls._atomic_label or label
                 triggering_scope = cls._atomic_triggering_scope
+                should_record = cls._atomic_should_record()
                 cls._atomic_label = None
                 cls._atomic_triggering_scope = None
-                cls.record_snapshot(final_label, triggering_scope)
+                cls._atomic_snapshot_requested = False
+                cls._atomic_entry_signature = None
+                if should_record:
+                    cls.record_snapshot(final_label, triggering_scope)
 
     @classmethod
     @contextmanager
@@ -844,10 +891,19 @@ class ObjectStateRegistry:
         raises, the outermost success-only operation unwinds without recording
         a partial snapshot.
         """
+        outermost = cls._atomic_depth == 0
+        snapshots_before = set(cls._snapshots) if outermost else None
+        timelines_before = copy.deepcopy(cls._timelines) if outermost else None
+        current_head_before = cls._current_head if outermost else None
+        current_timeline_before = cls._current_timeline if outermost else None
+        in_time_travel_before = cls._in_time_travel if outermost else None
+
         cls._atomic_depth += 1
         if cls._atomic_depth == 1:
             cls._atomic_label = label
             cls._atomic_triggering_scope = scope_id
+            cls._atomic_snapshot_requested = False
+            cls._atomic_entry_signature = cls._registry_mutation_signature()
 
         succeeded = False
         try:
@@ -858,10 +914,46 @@ class ObjectStateRegistry:
             if cls._atomic_depth == 0:
                 final_label = cls._atomic_label or label
                 triggering_scope = cls._atomic_triggering_scope
+                should_record = cls._atomic_should_record()
                 cls._atomic_label = None
                 cls._atomic_triggering_scope = None
+                cls._atomic_snapshot_requested = False
+                cls._atomic_entry_signature = None
                 if succeeded:
-                    cls.record_snapshot(final_label, triggering_scope)
+                    if should_record:
+                        cls.record_snapshot(final_label, triggering_scope)
+                elif snapshots_before is not None and timelines_before is not None:
+                    for snapshot_id in set(cls._snapshots) - snapshots_before:
+                        del cls._snapshots[snapshot_id]
+                    cls._timelines = timelines_before
+                    cls._current_head = current_head_before
+                    cls._current_timeline = current_timeline_before or "main"
+                    cls._in_time_travel = bool(in_time_travel_before)
+
+    @classmethod
+    def _registry_mutation_signature(
+        cls,
+    ) -> Tuple[Tuple[str, int, Dict[str, Any], Dict[str, Any]], ...]:
+        """Return the active registry state used to suppress no-op atomics."""
+
+        entries: list[Tuple[str, int, Dict[str, Any], Dict[str, Any]]] = []
+        for key, state in sorted(cls._states.items()):
+            parameters, saved_parameters = (
+                state.copy_parameter_pair_preserving_callable_identity(
+                    state.parameters,
+                    state._saved_parameters,
+                )
+            )
+            entries.append((key, id(state), parameters, saved_parameters))
+        return tuple(entries)
+
+    @classmethod
+    def _atomic_should_record(cls) -> bool:
+        """Return whether the outer atomic scope produced a user-visible state change."""
+
+        if cls._atomic_snapshot_requested:
+            return True
+        return cls._registry_mutation_signature() != cls._atomic_entry_signature
 
     @classmethod
     def ensure_baseline_snapshot(cls, label: str = "init") -> None:
@@ -874,7 +966,7 @@ class ObjectStateRegistry:
             return
         import time
 
-        cls._record_snapshot_internal(label, time.time(), None)
+        cls._record_snapshot_internal(label, time.time(), None, prepare_resolved=False)
 
     @classmethod
     def get_branch_history(cls, branch_name: Optional[str] = None) -> List[Snapshot]:
@@ -932,8 +1024,9 @@ class ObjectStateRegistry:
         Called automatically after significant state changes.
         Each snapshot captures the full system state at a point in time.
 
-        On FIRST edit, automatically records a baseline "init" snapshot first,
-        so users can always go back to the original state before any edits.
+        Callers that mutate ObjectState values must create the initial baseline
+        before applying the mutation. This method snapshots the current state
+        as-is.
 
         Args:
             label: Human-readable label (e.g., "edit group_by", "save")
@@ -949,6 +1042,7 @@ class ObjectStateRegistry:
         # ATOMIC OPERATIONS: Defer snapshot until atomic block exits
         # The atomic() context manager will call record_snapshot() when it completes
         if cls._atomic_depth > 0:
+            cls._atomic_snapshot_requested = True
             if scope_id is not None and cls._atomic_triggering_scope is None:
                 cls._atomic_triggering_scope = scope_id
             logger.debug(f"⏱️ ATOMIC: Deferring snapshot '{label}' (depth={cls._atomic_depth})")
@@ -956,16 +1050,18 @@ class ObjectStateRegistry:
 
         import time
 
-        # FIRST EDIT: Record baseline "init" snapshot before the actual edit snapshot
-        is_first_snapshot = len(cls._snapshots) == 0
-        if is_first_snapshot and label.startswith("edit"):
-            cls._record_snapshot_internal("init", time.time(), None)
-
         full_label = f"{label} [{scope_id}]" if scope_id else label
         cls._record_snapshot_internal(full_label, time.time(), scope_id)
 
     @classmethod
-    def _record_snapshot_internal(cls, label: str, timestamp: float, triggering_scope: Optional[str]) -> None:
+    def _record_snapshot_internal(
+        cls,
+        label: str,
+        timestamp: float,
+        triggering_scope: Optional[str],
+        *,
+        prepare_resolved: bool = True,
+    ) -> None:
         """Internal method to record a snapshot without baseline logic.
 
         DAG Model:
@@ -976,24 +1072,10 @@ class ObjectStateRegistry:
         """
         import uuid
 
-        # Capture ALL registered ObjectStates as StateSnapshot dataclasses
-        all_states: Dict[str, StateSnapshot] = {}
-        for key, state in cls._states.items():
-            state.validate_metadata_contracts("snapshot")
-            parameters, saved_parameters = (
-                state.copy_parameter_pair_preserving_callable_identity(
-                    state.parameters,
-                    state._saved_parameters,
-                )
-            )
-            all_states[key] = StateSnapshot(
-                saved_resolved=copy.deepcopy(state._saved_resolved),
-                live_resolved=copy.deepcopy(state._live_resolved) if state._live_resolved else {},
-                parameters=parameters,
-                saved_parameters=saved_parameters,
-                provenance=copy.deepcopy(state._live_provenance),
-                meta=state.copy_metadata_for_snapshot(),
-            )
+        if prepare_resolved:
+            if cls.has_deferred_invalidations():
+                cls.flush_deferred_invalidations()
+            cls._prepare_states_for_snapshot()
 
         # Determine parent_id for new snapshot
         if cls._current_head is not None:
@@ -1027,6 +1109,101 @@ class ObjectStateRegistry:
                 parent_id = cls._timelines[cls._current_timeline].head_id
             else:
                 parent_id = None
+
+        parent_snapshot = cls._snapshots.get(parent_id) if parent_id is not None else None
+
+        # Capture registered ObjectStates as StateSnapshot dataclasses.
+        # Unchanged scopes reuse the parent snapshot's immutable StateSnapshot;
+        # dirty/new scopes are copied. This keeps snapshots semantically
+        # complete without revalidating and comparing every open step/config on
+        # every edit.
+        current_state_keys = set(cls._states)
+        if parent_snapshot is None:
+            all_states: Dict[str, StateSnapshot] = {}
+            snapshot_candidate_keys = current_state_keys
+        else:
+            all_states = {
+                key: state_snapshot
+                for key, state_snapshot in parent_snapshot.all_states.items()
+                if key in current_state_keys
+            }
+            snapshot_candidate_keys = (
+                cls._snapshot_dirty_scopes & current_state_keys
+            ) | (current_state_keys - set(parent_snapshot.all_states))
+
+        with TimeTravelProfiler.phase(
+            "objectstate.snapshot_capture_states",
+            states=len(cls._states),
+            has_parent=parent_snapshot is not None,
+            candidates=len(snapshot_candidate_keys),
+        ):
+            for key in snapshot_candidate_keys:
+                state = cls._states[key]
+                state.validate_metadata_contracts("snapshot")
+                meta = state.copy_metadata_for_snapshot()
+                parent_state_snapshot = (
+                    parent_snapshot.all_states.get(key)
+                    if parent_snapshot is not None
+                    else None
+                )
+                live_resolved = state._live_resolved if state._live_resolved else {}
+
+                if (
+                    parent_state_snapshot is not None
+                    and parent_state_snapshot.parameters == state.parameters
+                    and parent_state_snapshot.saved_parameters == state._saved_parameters
+                ):
+                    parameters = parent_state_snapshot.parameters
+                    saved_parameters = parent_state_snapshot.saved_parameters
+                else:
+                    parameters, saved_parameters = (
+                        state.copy_parameter_pair_preserving_callable_identity(
+                            state.parameters,
+                            state._saved_parameters,
+                        )
+                    )
+
+                saved_resolved = (
+                    parent_state_snapshot.saved_resolved
+                    if (
+                        parent_state_snapshot is not None
+                        and parent_state_snapshot.saved_resolved == state._saved_resolved
+                    )
+                    else copy.deepcopy(state._saved_resolved)
+                )
+                provenance = (
+                    parent_state_snapshot.provenance
+                    if (
+                        parent_state_snapshot is not None
+                        and parent_state_snapshot.provenance == state._live_provenance
+                    )
+                    else copy.deepcopy(state._live_provenance)
+                )
+                snapshot_meta = (
+                    parent_state_snapshot.meta
+                    if (
+                        parent_state_snapshot is not None
+                        and parent_state_snapshot.meta == meta
+                    )
+                    else meta
+                )
+                live_resolved_snapshot = cls._copy_snapshot_mapping_with_parent_sharing(
+                    live_resolved,
+                    (
+                        parent_state_snapshot.live_resolved
+                        if parent_state_snapshot is not None
+                        else None
+                    ),
+                )
+                all_states[key] = StateSnapshot(
+                    saved_resolved=saved_resolved,
+                    live_resolved=live_resolved_snapshot,
+                    parameters=parameters,
+                    saved_parameters=saved_parameters,
+                    provenance=provenance,
+                    meta=snapshot_meta,
+                )
+        cls._snapshot_dirty_scopes.clear()
 
         # Create new snapshot
         snapshot = Snapshot(
@@ -1063,6 +1240,49 @@ class ObjectStateRegistry:
         logger.debug(f"⏱️ SNAPSHOT: Recorded '{label}' (id={snapshot.id[:8]})")
         cls._fire_history_changed_callbacks()
 
+    @staticmethod
+    def _copy_snapshot_mapping_with_parent_sharing(
+        current: Dict[str, Any],
+        parent: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Copy snapshot values while reusing unchanged parent snapshot entries."""
+        if parent is None:
+            return copy.deepcopy(current)
+
+        snapshot: Dict[str, Any] = {}
+        for key, value in current.items():
+            if key in parent and parent[key] == value:
+                snapshot[key] = parent[key]
+            else:
+                snapshot[key] = copy.deepcopy(value)
+        return snapshot
+
+    @classmethod
+    def _prepare_states_for_snapshot(cls) -> None:
+        """Synchronize resolved caches before immutable snapshot capture."""
+
+        for _key, state in cls._states_by_dependency_order():
+            state.prepare_for_snapshot_capture()
+
+    @classmethod
+    def _states_by_dependency_order(cls) -> tuple[tuple[str, 'ObjectState'], ...]:
+        """Return states ordered so ancestors resolve before descendants."""
+
+        return tuple(
+            sorted(
+                cls._states.items(),
+                key=lambda item: (cls._scope_depth(item[0]), item[0]),
+            )
+        )
+
+    @staticmethod
+    def _scope_depth(scope_id: str) -> int:
+        """Return hierarchy depth for ObjectState scope identifiers."""
+
+        if not scope_id:
+            return 0
+        return scope_id.count("::") + 1
+
     @classmethod
     def _prune_unreachable_snapshots(cls) -> None:
         """Remove snapshots not reachable from any branch head.
@@ -1097,8 +1317,52 @@ class ObjectStateRegistry:
         return TimeTravelTransaction(
             snapshot_id=snapshot_id,
             snapshot=snapshot,
+            source_snapshot_id=cls._current_snapshot_id(),
             snapshot_scopes=set(snapshot.all_states.keys()),
             current_scopes=set(cls._states.keys()),
+        )
+
+    @classmethod
+    def _current_snapshot_id(cls) -> Optional[str]:
+        """Return the snapshot id that currently backs the live registry state."""
+
+        if cls._current_head is not None:
+            return cls._current_head
+        timeline = cls._timelines.get(cls._current_timeline)
+        if timeline is None:
+            return None
+        return timeline.head_id
+
+    @classmethod
+    def _navigation_triggering_scope(
+        cls,
+        transaction: TimeTravelTransaction,
+    ) -> Optional[str]:
+        """Return the semantic mutation owner for the time-travel transition.
+
+        A snapshot's ``triggering_scope`` describes the operation that produced
+        that snapshot from its parent. When moving backward, the operation being
+        undone is the source snapshot, not the target snapshot. When moving
+        forward, the operation being redone is the target snapshot.
+        """
+
+        source_snapshot = (
+            cls._snapshots.get(transaction.source_snapshot_id)
+            if transaction.source_snapshot_id is not None
+            else None
+        )
+        target_snapshot = transaction.snapshot
+
+        if source_snapshot is not None:
+            if source_snapshot.parent_id == target_snapshot.id:
+                return source_snapshot.triggering_scope
+            if target_snapshot.parent_id == source_snapshot.id:
+                return target_snapshot.triggering_scope
+
+        return target_snapshot.triggering_scope or (
+            source_snapshot.triggering_scope
+            if source_snapshot is not None
+            else None
         )
 
     @classmethod
@@ -1155,15 +1419,16 @@ class ObjectStateRegistry:
             if not state:
                 continue
 
-            scope_changes[scope_key] = cls._restore_time_travel_state(
-                scope_key=scope_key,
-                state=state,
-                state_snap=state_snap,
-                was_restored_from_limbo=scope_key in reconciliation.restored_scopes,
-            )
+            with TimeTravelProfiler.phase("objectstate.restore_scope", scope=scope_key):
+                scope_changes[scope_key] = cls._restore_time_travel_state(
+                    scope_key=scope_key,
+                    state=state,
+                    state_snap=state_snap,
+                    was_restored_from_limbo=scope_key in reconciliation.restored_scopes,
+                )
 
         return TimeTravelChangeSet(
-            triggering_scope=transaction.snapshot.triggering_scope,
+            triggering_scope=cls._navigation_triggering_scope(transaction),
             scope_changes=scope_changes,
         )
 
@@ -1176,10 +1441,68 @@ class ObjectStateRegistry:
         state_snap: StateSnapshot,
         was_restored_from_limbo: bool,
     ) -> TimeTravelScopeChange:
+        with TimeTravelProfiler.phase("objectstate.scope_diff", scope=scope_key):
+            diff = cls._time_travel_state_diff(state, state_snap)
+
+        with TimeTravelProfiler.phase(
+            "objectstate.scope_navigation_meta",
+            scope=scope_key,
+            changed_paths=len(diff.changed_paths),
+        ):
+            cls._apply_time_travel_navigation_state(
+                scope_key=scope_key,
+                state=state,
+                changed_values=cls._time_travel_navigation_changed_values(
+                    concrete_changed_values=diff.changed_param_values,
+                    notification_changed_values=diff.notification_changed_values,
+                ),
+            )
+            cls._log_time_travel_param_changes(
+                scope_key=scope_key,
+                changed_param_values=diff.changed_param_values,
+                was_restored_from_limbo=was_restored_from_limbo,
+            )
+            cls._apply_time_travel_meta_state(
+                scope_key=scope_key,
+                state=state,
+                meta_changed_values=diff.meta_changed_values,
+            )
+
+        if not diff.requires_snapshot_apply and not was_restored_from_limbo:
+            return TimeTravelScopeChange(
+                changed_paths=diff.changed_paths,
+                changed_param_keys=set(diff.changed_param_values.keys()),
+                meta_changed_keys=set(diff.meta_changed_values.keys()),
+                is_concrete_dirty=state.parameters != state._saved_parameters,
+            )
+
+        with TimeTravelProfiler.phase(
+            "objectstate.scope_apply_snapshot",
+            scope=scope_key,
+            changed_paths=len(diff.changed_paths),
+        ):
+            cls._apply_time_travel_snapshot_state(state, state_snap)
+        is_concrete_dirty = state.parameters != state._saved_parameters
+        if is_concrete_dirty:
+            cls._log_time_travel_concrete_dirty(scope_key, state)
+
+        return TimeTravelScopeChange(
+            changed_paths=diff.changed_paths,
+            changed_param_keys=set(diff.changed_param_values.keys()),
+            meta_changed_keys=set(diff.meta_changed_values.keys()),
+            is_concrete_dirty=is_concrete_dirty,
+        )
+
+    @classmethod
+    def _time_travel_state_diff(
+        cls,
+        state: 'ObjectState',
+        state_snap: StateSnapshot,
+    ) -> TimeTravelStateDiff:
         current_params = state.parameters.copy() if state.parameters else {}
         current_live = state._live_resolved.copy() if state._live_resolved else {}
 
-        changed_paths = cls._time_travel_changed_paths(
+        live_changed_paths = cls._time_travel_changed_paths(
             current_live=current_live,
             target_live=state_snap.live_resolved,
         )
@@ -1187,39 +1510,29 @@ class ObjectStateRegistry:
             current_params=current_params,
             target_params=state_snap.parameters,
         )
-        changed_paths.update(changed_param_values.keys())
-
-        cls._apply_time_travel_navigation_state(
-            scope_key=scope_key,
-            state=state,
-            changed_param_values=changed_param_values,
+        notification_changed_values = cls._time_travel_changed_live_values(
+            current_live=current_live,
+            target_live=state_snap.live_resolved,
+            changed_paths=live_changed_paths,
         )
-        cls._log_time_travel_param_changes(
-            scope_key=scope_key,
-            changed_param_values=changed_param_values,
-            was_restored_from_limbo=was_restored_from_limbo,
+        notification_changed_values.update(changed_param_values)
+        changed_paths = state.notification_fields_for_value_changes(
+            notification_changed_values
         )
 
-        meta_changed_values = cls._time_travel_changed_meta_values(
-            current_meta=state.metadata,
-            target_meta=state_snap.meta,
-        )
-        cls._apply_time_travel_meta_state(
-            scope_key=scope_key,
-            state=state,
-            meta_changed_values=meta_changed_values,
-        )
-
-        cls._apply_time_travel_snapshot_state(state, state_snap)
-        is_concrete_dirty = state.parameters != state._saved_parameters
-        if is_concrete_dirty:
-            cls._log_time_travel_concrete_dirty(scope_key, state)
-
-        return TimeTravelScopeChange(
+        return TimeTravelStateDiff(
             changed_paths=changed_paths,
-            changed_param_keys=set(changed_param_values.keys()),
-            meta_changed_keys=set(meta_changed_values.keys()),
-            is_concrete_dirty=is_concrete_dirty,
+            changed_param_values=changed_param_values,
+            notification_changed_values=notification_changed_values,
+            meta_changed_values=cls._time_travel_changed_meta_values(
+                current_meta=state.metadata,
+                target_meta=state_snap.meta,
+            ),
+            saved_parameters_changed=state._saved_parameters
+            != state_snap.saved_parameters,
+            saved_resolved_changed=state._saved_resolved
+            != state_snap.saved_resolved,
+            provenance_changed=state._live_provenance != state_snap.provenance,
         )
 
     @staticmethod
@@ -1250,27 +1563,69 @@ class ObjectStateRegistry:
                 changed[param_key] = (before, after)
         return changed
 
+    @staticmethod
+    def _time_travel_changed_live_values(
+        *,
+        current_live: Dict,
+        target_live: Dict,
+        changed_paths: Set[str],
+    ) -> Dict[str, Tuple[Any, Any]]:
+        return {
+            path: (
+                current_live.get(path),
+                target_live.get(path),
+            )
+            for path in changed_paths
+        }
+
+    @classmethod
+    def _time_travel_navigation_changed_values(
+        cls,
+        *,
+        concrete_changed_values: Dict[str, Tuple[Any, Any]],
+        notification_changed_values: Dict[str, Tuple[Any, Any]],
+    ) -> Dict[str, Tuple[Any, Any]]:
+        """Return concrete changed paths plus their structural descendants for navigation."""
+
+        if not concrete_changed_values:
+            return {}
+        from objectstate.field_access import DottedFieldPath
+
+        concrete_paths = tuple(
+            DottedFieldPath(path)
+            for path in concrete_changed_values
+        )
+        return {
+            path: values
+            for path, values in notification_changed_values.items()
+            if any(
+                concrete_path.contains_path(path)
+                for concrete_path in concrete_paths
+            )
+        }
+
     @classmethod
     def _apply_time_travel_navigation_state(
         cls,
         *,
         scope_key: str,
         state: 'ObjectState',
-        changed_param_values: Dict[str, Tuple[Any, Any]],
+        changed_values: Dict[str, Tuple[Any, Any]],
     ) -> None:
-        if not changed_param_values:
+        if not changed_values:
             state._last_changed_field = None
+            state._last_changed_concrete_paths = set()
             state._last_changed_paths = set()
             state._last_changed_values = {}
-            logger.debug(f"⏱️ LAST_CHANGED_FIELD: {scope_key} field=None (no param changes)")
+            logger.debug(f"⏱️ LAST_CHANGED_FIELD: {scope_key} field=None (no value changes)")
             return
 
-        state._set_last_changed_values(changed_param_values)
+        state._set_last_changed_values(changed_values)
         logger.debug(
             "⏱️ LAST_CHANGED_FIELD: %s field=%s total_changes=%d",
             scope_key,
             state._last_changed_field,
-            len(changed_param_values),
+            len(changed_values),
         )
 
     @staticmethod
@@ -1298,11 +1653,9 @@ class ObjectStateRegistry:
         target_meta: Dict,
     ) -> Dict[str, Tuple[Any, Any]]:
         changed: Dict[str, Tuple[Any, Any]] = {}
-        prev_meta = copy.deepcopy(current_meta)
-        next_meta = copy.deepcopy(target_meta)
-        for meta_key in set(prev_meta.keys()) | set(next_meta.keys()):
-            before = prev_meta.get(meta_key)
-            after = next_meta.get(meta_key)
+        for meta_key in set(current_meta.keys()) | set(target_meta.keys()):
+            before = current_meta.get(meta_key)
+            after = target_meta.get(meta_key)
             if before != after:
                 changed[meta_key] = (before, after)
         return changed
@@ -1335,13 +1688,15 @@ class ObjectStateRegistry:
         state._live_provenance = copy.deepcopy(state_snap.provenance)
         state.parameters = parameters
         state._saved_parameters = saved_parameters
+        state._cached_object = None
+        state._cached_object_applied = False
         state.metadata = ObjectStateMetadataStore.from_snapshot(
             scope_id=state.scope_id,
             metadata=state_snap.meta,
         )
         if state._saved_parameters is None:
             state._saved_parameters = copy.deepcopy(state.parameters)
-        state._sync_materialized_state()
+        state._sync_materialized_state(emit_notifications=False)
 
     @staticmethod
     def _log_time_travel_concrete_dirty(scope_key: str, state: 'ObjectState') -> None:
@@ -1364,9 +1719,40 @@ class ObjectStateRegistry:
             if state is None:
                 continue
             if change.changed_paths:
-                state._notify_resolved_changed(
-                    change.changed_paths,
-                    context="time_travel",
+                with TimeTravelProfiler.phase(
+                    "objectstate.notify_resolved",
+                    scope=scope_key,
+                    changed_paths=len(change.changed_paths),
+                ):
+                    state._notify_resolved_changed(
+                        change.changed_paths,
+                        context="time_travel",
+                    )
+
+    @classmethod
+    def _notify_time_travel_materialized_callbacks(
+        cls,
+        change_set: TimeTravelChangeSet,
+    ) -> None:
+        for scope_key, change in change_set.scope_changes.items():
+            state = cls._states.get(scope_key)
+            if state is None:
+                continue
+            if not (
+                change.changed_paths
+                or change.changed_param_keys
+                or change.meta_changed_keys
+            ):
+                continue
+            with TimeTravelProfiler.phase(
+                "objectstate.notify_state_callback",
+                scope=scope_key,
+                changed_paths=len(change.changed_paths),
+                changed_params=len(change.changed_param_keys),
+                meta_changes=len(change.meta_changed_keys),
+            ):
+                state._notify_state_changed(
+                    change.changed_paths | change.changed_param_keys
                 )
 
     @classmethod
@@ -1384,7 +1770,12 @@ class ObjectStateRegistry:
             len(states_with_changes),
         )
         for callback in cls._on_time_travel_complete_callbacks:
-            callback(states_with_changes, change_set.triggering_scope)
+            with TimeTravelProfiler.phase(
+                "objectstate.complete_callback",
+                callback=f"{type(callback).__module__}.{type(callback).__qualname__}",
+                changed_states=len(states_with_changes),
+            ):
+                callback(states_with_changes, change_set.triggering_scope)
 
     @classmethod
     def time_travel_to_snapshot(cls, snapshot_id: str) -> bool:
@@ -1407,14 +1798,40 @@ class ObjectStateRegistry:
         cls._current_head = snapshot_id
         cls._in_time_travel = True
         try:
-            reconciliation = cls._reconcile_time_travel_scopes(transaction)
-            change_set = cls._restore_time_travel_states(transaction, reconciliation)
-            cls._notify_time_travel_state_callbacks(change_set)
-            cls._fire_time_travel_complete_callbacks(change_set)
+            with TimeTravelProfiler.phase(
+                "objectstate.reconcile_scopes",
+                snapshot=snapshot_id[:8],
+            ):
+                reconciliation = cls._reconcile_time_travel_scopes(transaction)
+            with TimeTravelProfiler.phase(
+                "objectstate.restore_states",
+                snapshot=snapshot_id[:8],
+                states=len(transaction.snapshot.all_states),
+            ):
+                change_set = cls._restore_time_travel_states(
+                    transaction,
+                    reconciliation,
+                )
+            with TimeTravelProfiler.phase(
+                "objectstate.notify_resolved_all",
+                snapshot=snapshot_id[:8],
+            ):
+                cls._notify_time_travel_state_callbacks(change_set)
+            with TimeTravelProfiler.phase(
+                "objectstate.notify_state_all",
+                snapshot=snapshot_id[:8],
+            ):
+                cls._notify_time_travel_materialized_callbacks(change_set)
+            with TimeTravelProfiler.phase(
+                "objectstate.complete_callbacks_all",
+                snapshot=snapshot_id[:8],
+            ):
+                cls._fire_time_travel_complete_callbacks(change_set)
         finally:
             cls._in_time_travel = False
 
-        cls._fire_history_changed_callbacks()
+        with TimeTravelProfiler.phase("objectstate.history_callbacks"):
+            cls._fire_history_changed_callbacks()
         logger.info(
             "⏱️ TIME_TRAVEL: Traveled to %s (%s)",
             transaction.snapshot.label,

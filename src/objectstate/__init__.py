@@ -79,6 +79,7 @@ _submodules = [
     'parametric_axes',
     'reified_generics',
     'field_access',
+    'subfield_semantics',
 ]
 
 for _mod in _submodules:
@@ -176,6 +177,16 @@ from objectstate.token_cache import TokenCache, SingleValueTokenCache, CacheKey
 
 # Field access authority
 from objectstate.field_access import DataclassFieldAccess, DottedFieldPath, FieldAccessError
+from objectstate.subfield_semantics import (
+    MISSING,
+    MissingValue,
+    ObjectStateSubfieldSemantic,
+    ObjectStateSubfieldSemanticIndex,
+    StructuralFieldPath,
+    StructuralPathSegment,
+    StructuralSegmentKind,
+    StructuralValuePath,
+)
 
 # ObjectState edit boundary
 from objectstate.edit_session import ObjectStateEditSession
@@ -233,6 +244,14 @@ __all__ = [
     'DataclassFieldAccess',
     'DottedFieldPath',
     'FieldAccessError',
+    'MISSING',
+    'MissingValue',
+    'ObjectStateSubfieldSemantic',
+    'ObjectStateSubfieldSemanticIndex',
+    'StructuralFieldPath',
+    'StructuralPathSegment',
+    'StructuralSegmentKind',
+    'StructuralValuePath',
     # ObjectState edit boundary
     'ObjectStateEditSession',
 ]

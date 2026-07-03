@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields, is_dataclass
 from types import GetSetDescriptorType, MemberDescriptorType
-from typing import Iterator
+from typing import Iterable, Iterator
 
 
 class FieldAccessError(AttributeError):
@@ -27,6 +27,40 @@ class DottedFieldPath:
         if self.value == "":
             return DottedFieldPath(field_name)
         return DottedFieldPath(f"{self.value}.{field_name}")
+
+    def contains_path(self, candidate: str | "DottedFieldPath") -> bool:
+        """Return whether this field path owns a dotted or structural display path."""
+
+        candidate_value = candidate.value if isinstance(candidate, DottedFieldPath) else candidate
+        return (
+            candidate_value == self.value
+            or candidate_value.startswith(f"{self.value}.")
+            or candidate_value.startswith(f"{self.value}[")
+        )
+
+    def contains_any(self, candidates: Iterable[str | "DottedFieldPath"]) -> bool:
+        """Return whether this field path owns any candidate display path."""
+
+        return any(self.contains_path(candidate) for candidate in candidates)
+
+    def intersects_path(self, other: str | "DottedFieldPath") -> bool:
+        """Return whether this path and another path overlap in either direction."""
+
+        other_path = other if isinstance(other, DottedFieldPath) else DottedFieldPath(other)
+        return self.contains_path(other_path) or other_path.contains_path(self)
+
+    def direct_child_name(self, candidate: str | "DottedFieldPath") -> str | None:
+        """Return the direct dotted child field owned by this path, when one exists."""
+
+        candidate_value = candidate.value if isinstance(candidate, DottedFieldPath) else candidate
+        if candidate_value == self.value or not self.contains_path(candidate_value):
+            return None
+        remainder = candidate_value[len(self.value):]
+        if not remainder.startswith("."):
+            return None
+        child_remainder = remainder[1:]
+        child_name = child_remainder.split(".", 1)[0].split("[", 1)[0]
+        return child_name or None
 
 
 class DataclassFieldAccess:

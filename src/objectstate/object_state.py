@@ -19,7 +19,14 @@ from objectstate.object_state_metadata import (
     ObjectStateMetadataStore,
 )
 from objectstate.object_state_registry import ObjectStateRegistry
-from objectstate.field_access import DataclassFieldAccess
+from objectstate.field_access import DataclassFieldAccess, DottedFieldPath
+from objectstate.subfield_semantics import (
+    MISSING,
+    ObjectStateSubfieldSemanticIndex,
+    build_subfield_semantic_index,
+    changed_structural_leaf_paths,
+)
+from objectstate.time_travel_profile import TimeTravelProfiler
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +239,7 @@ class ObjectState:
         # Track which field most recently changed VALUE (not just dirty status)
         # Used for time-travel navigation to scroll to what changed in a transition
         self._last_changed_field: Optional[str] = None
+        self._last_changed_concrete_paths: Set[str] = set()
         self._last_changed_paths: Set[str] = set()
 
         # === Flags (kept for batch operations) ===
@@ -242,7 +250,7 @@ class ObjectState:
 
         # === State Change Callbacks ===
         # Callbacks notified when materialized state changes (dirty/signature diffs)
-        self._on_state_changed_callbacks: List[Callable[[], None]] = []
+        self._on_state_changed_callbacks: List[Callable[[Set[str]], None]] = []
 
         # === Resolved Change Callbacks ===
         # Callbacks notified when resolved values actually change (for UI flashing)
@@ -512,21 +520,21 @@ class ObjectState:
         if callback in self._on_resolved_changed_callbacks:
             self._on_resolved_changed_callbacks.remove(callback)
 
-    def on_state_changed(self, callback: Callable[[], None]) -> None:
+    def on_state_changed(self, callback: Callable[[Set[str]], None]) -> None:
         """Subscribe to materialized state change notifications (dirty/signature diffs)."""
         if callback not in self._on_state_changed_callbacks:
             self._on_state_changed_callbacks.append(callback)
 
-    def off_state_changed(self, callback: Callable[[], None]) -> None:
+    def off_state_changed(self, callback: Callable[[Set[str]], None]) -> None:
         """Unsubscribe from materialized state change notifications."""
         if callback in self._on_state_changed_callbacks:
             self._on_state_changed_callbacks.remove(callback)
 
-    def _notify_state_changed(self) -> None:
+    def _notify_state_changed(self, changed_paths: Set[str]) -> None:
         """Fire state change callbacks (best-effort)."""
         for callback in list(self._on_state_changed_callbacks):
             try:
-                callback()
+                callback(changed_paths)
             except Exception as e:
                 logger.warning(f"Error in state_changed callback: {e}")
 
@@ -540,7 +548,14 @@ class ObjectState:
         if not changed_paths:
             return
 
-        ObjectStateRegistry.notify_resolved_changed(self.scope_id, changed_paths)
+        with TimeTravelProfiler.phase(
+            "objectstate.notify_resolved_emit",
+            scope=self.scope_id,
+            context=context,
+            changed_paths=len(changed_paths),
+            callbacks=len(self._on_resolved_changed_callbacks),
+        ):
+            ObjectStateRegistry.notify_resolved_changed(self.scope_id, changed_paths)
         if not self._on_resolved_changed_callbacks:
             return
 
@@ -554,7 +569,15 @@ class ObjectState:
         )
         for i, callback in enumerate(list(self._on_resolved_changed_callbacks)):
             try:
-                callback(changed_paths)
+                with TimeTravelProfiler.phase(
+                    "objectstate.notify_resolved_callback",
+                    scope=self.scope_id,
+                    context=context,
+                    callback_index=i,
+                    callback_count=len(self._on_resolved_changed_callbacks),
+                    changed_paths=len(changed_paths),
+                ):
+                    callback(changed_paths)
             except RuntimeError as e:
                 logger.warning(
                     "🔴 CALLBACK_LEAK_DEBUG: Dead callback #%d detected! "
@@ -812,6 +835,35 @@ class ObjectState:
             updates.update(self._dataclass_parameter_updates(field_path, field_value))
         return updates
 
+    def _dataclass_ancestor_parameter_updates(
+        self,
+        param_name: str,
+        parameters: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Rebuild dataclass container parameters that own a changed child path."""
+
+        if "." not in param_name:
+            return {}
+
+        updates: Dict[str, Any] = {}
+        path_parts = param_name.split(".")
+        for part_count in range(len(path_parts) - 1, 0, -1):
+            prefix = ".".join(path_parts[:part_count])
+            if prefix not in parameters:
+                continue
+            prefix_type = self._path_to_type.get(prefix)
+            if not (isinstance(prefix_type, type) and is_dataclass(prefix_type)):
+                continue
+
+            rebuilt_value = self._reconstruct_from_parameter_snapshot(
+                prefix,
+                parameters,
+            )
+            if parameters.get(prefix) != rebuilt_value:
+                updates[prefix] = rebuilt_value
+                parameters[prefix] = rebuilt_value
+        return updates
+
     def _is_flat_container_parameter(self, param_name: str, value: Any) -> bool:
         """Return whether a flat parameter entry represents a dataclass container."""
 
@@ -865,7 +917,7 @@ class ObjectState:
 
         return tuple(paths)
 
-    def update_parameter(self, param_name: str, value: Any) -> None:
+    def update_parameter(self, param_name: str, value: Any) -> Set[str]:
         """Update parameter value in state.
 
         Enforces invariants:
@@ -880,6 +932,9 @@ class ObjectState:
         Args:
             param_name: Name of parameter to update
             value: New value
+
+        Returns:
+            Resolved field paths whose visible values changed.
         """
         # Auto-detect delegate changes before parameter access
         self._check_and_sync_delegate()
@@ -889,30 +944,65 @@ class ObjectState:
                 f"⚠️ update_parameter({param_name!r}) called on ObjectState(scope={self.scope_id!r}) "
                 f"but parameter does not exist. Available: {list(self.parameters.keys())[:5]}..."
             )
-            return
+            return set()
 
         child_updates = self._dataclass_parameter_updates(param_name, value)
+        pending_parameters = dict(self.parameters)
+        pending_parameters[param_name] = value
+        for child_path, child_value in child_updates.items():
+            pending_parameters[child_path] = child_value
+        ancestor_updates = self._dataclass_ancestor_parameter_updates(
+            param_name,
+            pending_parameters,
+        )
 
         # EARLY EXIT: No change, no invalidation, no flash
         current_value = self.parameters[param_name]
-        changed_params = {
+        changed_child_params = {
             child_path
             for child_path, child_value in child_updates.items()
             if self.parameters.get(child_path) != child_value
         }
+        changed_ancestor_params = {
+            ancestor_path
+            for ancestor_path, ancestor_value in ancestor_updates.items()
+            if self.parameters.get(ancestor_path) != ancestor_value
+        }
+        changed_storage_params = set(changed_child_params) | changed_ancestor_params
         if current_value != value:
-            changed_params.add(param_name)
-        if not changed_params:
-            return
+            changed_storage_params.add(param_name)
+        if not changed_storage_params:
+            return set()
+
+        changed_semantic_params = set(changed_child_params)
+        if current_value != value and not changed_child_params:
+            changed_semantic_params.add(param_name)
+
+        changed_param_values = self._changed_parameter_values(
+            changed_semantic_params,
+            pending_parameters,
+        )
+        value_change_notification_fields = self.notification_fields_for_value_changes(
+            changed_param_values,
+        )
+
+        ObjectStateRegistry.ensure_baseline_snapshot()
 
         # Update state directly (no type conversion - that's VIEW responsibility)
         self.parameters[param_name] = value
         for child_path, child_value in child_updates.items():
             self.parameters[child_path] = child_value
+        for ancestor_path, ancestor_value in ancestor_updates.items():
+            self.parameters[ancestor_path] = ancestor_value
 
         # SELF-INVALIDATION: Mark changed fields and same-state inherited siblings.
-        local_invalidations = set(changed_params)
-        for changed_param in changed_params:
+        local_invalidations = set(changed_semantic_params)
+        # Descendants resolve through ancestor live values. Recompute this state
+        # before cascading invalidation so child snapshots cannot lag one edit
+        # behind their parent.
+        changed_paths = self._ensure_live_resolved(notify_flash=False)
+
+        for changed_param in changed_semantic_params:
             container_type = self._path_to_type.get(changed_param, type(self.object_instance))
             leaf_field_name = changed_param.split('.')[-1] if '.' in changed_param else changed_param
             local_invalidations.update(
@@ -974,7 +1064,7 @@ class ObjectState:
             except Exception as e:
                 logger.warning(f"Failed to update LIVE thread-local: {e}")
 
-        for changed_param in changed_params:
+        for changed_param in changed_semantic_params:
             # SCOPE + TYPE + FIELD AWARE INVALIDATION:
             # Get the CONTAINER type for this field (e.g., WellFilterConfig for 'well_filter_config.well_filter')
             # This is critical for sibling inheritance: when WellFilterConfig.well_filter changes,
@@ -997,19 +1087,35 @@ class ObjectState:
         # Increment global token for LiveContextService.collect() cache invalidation
         ObjectStateRegistry.increment_token(notify=False)
 
-        # Recompute live cache (flash events fire here)
-        self._ensure_live_resolved(notify_flash=True)
+        # Recompute live cache, then notify once from the materialized sync layer.
+        # First-populate states have no prior resolved cache to diff against, so
+        # raw changed child paths are the notification/navigation authority for
+        # inline dataclass editors.
+        self._set_last_changed_values(changed_param_values)
         # Sync materialized state (single point for dirty/sig_diff update + notification)
-        self._sync_materialized_state()
+        self._sync_materialized_state(
+            changed_value_fields=changed_paths | value_change_notification_fields
+        )
 
         # Record snapshot for time-travel (registry-level for coherent system history)
-        # ONLY for LEAF fields - skip containers (dataclass instances that have nested params)
+        # Leaf edits record directly. Dataclass-container edits record when they
+        # materialize changed flat child fields; those child paths are the UI and
+        # time-travel navigation authority for inline editors.
         # A field is a container if there are other params that start with "param_name."
+        param_path = DottedFieldPath(param_name)
         is_container = any(
-            p.startswith(f"{param_name}.") for p in self.parameters.keys() if p != param_name
+            p != param_name and param_path.contains_path(p)
+            for p in self.parameters.keys()
         )
-        if not is_container:
-            ObjectStateRegistry.record_snapshot(f"edit {param_name}", self.scope_id)
+        snapshot_field = (
+            self._select_changed_field(changed_semantic_params)
+            if is_container and changed_semantic_params
+            else param_name
+        )
+        if snapshot_field:
+            ObjectStateRegistry.record_snapshot(f"edit {snapshot_field}", self.scope_id)
+
+        return changed_paths | value_change_notification_fields
 
     def get_resolved_value(self, param_name: str) -> Any:
         """Get resolved value for a field from the bulk snapshot.
@@ -1081,6 +1187,39 @@ class ObjectState:
 
         # Return the simple value (or None if not found)
         return self._saved_resolved.get(param_name)
+
+    def subfield_semantics(
+        self,
+        owner_field_path: DottedFieldPath,
+    ) -> ObjectStateSubfieldSemanticIndex:
+        """Project dirty/default/inherited semantics for structural leaves.
+
+        The owner field remains the only writable ObjectState field. Returned
+        leaves are visual/projection identities under that owner, such as
+        ``source_filters[0].match_type`` for a tuple of dataclass rows.
+        """
+
+        self._check_and_sync_delegate()
+        self._ensure_live_resolved()
+        assert self._live_resolved is not None
+        if not self._saved_resolved:
+            self._saved_resolved = self._compute_resolved_snapshot(use_saved=True)
+
+        path = owner_field_path
+        raw_value = self.parameters.get(path.value, MISSING)
+        resolved_value = self.get_resolved_value(path.value)
+        saved_resolved_value = self.get_saved_resolved_value(path.value)
+        signature_default_value = self._signature_defaults.get(path.value, MISSING)
+
+        return build_subfield_semantic_index(
+            owner_field_path=path,
+            raw_value=raw_value,
+            resolved_value=resolved_value,
+            saved_resolved_value=saved_resolved_value,
+            signature_default_value=signature_default_value,
+            owner_dirty=path.contains_any(self.dirty_fields),
+            owner_signature_diff=path.contains_any(self.signature_diff_fields),
+        )
 
     def _reconstruct_from_live_resolved(self, prefix: str) -> Any:
         """Recursively reconstruct dataclass from live resolved values.
@@ -1369,11 +1508,72 @@ class ObjectState:
         changed_values: Dict[str, Tuple[Any, Any]],
     ) -> None:
         """Store the latest value changes for UI/time-travel navigation."""
-        self._last_changed_paths = set(changed_values)
+        if not changed_values:
+            return
+        self._last_changed_concrete_paths = set(changed_values)
+        self._last_changed_paths = self.notification_fields_for_value_changes(
+            changed_values
+        )
         self._last_changed_values = copy.deepcopy(changed_values)
         self._last_changed_field = self._select_changed_field(
             self._last_changed_paths
         )
+
+    def _changed_parameter_values(
+        self,
+        changed_params: Set[str],
+        pending_parameters: Dict[str, Any],
+    ) -> Dict[str, Tuple[Any, Any]]:
+        """Return old/new values for changed flat parameter paths."""
+
+        changed_values: Dict[str, Tuple[Any, Any]] = {}
+        for param_path in pending_parameters:
+            if param_path not in changed_params:
+                continue
+            old_value = self.parameters.get(param_path)
+            new_value = pending_parameters.get(param_path)
+            if old_value != new_value:
+                changed_values[param_path] = (old_value, new_value)
+        return changed_values
+
+    def notification_fields_for_value_changes(
+        self,
+        changed_values: Dict[str, Tuple[Any, Any]],
+    ) -> Set[str]:
+        """Return ObjectState display paths affected by concrete value changes."""
+
+        fields: Set[str] = set()
+        for param_path, (old_value, new_value) in changed_values.items():
+            if self._is_flat_container_parameter(param_path, new_value):
+                continue
+            fields.add(param_path)
+            fields.update(
+                changed_structural_leaf_paths(
+                    owner_field_path=DottedFieldPath(param_path),
+                    old_value=old_value,
+                    new_value=new_value,
+                )
+            )
+        return fields
+
+    @staticmethod
+    def _most_specific_notification_fields(fields: Set[str]) -> Set[str]:
+        """Drop container notifications when a concrete descendant path is present."""
+
+        if len(fields) < 2:
+            return set(fields)
+
+        paths = tuple(DottedFieldPath(field) for field in fields)
+        result: Set[str] = set()
+        for field_path in paths:
+            if any(
+                field_path.value != candidate.value
+                and field_path.contains_path(candidate)
+                for candidate in paths
+            ):
+                continue
+            result.add(field_path.value)
+        return result
 
     def update_object_instance(self, new_instance: Any) -> None:
         """Replace object_instance with a new instance and re-extract parameters.
@@ -1451,7 +1651,7 @@ class ObjectState:
         self._set_last_changed_values(changed_values)
 
         self._notify_resolved_changed(
-            changed_paths,
+            self.notification_fields_for_value_changes(changed_values),
             context="update_object_instance",
         )
 
@@ -1596,9 +1796,12 @@ class ObjectState:
                     # Update provenance for this field
                     self._live_provenance[dotted_path] = (source_scope_id, source_type)
 
-        # Store for navigation - fields that changed value in this computation
-        self._set_last_changed_values(changed_values)
-        return changed_paths
+        # Store for navigation only when recomputation observed concrete deltas.
+        # First-populate paths legitimately have no resolved delta; preserving the
+        # raw update_parameter() paths keeps time-travel/flash navigation precise.
+        if changed_values:
+            self._set_last_changed_values(changed_values)
+        return self.notification_fields_for_value_changes(changed_values)
 
     @property
     def last_changed_field(self) -> Optional[str]:
@@ -1775,7 +1978,12 @@ class ObjectState:
             return True
         return False
 
-    def _sync_materialized_state(self) -> None:
+    def _sync_materialized_state(
+        self,
+        *,
+        changed_value_fields: Set[str] | None = None,
+        emit_notifications: bool = True,
+    ) -> bool:
         """Single point where materialized diffs are recomputed and notified.
 
         Call this after ANY mutation that could affect:
@@ -1785,20 +1993,43 @@ class ObjectState:
 
         Correctness guarantee: All mutation paths call this ONE method.
 
-        Flash behavior: Fires on_resolved_changed for fields that changed dirty status.
-        This ensures flash animation triggers when fields become clean (not just dirty).
+        Flash behavior: Fires on_resolved_changed for fields that changed value
+        and fields that changed dirty status. This ensures flash animation
+        triggers for edits within an already-dirty value, not just clean/dirty
+        transitions.
         """
         raw_dirty_changed = self._update_raw_dirty()
         dirty_status_changed_fields = self._update_dirty_fields()
         sig_diff_changed = self._update_signature_diff_fields()
-
-        self._notify_resolved_changed(
-            dirty_status_changed_fields,
-            context="_sync_materialized_state",
+        notification_fields = self._most_specific_notification_fields(
+            dirty_status_changed_fields | (changed_value_fields or set())
         )
 
-        if raw_dirty_changed or dirty_status_changed_fields or sig_diff_changed:
-            self._notify_state_changed()
+        materialized_changed = raw_dirty_changed or bool(notification_fields) or sig_diff_changed
+        if materialized_changed:
+            ObjectStateRegistry.mark_snapshot_dirty_scope(self.scope_id)
+
+        if emit_notifications:
+            self._notify_resolved_changed(
+                notification_fields,
+                context="_sync_materialized_state",
+            )
+
+            if materialized_changed:
+                self._notify_state_changed(notification_fields)
+
+        return materialized_changed
+
+    def prepare_for_snapshot_capture(self) -> None:
+        """Synchronize only pending resolved work before immutable capture."""
+        if self._live_resolved is not None and not self._invalid_fields:
+            return
+
+        changed_paths = self._ensure_live_resolved(notify_flash=False)
+        self._sync_materialized_state(
+            changed_value_fields=changed_paths,
+            emit_notifications=False,
+        )
 
     # ==================== SAVED STATE / DIRTY TRACKING ====================
 
@@ -2466,6 +2697,14 @@ class ObjectState:
         Returns:
             Reconstructed dataclass instance
         """
+        return self._reconstruct_from_parameter_snapshot(prefix, self.parameters)
+
+    def _reconstruct_from_parameter_snapshot(
+        self,
+        prefix: str,
+        parameters: Dict[str, Any],
+    ) -> Any:
+        """Recursively reconstruct dataclass from a flat parameter snapshot."""
         # Determine the type to reconstruct
         if not prefix:
             # Root level - use extraction target type (handles delegation)
@@ -2482,7 +2721,7 @@ class ObjectState:
         direct_fields = {}
         nested_prefixes = set()
 
-        for path, value in self.parameters.items():
+        for path, value in parameters.items():
             if not path.startswith(prefix_dot):
                 continue
 
@@ -2502,7 +2741,10 @@ class ObjectState:
         # Reconstruct nested dataclasses first
         for nested_name in nested_prefixes:
             nested_path = f'{prefix_dot}{nested_name}'
-            nested_obj = self._reconstruct_from_prefix(nested_path)
+            nested_obj = self._reconstruct_from_parameter_snapshot(
+                nested_path,
+                parameters,
+            )
             direct_fields[nested_name] = nested_obj
 
         # CRITICAL: Do NOT filter out None values!
