@@ -10,7 +10,7 @@ The resolver is completely generic and has no application-specific dependencies.
 import logging
 import functools
 from typing import Any, Dict, Optional, Tuple
-from dataclasses import is_dataclass
+from dataclasses import MISSING, is_dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +96,35 @@ def _has_concrete_field_override(config_class, field_name: str) -> bool:
         class_attr_value = getattr(config_class, field_name)
         return class_attr_value is not None
     return False
+
+
+def _direct_owner_field_default(config_type: type, field_name: str) -> Tuple[bool, Any]:
+    """Return the default owned by config_type for field_name.
+
+    Lazy config resolution intentionally forces inherited dataclass fields to
+    None so they can inherit through context and MRO. Fields declared directly
+    on the concrete owner still have their semantic class defaults on the base
+    config type. Those defaults are load-bearing when no scope supplies a
+    concrete value.
+    """
+    if not is_dataclass(config_type):
+        return False, None
+
+    field_obj = config_type.__dataclass_fields__.get(field_name)
+    if field_obj is None:
+        return False, None
+
+    metadata = field_obj.metadata or {}
+    if "_inherited_default" in metadata or "_inherited_default_factory" in metadata:
+        return False, None
+
+    if field_obj.default is not MISSING:
+        return True, field_obj.default
+
+    if field_obj.default_factory is not MISSING:
+        return True, field_obj.default_factory()
+
+    return False, None
 
 
 def resolve_field_inheritance(
@@ -202,9 +231,14 @@ def resolve_field_inheritance(
                 except AttributeError:
                     continue
 
-    # No Step 3: If MRO walk finds nothing, return None.
-    # "If we wanted static class defaults, it wouldn't have been overridden to None"
-    # For LazyDataclass, class defaults are all None anyway (via rebuild_with_none_defaults).
+    has_default, default_value = _direct_owner_field_default(obj_base, field_name)
+    if has_default:
+        _mro_resolution_cache[_cache_key] = default_value
+        return default_value
+
+    # If MRO walk finds nothing and the field is not directly owned by this
+    # config class, return None so inherited fields continue to resolve through
+    # their owning MRO/default config.
     if _debug and field_name in ('output_dir_suffix', 'sub_dir', 'well_filter'):
         logger.debug(f"🔍 NO-RESOLUTION: {obj_type.__name__}.{field_name} = None")
     _mro_resolution_cache[_cache_key] = None
@@ -371,6 +405,10 @@ def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any,
             best_fallback_set = True
             fallback_scope = last_scope_for_type
             fallback_type = mro_type
+
+    has_default, default_value = _direct_owner_field_default(container_base, field_name)
+    if has_default:
+        return default_value, fallback_scope, container_base
 
     # No non-None found - return None with fallback provenance (outermost/highest MRO type)
     return None, fallback_scope, fallback_type
