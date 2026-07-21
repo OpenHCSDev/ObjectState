@@ -177,6 +177,7 @@ def test_inherited_tuple_cells_are_marked_inherited() -> None:
     assert leaf.dirty is False
     assert leaf.signature_diff is False
     assert leaf.inherited_value is True
+    assert leaf.semantic_markers == ("_",)
     assert index.owner_inherited_value is True
 
 

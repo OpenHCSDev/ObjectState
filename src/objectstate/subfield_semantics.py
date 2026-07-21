@@ -281,11 +281,12 @@ def _build_leaf(
     signature_default_present = signature_default_value is not MISSING
     dirty = resolved_value != saved_resolved_value
     signature_diff = raw_value != signature_default_value
+    inherited_value = not raw_present and resolved_present
     display_path = f"{owner_field_path.value}{relative_path.display_suffix()}"
     markers: list[str] = []
     if dirty:
         markers.append("*")
-    if signature_diff:
+    if signature_diff or inherited_value:
         markers.append("_")
     value_type = resolved_value if resolved_present else raw_value
     value_type_name = None if value_type is MISSING else type(value_type).__qualname__
@@ -305,7 +306,7 @@ def _build_leaf(
         signature_default_present=signature_default_present,
         dirty=dirty,
         signature_diff=signature_diff,
-        inherited_value=not raw_present and resolved_present,
+        inherited_value=inherited_value,
         semantic_markers=tuple(markers),
     )
 
