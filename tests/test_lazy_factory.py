@@ -1,6 +1,6 @@
 """Tests for lazy factory module."""
 import pytest
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 
 from objectstate import (
     LazyDataclassFactory,
@@ -56,9 +56,18 @@ def test_lazy_resolution_without_context():
     # Create lazy instance without context
     lazy = LazyConfig()
 
-    # Should return None or default values depending on implementation
-    # The exact behavior depends on whether there's a fallback to static defaults
-    assert lazy.value in [None, "default"]
+    assert lazy.value == "default"
+    assert lazy.number == 42
+
+
+def test_lazy_resolution_without_context_uses_default_factory():
+    @dataclass
+    class MyConfig:
+        values: tuple[str, ...] = field(default_factory=tuple)
+
+    LazyConfig = LazyDataclassFactory.make_lazy_simple(MyConfig)
+
+    assert LazyConfig().values == ()
 
 
 def test_lazy_explicit_values():
@@ -130,3 +139,86 @@ def test_lazy_to_base_config():
         assert isinstance(base, MyConfig)
         assert base.value == "test"
         assert base.number == 100
+
+
+def test_lazy_from_config_projects_all_dataclass_fields_generically():
+    @dataclass
+    class MyConfig:
+        value: str = "default"
+        number: int = 42
+
+    LazyConfig = LazyDataclassFactory.make_lazy_simple(MyConfig)
+
+    lazy = LazyConfig.from_config(MyConfig(value="explicit", number=100))
+
+    assert object.__getattribute__(lazy, "value") == "explicit"
+    assert object.__getattribute__(lazy, "number") == 100
+
+
+def test_lazy_from_config_omits_fields_equal_to_inherited_config():
+    @dataclass
+    class MyConfig:
+        value: str = "default"
+        number: int = 42
+
+    LazyConfig = LazyDataclassFactory.make_lazy_simple(MyConfig)
+
+    lazy = LazyConfig.from_config(
+        MyConfig(value="explicit", number=42),
+        inherited=MyConfig(),
+    )
+
+    assert object.__getattribute__(lazy, "value") == "explicit"
+    assert object.__getattribute__(lazy, "number") is None
+
+
+def test_lazy_from_config_rejects_lazy_and_unrelated_values():
+    @dataclass
+    class MyConfig:
+        value: str = "default"
+
+    LazyConfig = LazyDataclassFactory.make_lazy_simple(MyConfig)
+
+    with pytest.raises(TypeError, match="requires concrete MyConfig"):
+        LazyConfig.from_config(LazyConfig(value="explicit"))
+    with pytest.raises(TypeError, match="registered lazy type"):
+        LazyConfig.from_config(object())
+
+
+def test_lazy_from_config_composes_registered_nested_configs() -> None:
+    @dataclass
+    class ChildConfig:
+        value: str = "default"
+
+    LazyChildConfig = LazyDataclassFactory.make_lazy_simple(ChildConfig)
+
+    @dataclass
+    class ParentConfig:
+        child_config: LazyChildConfig = field(default_factory=LazyChildConfig)
+
+    LazyParentConfig = LazyDataclassFactory.make_lazy_simple(ParentConfig)
+
+    parent = LazyParentConfig.from_config(ChildConfig(value="explicit"))
+
+    child = object.__getattribute__(parent, "child_config")
+    assert isinstance(child, LazyChildConfig)
+    assert object.__getattribute__(child, "value") == "explicit"
+
+
+def test_lazy_from_config_rejects_unknown_and_duplicate_fragments() -> None:
+    @dataclass
+    class ChildConfig:
+        value: str = "default"
+
+    LazyChildConfig = LazyDataclassFactory.make_lazy_simple(ChildConfig)
+
+    @dataclass
+    class ParentConfig:
+        child_config: LazyChildConfig = field(default_factory=LazyChildConfig)
+
+    LazyParentConfig = LazyDataclassFactory.make_lazy_simple(ParentConfig)
+
+    with pytest.raises(ValueError, match="duplicate"):
+        LazyParentConfig.from_config(ChildConfig(), ChildConfig())
+    with pytest.raises(TypeError, match="concrete dataclass"):
+        LazyParentConfig.from_config(LazyChildConfig())

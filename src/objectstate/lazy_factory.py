@@ -11,6 +11,7 @@ from dataclasses import dataclass, fields, is_dataclass, make_dataclass, MISSING
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar, Union
 
 from objectstate.ui_visibility import mark_ui_hidden_config
+from python_introspect import register_type_resolver
 
 # Note: dual_axis_resolver_recursive and lazy_placeholder imports kept inline to avoid circular imports
 
@@ -54,6 +55,25 @@ def get_inherited_field_names(cls: Type) -> set:
     return parent_fields - own_defined
 
 
+def _inherited_default_metadata(field_definition) -> dict:
+    """Preserve one concrete dataclass field's standalone fallback values."""
+
+    metadata = dict(field_definition.metadata)
+    metadata.setdefault(
+        "_inherited_default",
+        (
+            field_definition.default
+            if field_definition.default is not MISSING
+            else MISSING
+        ),
+    )
+    metadata.setdefault(
+        "_inherited_default_factory",
+        field_definition.default_factory,
+    )
+    return metadata
+
+
 def rebuild_with_none_defaults(
     cls: Type,
     field_names_to_none: Optional[set] = None,
@@ -89,10 +109,16 @@ def rebuild_with_none_defaults(
         if f.name in field_names_to_none:
             # Force None default, but preserve original default in metadata for fallback
             # This allows standalone usage to fall back to parent's static default
-            new_metadata = dict(f.metadata) if f.metadata else {}
-            new_metadata['_inherited_default'] = f.default if f.default is not MISSING else MISSING
-            new_metadata['_inherited_default_factory'] = f.default_factory
-            field_defs.append((f.name, f.type, field(default=None, metadata=new_metadata)))
+            field_defs.append(
+                (
+                    f.name,
+                    f.type,
+                    field(
+                        default=None,
+                        metadata=_inherited_default_metadata(f),
+                    ),
+                )
+            )
         else:
             # Preserve original field (copy to avoid sharing)
             field_defs.append((f.name, f.type, copy.copy(f)))
@@ -197,6 +223,9 @@ def register_lazy_type_mapping(lazy_type: Type, base_type: Type) -> None:
 def get_base_type_for_lazy(lazy_type: Type) -> Optional[Type]:
     """Get the base type for a lazy dataclass type."""
     return _lazy_type_registry.get(lazy_type)
+
+
+register_type_resolver(get_base_type_for_lazy)
 
 
 def register_lazy_type(cls: Type) -> Type:
@@ -387,6 +416,7 @@ MATERIALIZATION_DEFAULTS_PATH = "materialization_defaults"
 RESOLVE_FIELD_VALUE_METHOD = "_resolve_field_value"
 GET_ATTRIBUTE_METHOD = "__getattribute__"
 TO_BASE_CONFIG_METHOD = "to_base_config"
+FROM_CONFIG_METHOD = "from_config"
 WITH_DEFAULTS_METHOD = "with_defaults"
 WITH_OVERRIDES_METHOD = "with_overrides"
 LAZY_FIELD_DEBUG_TEMPLATE = "LAZY FIELD CREATION: {field_name} - original={original_type}, has_default={has_default}, final={final_type}"
@@ -603,6 +633,75 @@ class LazyMethodBindings:
         return to_base_config
 
     @staticmethod
+    def create_from_config(base_class: Type) -> classmethod:
+        """Create one generic concrete projection and composition constructor."""
+
+        def from_config(cls, *configs, inherited=None):
+            if len(configs) == 1 and isinstance(configs[0], base_class):
+                config = configs[0]
+                if isinstance(config, LazyDataclass):
+                    raise TypeError(
+                        f"{cls.__name__}.from_config requires concrete "
+                        f"{base_class.__name__}, got {type(config).__name__}."
+                    )
+                if inherited is not None and (
+                    isinstance(inherited, LazyDataclass)
+                    or not isinstance(inherited, base_class)
+                ):
+                    raise TypeError(
+                        f"{cls.__name__}.from_config inherited value must be "
+                        f"{base_class.__name__}, got {type(inherited).__name__}."
+                    )
+
+                values = {}
+                for field_definition in fields(base_class):
+                    if not field_definition.init:
+                        continue
+                    value = object.__getattribute__(config, field_definition.name)
+                    if inherited is not None and value == object.__getattribute__(
+                        inherited,
+                        field_definition.name,
+                    ):
+                        continue
+                    values[field_definition.name] = value
+                return cls(**values)
+
+            if inherited is not None:
+                raise TypeError(
+                    f"{cls.__name__}.from_config accepts inherited only when "
+                    f"projecting one {base_class.__name__}."
+                )
+            target_fields = {field.name: field for field in fields(cls)}
+            values = {}
+            for config in configs:
+                if isinstance(config, LazyDataclass):
+                    raise TypeError(
+                        f"{cls.__name__}.from_config requires concrete dataclass "
+                        f"values, got {type(config).__name__}."
+                    )
+                lazy_type = get_lazy_type_for_base(type(config))
+                if lazy_type is None:
+                    raise TypeError(
+                        f"{cls.__name__}.from_config has no registered lazy type "
+                        f"for {type(config).__name__}."
+                    )
+                field_name = lazy_type._config_field_name_cls
+                if field_name not in target_fields:
+                    raise TypeError(
+                        f"{type(config).__name__} maps to {field_name!r}, which is "
+                        f"not a field of {cls.__name__}."
+                    )
+                if field_name in values:
+                    raise ValueError(
+                        f"{cls.__name__}.from_config received duplicate config "
+                        f"values for {field_name!r}."
+                    )
+                values[field_name] = lazy_type.from_config(config)
+            return cls(**values)
+
+        return classmethod(from_config)
+
+    @staticmethod
     def create_class_methods() -> Dict[str, Any]:
         """Create class-level utility methods."""
         return {
@@ -643,11 +742,12 @@ class LazyDataclassFactory:
             field_type = field.type
             lazy_nested_type = None  # Track if we created a lazy nested type
             if is_dataclass(field.type):
-                # SIMPLIFIED: Create lazy version using simple factory
-                lazy_nested_type = LazyDataclassFactory.make_lazy_simple(
-                    base_class=field.type,
-                    lazy_class_name=f"Lazy{field.type.__name__}"
-                )
+                lazy_nested_type = get_lazy_type_for_base(field.type)
+                if lazy_nested_type is None:
+                    lazy_nested_type = LazyDataclassFactory.make_lazy_simple(
+                        base_class=field.type,
+                        lazy_class_name=f"Lazy{field.type.__name__}"
+                    )
                 field_type = lazy_nested_type
                 logger.debug(f"Created lazy class for {field.name}: {field.type} -> {lazy_nested_type}")
 
@@ -666,15 +766,17 @@ class LazyDataclassFactory:
                 # Nested dataclass field: use default_factory so accessing returns an instance
                 # This matches AbstractStep pattern: napari_streaming_config = LazyNapariStreamingConfig()
                 field_def = (field.name, final_field_type, dataclasses.field(default_factory=lazy_nested_type, metadata=field.metadata))
-            elif field.metadata:
-                # CRITICAL FIX: For lazy configs, ALL non-dataclass fields should default to None
-                # This enables proper inheritance from parent configs and placeholder styling
-                # We preserve metadata but override all defaults to None
-                field_def = (field.name, final_field_type, dataclasses.field(default=None, metadata=field.metadata))
             else:
                 # CRITICAL FIX: For lazy configs, ALL non-dataclass fields should default to None
                 # This enables proper inheritance from parent configs and placeholder styling
-                field_def = (field.name, final_field_type, dataclasses.field(default=None))
+                field_def = (
+                    field.name,
+                    final_field_type,
+                    dataclasses.field(
+                        default=None,
+                        metadata=_inherited_default_metadata(field),
+                    ),
+                )
 
             lazy_field_definitions.append(field_def)
 
@@ -796,6 +898,7 @@ class LazyDataclassFactory:
             RESOLVE_FIELD_VALUE_METHOD: LazyMethodBindings.create_resolver(),
             GET_ATTRIBUTE_METHOD: LazyMethodBindings.create_getattribute(),
             TO_BASE_CONFIG_METHOD: LazyMethodBindings.create_to_base_config(base_class),
+            FROM_CONFIG_METHOD: LazyMethodBindings.create_from_config(base_class),
             **LazyMethodBindings.create_class_methods()
         }
         for method_name, method_impl in method_bindings.items():
