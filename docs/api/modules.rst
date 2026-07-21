@@ -1,123 +1,43 @@
-API Reference
-=============
+API orientation
+===============
 
-This section contains the complete API documentation for objectstate.
+Configuration and lazy types
+----------------------------
 
-Core Modules
-------------
+``LazyDataclassFactory``
+   Builds lazy dataclass types. Generated types expose ``from_config`` and
+   ``to_base_config``.
 
-.. autosummary::
-   :toctree: generated
-   :recursive:
+``auto_create_decorator``
+   Builds an application-specific configuration decorator and related lazy
+   types.
 
-   objectstate.config
-   objectstate.lazy_factory
-   objectstate.context_manager
-   objectstate.dual_axis_resolver
-   objectstate.global_config
-   objectstate.placeholder
-   objectstate.live_context_resolver
-   objectstate.token_cache
-   objectstate.object_state
-   objectstate.snapshot_model
-   objectstate.parametric_axes
-   objectstate.reified_generics
+``config_context`` and ``ensure_global_config_context``
+   Install concrete configuration used during resolution.
 
-Module Documentation
---------------------
+``set_base_config_type``
+   Declares the application's root concrete configuration type.
 
-objectstate.config
-~~~~~~~~~~~~~~~~~~
+State and history
+-----------------
 
-.. automodule:: objectstate.config
-   :members:
-   :undoc-members:
-   :show-inheritance:
+``ObjectState``
+   Mutable working state, saved baseline, resolved projection, callbacks, and
+   parameter updates for one scoped object.
 
-objectstate.lazy_factory
-~~~~~~~~~~~~~~~~~~~~~~~~~
+``ObjectStateRegistry``
+   Registry, hierarchy, token invalidation, atomic updates, snapshots, and
+   time-travel history for application states.
 
-.. automodule:: objectstate.lazy_factory
-   :members:
-   :undoc-members:
-   :show-inheritance:
+``Snapshot``, ``StateSnapshot``, and ``Timeline``
+   Typed history records.
 
-objectstate.context_manager
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Axes and generic annotations
+----------------------------
 
-.. automodule:: objectstate.context_manager
-   :members:
-   :undoc-members:
-   :show-inheritance:
+``axes_type``, ``with_axes``, and ``get_axes`` provide generic parametric-axis
+metadata. Reified ``List``, ``Dict``, ``Set``, ``Tuple``, and ``Optional``
+annotations preserve runtime generic arguments for form and state consumers.
 
-objectstate.dual_axis_resolver
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. automodule:: objectstate.dual_axis_resolver
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-objectstate.global_config
-~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. automodule:: objectstate.global_config
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-objectstate.placeholder
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. automodule:: objectstate.placeholder
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-objectstate.live_context_resolver
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. automodule:: objectstate.live_context_resolver
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-objectstate.token_cache
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. automodule:: objectstate.token_cache
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-objectstate.object_state
-~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. automodule:: objectstate.object_state
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-objectstate.snapshot_model
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. automodule:: objectstate.snapshot_model
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-objectstate.parametric_axes
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. automodule:: objectstate.parametric_axes
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-objectstate.reified_generics
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. automodule:: objectstate.reified_generics
-   :members:
-   :undoc-members:
-   :show-inheritance:
+The canonical public import surface is ``objectstate.__all__``. Internal module
+paths may change independently of that surface.

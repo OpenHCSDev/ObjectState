@@ -75,12 +75,12 @@ How It Works
 
 The context hierarchy is flattened into a single ``available_configs`` dict:
 
-.. code-block:: python
+.. code-block:: text
 
    {
-       'GlobalConfig': <global_config_instance>,
-       'PipelineConfig': <pipeline_config_instance>,
-       'StepConfig': <step_config_instance>
+       "GlobalConfig": <global_config_instance>,
+       "PipelineConfig": <pipeline_config_instance>,
+       "StepConfig": <step_config_instance>
    }
 
 2. Field Resolution
@@ -161,26 +161,55 @@ Fields are resolved lazily when accessed:
        value = lazy.field_name
        # Resolution happens HERE
 
-Caching Behavior
-~~~~~~~~~~~~~~~~
+Projecting raw state to the base dataclass
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Currently, fields are resolved on each access. For performance-critical applications, you can:
+``to_base_config()`` converts a lazy configuration to its authored base type
+without resolving raw ``None`` inheritance markers. This operation is used while
+building a context, when resolving too early would consult an incomplete or
+stale hierarchy:
 
-1. **Pre-warm caches:**
+.. code-block:: python
 
-   .. code-block:: python
+   with config_context(config):
+       lazy = LazyConfig()
+       concrete = lazy.to_base_config()
+       # Raw inheritance markers remain available to context resolution.
 
-      from objectstate import prewarm_config_analysis_cache
-      prewarm_config_analysis_cache([Config1, Config2, Config3])
+Use ``resolve_lazy_configurations_for_serialization()`` inside an established
+``config_context`` when a boundary instead needs recursively resolved concrete
+values for serialization.
 
-2. **Convert to base config** once resolved:
+Concrete-to-lazy projection and composition
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-   .. code-block:: python
+Every generated lazy type exposes ``from_config()``. With one concrete instance,
+it projects constructor fields into the matching lazy type. Passing an
+``inherited`` concrete instance makes the result sparse: values equal to the
+inherited instance are omitted and therefore continue to inherit.
 
-       with config_context(config):
-           lazy = LazyConfig()
-           concrete = lazy.to_base_config()
-           # concrete now has all values materialized
+For a generated aggregate lazy configuration, ``from_config()`` also composes
+multiple concrete registered configuration values. The base-to-lazy registry
+determines each aggregate field; callers do not supply a field-name map. An
+unregistered concrete type, a duplicate value for one aggregate field, a value
+whose mapped field is absent, or any lazy input fails explicitly.
+
+Default preservation
+~~~~~~~~~~~~~~~~~~~~
+
+Lazy scalar fields store raw ``None`` so inheritance remains observable. When a
+base field had a concrete default or default factory, the generated field keeps
+it in ``_inherited_default`` / ``_inherited_default_factory`` metadata. A lazy
+read uses that metadata only as the standalone fallback after context and MRO
+resolution cannot provide a value. The default is not copied into the raw field.
+
+Nested dataclass fields reuse the lazy type already registered for their authored
+base. The factory creates and registers a nested lazy type only when no mapping
+exists, then uses that nominal type as the field's default factory. At import
+time ObjectState also registers its lazy-to-base lookup with
+``python_introspect.register_type_resolver()``, so documentation and parameter
+analysis recover the authored dataclass rather than inspecting generated proxy
+fields.
 
 Dataclass Reconstruction Hook
 -----------------------------
@@ -225,7 +254,9 @@ Type System
 Lazy Type Registry
 ~~~~~~~~~~~~~~~~~~
 
-The framework maintains a registry mapping lazy types to base types:
+The framework maintains bidirectional mappings between generated lazy types and
+their authored base types. These registries are also the authority used by
+``from_config()`` composition and nested lazy reuse:
 
 .. code-block:: python
 

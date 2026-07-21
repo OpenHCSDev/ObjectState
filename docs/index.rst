@@ -21,7 +21,8 @@ Key Features
 * **UI Integration**: Placeholder text generation for configuration forms
 * **Thread-Safe**: Thread-local global configuration storage
 * **100% Generic**: No application-specific dependencies
-* **Pure Stdlib**: No external dependencies
+* **Small dependency surface**: Uses ``python-introspect`` for signature and
+  dataclass analysis
 
 Installation
 ------------
@@ -71,12 +72,12 @@ Before (Manual parameter passing)
 
 .. code-block:: python
 
-   def process_step(data, output_dir, num_workers, debug, ...):
+   def process_step(data, output_dir, num_workers, debug, *extra):
        # Pass 20+ parameters through every function
-       result = sub_process(data, output_dir, num_workers, debug, ...)
+       result = sub_process(data, output_dir, num_workers, debug, *extra)
        return result
 
-   def sub_process(data, output_dir, num_workers, debug, ...):
+   def sub_process(data, output_dir, num_workers, debug, *extra):
        # Repeat parameter declarations everywhere
        ...
 
@@ -100,8 +101,8 @@ After (objectstate)
 Requirements
 ------------
 
-* Python 3.10+
-* No external dependencies (pure stdlib)
+* Python 3.11+
+* ``python-introspect``
 
 Contents
 --------

@@ -13,9 +13,9 @@ Data model
 
 Core operations
 ---------------
-- ``record_snapshot(label, triggering_scope=None)`` (internal): create a new snapshot, prune unreachable
-- ``undo()``: move to parent snapshot in the current branch
-- ``redo()``: move to child if unique; otherwise stay
+- ``record_snapshot(label, scope_id=None)`` (internal): create a new snapshot and prune unreachable history
+- ``time_travel_back()``: move to the parent snapshot in the current branch
+- ``time_travel_forward()``: move to the child if unique; otherwise stay
 - ``time_travel_to_snapshot(id)`` / ``time_travel_to(index)``: jump arbitrarily in history
 - ``create_branch(name)`` / ``switch_branch(name)``: multi-branch history
 - ``atomic(label)`` context manager: batch multiple changes into one undo step
@@ -40,9 +40,9 @@ Example
        ObjectStateRegistry.register(item_state)
        parent_state.update_parameter("items", new_items)
 
-   # Undo/redo
-   ObjectStateRegistry.undo()
-   ObjectStateRegistry.redo()
+   # Back/forward time travel
+   ObjectStateRegistry.time_travel_back()
+   ObjectStateRegistry.time_travel_forward()
 
    # Persist history
    history = ObjectStateRegistry.export_history_to_dict()

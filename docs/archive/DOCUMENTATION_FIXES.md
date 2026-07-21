@@ -282,4 +282,3 @@ After making changes, verify:
 - [ ] Automatic nested dataclass lazification is explained
 - [ ] All code examples are consistent with OpenHCS usage patterns
 - [ ] Cross-references between docs are correct
-

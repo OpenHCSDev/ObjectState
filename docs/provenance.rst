@@ -1,5 +1,5 @@
 Provenance Tracking
-==================
+===================
 
 Provenance tracking allows you to determine **which scope provided a resolved value** for inherited fields. This is particularly useful for debugging configuration inheritance and understanding where values originate in the dual-axis resolution system.
 
@@ -37,6 +37,21 @@ The provenance system maintains separate tracking for:
 
 * **Live provenance**: Tracks where values come from in the current context (with all edits applied)
 * **Saved provenance**: Captured at the last save point, representing the committed state
+
+Nested display provenance
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Provenance remains owned by the ObjectState field even when a UI displays a
+tuple, list, or nested dataclass as separate cells. The
+``ObjectState.subfield_semantics()`` projection marks a structural leaf as
+inherited when no raw leaf is present but a resolved value is present. Its
+``_`` marker therefore covers both inherited values and raw values that differ
+from the signature default; ``*`` independently indicates a live-versus-saved
+resolved difference.
+
+These markers are presentation metadata derived from ObjectState's raw,
+resolved, saved, default, and provenance snapshots. A consumer should not infer
+inheritance from display text or maintain a parallel per-cell provenance table.
 
 API Reference
 -------------
@@ -290,4 +305,4 @@ See Also
 
 * :doc:`architecture` - Dual-axis resolution system
 * :doc:`state_management` - ObjectState and state snapshots
-* :doc:`context_system` - Context management and stacking
+* :doc:`architecture` - Context management and resolution architecture

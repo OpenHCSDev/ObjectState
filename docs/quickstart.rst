@@ -82,6 +82,27 @@ Use your configuration with context managers:
        print(lazy_cfg.debug)        # True
        print(lazy_cfg.timeout)      # 30 (from default)
 
+Project Concrete Configuration
+------------------------------
+
+Generated lazy dataclasses expose ``from_config`` for the common case where an
+application already has a concrete dataclass instance:
+
+.. code-block:: python
+
+   concrete = GlobalConfig(output_dir="/data", num_workers=8)
+   lazy_cfg = LazyGlobalConfig.from_config(concrete)
+
+   inherited = GlobalConfig(output_dir="/data", num_workers=4)
+   overrides = LazyGlobalConfig.from_config(
+       concrete,
+       inherited=inherited,
+   )
+
+The second form preserves only values that differ from ``inherited``.
+``from_config`` deliberately rejects lazy inputs so projection does not depend
+on ambient resolution state.
+
 Nested Contexts
 ---------------
 

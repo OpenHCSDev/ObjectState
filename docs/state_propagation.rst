@@ -87,6 +87,7 @@ Key Behaviors
    self._forwarding_to_parent = True
    try:
        # ... forward logic ...
+       pass
    finally:
        self._forwarding_to_parent = False
 

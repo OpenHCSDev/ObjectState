@@ -18,7 +18,8 @@
 - **UI Integration**: Placeholder text generation for configuration forms
 - **Thread-Safe**: Thread-local global configuration storage
 - **100% Generic**: No application-specific dependencies
-- **Pure Stdlib**: No external dependencies
+- **Small dependency surface**: Uses ``python-introspect`` for callable and
+  dataclass analysis
 - **Custom Dataclass Rebuild Hook**: For `init=False` dataclasses during lazy serialization (`__objectstate_rebuild__`)
 
 ## Quick Start
@@ -51,6 +52,23 @@ with config_context(concrete_config):
     print(lazy_cfg.num_workers)  # 8 (resolved from context)
     print(lazy_cfg.debug)        # False (inherited from defaults)
 ```
+
+Project a concrete config into its generated lazy type with ``from_config``.
+This is the supported boundary when an application has already parsed or
+loaded concrete configuration:
+
+```python
+concrete = MyConfig(output_dir="/data", num_workers=8)
+lazy_cfg = LazyMyConfig.from_config(concrete)
+
+# Keep only values that differ from an inherited concrete config.
+inherited = MyConfig(output_dir="/data", num_workers=4)
+overrides = LazyMyConfig.from_config(concrete, inherited=inherited)
+```
+
+``from_config`` accepts concrete dataclass instances. Passing another lazy
+instance is an error because it would make the projection depend on ambient
+resolution state.
 
 ### Setting Up Global Config Context (For Advanced Usage)
 
@@ -105,7 +123,7 @@ if state.dirty_fields:
     print(f"Unsaved changes: {state.dirty_fields}")
 
 # Save changes (updates baseline)
-state.save()
+state.mark_saved()
 
 # Or restore to saved baseline
 state.restore_saved()
@@ -317,12 +335,12 @@ LazyAppConfig = LazyDataclassFactory.make_lazy_simple(AppConfig)
 
 **Before** (Manual parameter passing):
 ```python
-def process_step(data, output_dir, num_workers, debug, ...):
+def process_step(data, output_dir, num_workers, debug, *more_options):
     # Pass 20+ parameters through every function
-    result = sub_process(data, output_dir, num_workers, debug, ...)
+    result = sub_process(data, output_dir, num_workers, debug, *more_options)
     return result
 
-def sub_process(data, output_dir, num_workers, debug, ...):
+def sub_process(data, output_dir, num_workers, debug, *more_options):
     # Repeat parameter declarations everywhere
     ...
 ```
@@ -540,7 +558,7 @@ Full documentation available at [objectstate.readthedocs.io](https://objectstate
 ## Requirements
 
 - Python 3.11+
-- No external dependencies (pure stdlib)
+- ``python-introspect`` is the only runtime dependency
 
 ## License
 

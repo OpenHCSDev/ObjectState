@@ -33,7 +33,7 @@ Saved vs Live
 - ``is_raw_dirty`` is a fast check for unsaved edits in raw parameters (``parameters`` vs ``_saved_parameters``).
 
 Reading resolved values
-~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~
 ObjectState keeps both a *live* resolved snapshot and a *saved* resolved snapshot.
 Use the appropriate accessor depending on whether you want to include unsaved edits:
 
@@ -47,6 +47,28 @@ Key methods
 - ``dirty_fields``: resolved diffs (live vs saved) as a set of dotted field names
 - ``is_raw_dirty``: true if raw parameters differ from saved parameters
 - ``to_object()``: materialize a concrete object from the current parameters
+
+Structural subfield semantics
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A tuple, list, or nested dataclass remains one writable ObjectState owner field.
+``subfield_semantics(DottedFieldPath(...))`` projects display identities for its
+structural leaves without registering those cells as a second set of state
+fields. Each ``ObjectStateSubfieldSemantic`` retains the raw, live resolved,
+saved resolved, and signature-default values together with explicit presence
+bits, so a concrete ``None`` is not confused with a missing leaf.
+
+Leaf ``dirty`` state compares live resolved and saved resolved values.
+``signature_diff`` compares raw state with the signature default, and
+``inherited_value`` identifies a missing raw leaf supplied by resolution. The
+returned ``semantic_markers`` use ``*`` for dirty and ``_`` for either a
+signature difference or inherited value. UI tables consume this projection;
+they do not recompute those predicates or write individual cells back to
+ObjectState.
+
+When an owner value changes, ObjectState reports the exact structural display
+paths that changed, such as ``filters[0].match_type``. The owner field remains
+the persistence and update boundary.
 
 Lifecycle
 ~~~~~~~~~

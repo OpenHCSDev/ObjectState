@@ -1,16 +1,17 @@
 """Sphinx configuration for objectstate."""
 import os
 import sys
+from pathlib import Path
 
 # Add source to path
-sys.path.insert(0, os.path.abspath("../src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 # Project information
 project = "objectstate"
 copyright = "2024, Tristan Simas"
 author = "Tristan Simas"
-version = "0.1.0"
-release = "0.1.0"
+version = "1.0"
+release = "1.0.17"
 
 # General configuration
 extensions = [
@@ -54,16 +55,15 @@ autosummary_generate = True
 templates_path = ["_templates"]
 
 # List of patterns to ignore
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "archive/**"]
 
 # HTML output options
 html_theme = "sphinx_rtd_theme"
-html_static_path = ["_static"]
+html_static_path = []
 html_theme_options = {
     "canonical_url": "",
     "analytics_id": "",
     "logo_only": False,
-    "display_version": True,
     "prev_next_buttons_location": "bottom",
     "style_external_links": False,
     "collapse_navigation": True,
