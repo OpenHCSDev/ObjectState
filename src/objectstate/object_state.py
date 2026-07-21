@@ -106,28 +106,26 @@ class FieldProxy:
 
 class ObjectState:
     """
-    Extracted MODEL from ParameterFormManager - pure Python state without PyQt dependencies.
+    UI-independent state for editing and resolving one backing object.
 
     Lifecycle:
-    - Created when object added to pipeline (before any UI)
-    - Persists until object removed from pipeline
-    - PFM attaches to ObjectState when editor opens, detaches when closed
+    - Created at the backing object's lifecycle boundary, before any editor.
+    - Persists independently of windows that attach to it.
+    - Unregistered when the backing object leaves its owning scope.
 
-    Core Attributes (8 total):
-    - object_instance: Backing object (updated on Save)
-    - parameters: Mutable working copy (None = unset, value = user-set)
-    - _saved_resolved: Resolved snapshot at save time
-    - _live_resolved: Resolved snapshot using live hierarchy (None = needs compute)
-    - _invalid_fields: Fields needing partial recompute
-    - nested_states: Recursive containment
-    - _parent_state: Parent for context derivation
-    - scope_id: Scope for registry lookup
+    State ownership:
+    - ``parameters`` is the flat mutable working copy. Nested dataclass fields
+      use dotted paths and do not create recursive ObjectState instances.
+    - ``_saved_parameters`` and ``_saved_resolved`` are the explicit saved
+      baseline; ``_live_resolved`` and ``_live_provenance`` describe the
+      current resolved view.
+    - ``_parent_state`` links independently scoped states for context and
+      notification. It is not structural ownership of a nested dataclass.
+    - ``scope_id`` is the registry identity.
 
-    Everything else is derived:
-    - context_obj → _parent_state.object_instance
-    - dirty_fields → _live_resolved != _saved_resolved
-    - signature_diff_fields → parameters != signature defaults
-    - user_set_fields → {k for k,v in parameters.items() if v is not None}
+    Dirty fields and signature differences are materialized from the raw and
+    resolved snapshots. Structural leaf identities are read-only projections
+    of the owning flat field, not additional writable state.
     """
 
     def __init__(
@@ -146,7 +144,8 @@ class ObjectState:
                              If the object declares __objectstate_delegate__, parameters
                              are extracted from that attribute instead (delegation pattern).
             scope_id: Scope identifier for filtering (e.g., "/path::step_0")
-            parent_state: Parent ObjectState for nested forms
+            parent_state: Parent independently scoped ObjectState used for
+                          context and parent notification.
             exclude_params: Parameters to exclude from extraction.
             initial_values: Initial values to override extracted defaults (e.g., saved kwargs)
         """

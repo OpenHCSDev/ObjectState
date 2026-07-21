@@ -180,6 +180,7 @@ Global config uses thread-local storage for stability:
        # Also inject into contextvars base
        with config_context(config_instance):
            # Global context now available
+           pass
 
 This hybrid approach uses thread-local for the global base and contextvars for dynamic stacking.
 
@@ -288,7 +289,7 @@ When nested configs need to inherit from siblings, the root form's values enable
    root_values = {
        'base_config': LazyBaseConfig(shared_value=123),
        'child_config': LazyChildConfig(shared_value=None),  # Inherits from base
-       ...
+       # Additional sibling configs may follow.
    }
 
    # When resolving child_config.shared_value:

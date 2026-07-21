@@ -75,6 +75,12 @@ Lifecycle
 ObjectStates are created when an object is added, persist independently of UI windows, and
 are removed when unregistered from the registry.
 
+Windows should attach to the existing state instead of creating a new state for
+each editor. A caller that needs a fail-loud editing boundary can wrap the state
+in ``ObjectStateEditSession``. The session delegates updates to ObjectState and
+reconstructs the edited object through ``to_object()``; it does not introduce a
+second saved/live model.
+
 ObjectStateRegistry
 -------------------
 
@@ -85,7 +91,8 @@ traversal, and history management.
 
 Registration
 ~~~~~~~~~~~~
-- ``register(state)`` / ``unregister(scope_id)``
+- ``register(state)`` / ``unregister(state)``
+- ``unregister_scope_and_descendants(scope_id)`` for an owned scope subtree
 - ``get_by_scope(scope_id)``
 - ``get_ancestor_objects(scope_id)`` / ``get_ancestor_objects_with_scopes(scope_id)``
 

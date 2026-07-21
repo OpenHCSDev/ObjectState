@@ -28,6 +28,7 @@ Resolution combines context flattening (X-axis) with MRO traversal (Y-axis):
        with config_context(parent_config):       # ParentConfig
            with config_context(child_config):    # ChildConfig
                # All three merged into available_configs dict
+               pass
 
    # Y-axis: MRO determines priority
    # ChildConfig.__mro__ = [ChildConfig, ParentMixin, BaseMixin, ...]
@@ -311,6 +312,11 @@ The system uses class-level signals (``context_value_changed``, ``context_refres
 
 **Reset Propagation**
 
-When fields are reset to ``None``, the system tracks them in a ``reset_fields`` set and includes them in live context even though their value is ``None``. The ``LiveContextResolver`` filters out ``None`` values during merge to preserve MRO inheritance semantics.
+``ObjectState.reset_parameter()`` writes the field's recorded signature default
+through the normal flat ``update_parameter()`` path. For lazy fields that
+default is commonly ``None``. The raw ``None`` remains in the reconstructed
+live object and ``LiveContextResolver`` deliberately passes it through; lazy
+resolution can then walk the context hierarchy and record the inherited source
+in ObjectState provenance. There is no parallel ``reset_fields`` collection.
 
 This pattern enables efficient real-time updates across multiple configuration windows.
