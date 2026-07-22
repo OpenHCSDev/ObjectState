@@ -212,7 +212,11 @@ class ObjectState:
 
         # Apply initial_values overrides (e.g., saved kwargs for functions)
         if initial_values:
-            self.parameters.update(initial_values)
+            for param_name, value in initial_values.items():
+                self.parameters[param_name] = value
+                self.parameters.update(
+                    self._dataclass_parameter_updates(param_name, value)
+                )
 
         # === Structure (1 attribute) ===
         self._parent_state: Optional['ObjectState'] = parent_state
@@ -2540,6 +2544,13 @@ class ObjectState:
 
                 # Store the nested dataclass instance in parameters (needed for UI rendering)
                 self.parameters[dotted_path] = current_value
+
+                # Container resets follow the same declared-default authority as
+                # leaf resets. Lazy dataclass fields retain their intentional
+                # ``None`` default, while callable parameters with concrete
+                # dataclass defaults can be restored after an authored override
+                # is removed.
+                self._signature_defaults[dotted_path] = info.default_value
 
                 # Recurse into nested dataclass for child fields
                 self._extract_all_parameters_flat(current_value, prefix=dotted_path, exclude_params=[])

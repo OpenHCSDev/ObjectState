@@ -48,6 +48,21 @@ Key methods
 - ``is_raw_dirty``: true if raw parameters differ from saved parameters
 - ``to_object()``: materialize a concrete object from the current parameters
 
+Initial values and nested defaults
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``ObjectState(..., initial_values=...)`` accepts authored callable kwargs at
+construction. A nested dataclass value is projected through the same flat-path
+owner used during normal extraction, so its container and every registered
+dotted child start in agreement. ObjectState records the analyzer-derived
+declared default for both nested containers and leaves. Resetting an authored
+nested override therefore restores the callable's concrete dataclass default;
+a lazy container whose declared default is ``None`` still resets to ``None``.
+
+Callers updating an existing state should use their normal ObjectState editing
+or code-document service so removed kwargs travel through
+``reset_parameter()``. They must not flatten dataclass fields independently.
+
 Structural subfield semantics
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

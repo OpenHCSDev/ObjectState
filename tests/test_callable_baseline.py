@@ -1,5 +1,6 @@
 """Tests for callable identity handling in ObjectState baselines."""
 
+from dataclasses import dataclass
 from typing import ClassVar
 
 from objectstate import ObjectState, ObjectStateRegistry
@@ -48,11 +49,52 @@ def _threshold_function(image=None, threshold: float = 1.0):
     return image
 
 
+@dataclass(frozen=True)
+class NestedBounds:
+    minimum: float = 0.0
+
+
+@dataclass(frozen=True)
+class NestedOptions:
+    threshold: float = 1.0
+    bounds: NestedBounds = NestedBounds()
+
+
+def _nested_options_function(
+    image=None,
+    options: NestedOptions = NestedOptions(),
+):
+    return image
+
+
 def test_function_parameter_paths_record_callable_owner():
     state = ObjectState(_threshold_function, scope_id="plate::step::function_0")
 
     assert state.type_for_path("threshold") is _threshold_function
     assert state.get_resolved_value("threshold") == 1.0
+
+
+def test_initial_values_flatten_nested_dataclass_overrides():
+    options = NestedOptions(
+        threshold=7.0,
+        bounds=NestedBounds(minimum=2.0),
+    )
+
+    state = ObjectState(
+        _nested_options_function,
+        scope_id="plate::step::function_0",
+        initial_values={"options": options},
+    )
+
+    assert state.parameters["options"] == options
+    assert state.parameters["options.threshold"] == 7.0
+    assert state.parameters["options.bounds"] == options.bounds
+    assert state.parameters["options.bounds.minimum"] == 2.0
+    assert state.signature_default("options") == NestedOptions()
+    assert state.reconstruct_top_level_parameters() == {
+        "image": None,
+        "options": options,
+    }
 
 
 def test_saved_baseline_preserves_callable_identity_values():

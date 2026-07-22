@@ -256,7 +256,7 @@ __all__ = [
     'ObjectStateEditSession',
 ]
 
-__version__ = '1.0.18'
+__version__ = '1.0.19'
 __author__ = 'OpenHCS Team'
 __description__ = 'Generic configuration framework for lazy dataclass resolution'
 
