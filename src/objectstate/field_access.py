@@ -23,6 +23,12 @@ class DottedFieldPath:
             return ()
         return tuple(part for part in self.value.split(".") if part)
 
+    @property
+    def field_name(self) -> str:
+        """Return the declared leaf name represented by this path."""
+
+        return self.parts[-1] if self.parts else ""
+
     def child(self, field_name: str) -> "DottedFieldPath":
         if self.value == "":
             return DottedFieldPath(field_name)

@@ -6,6 +6,7 @@ from typing import Callable
 import pytest
 
 from objectstate import (
+    DottedFieldPath,
     ObjectState,
     ObjectStateRegistry,
     ObjectStateTransactionCheckpoint,
@@ -27,6 +28,16 @@ class DelegatedHost:
 
     def __init__(self, config: CallbackConfig) -> None:
         self.config = config
+
+
+@dataclass(frozen=True)
+class NestedConfig:
+    value: int = 1
+
+
+@dataclass(frozen=True)
+class ConfigWithNestedTopology:
+    nested: NestedConfig = NestedConfig()
 
 
 def test_checkpoint_restores_exact_dirty_nondelegated_state() -> None:
@@ -81,6 +92,19 @@ def test_checkpoint_restores_exact_delegate_and_callable_identities() -> None:
     assert state.parameters["callback"] is _callback
     assert state._saved_parameters["callback"] is _callback
     assert state.is_raw_dirty is True
+
+
+def test_checkpoint_restores_parameter_topology_after_replacement() -> None:
+    state = ObjectState(ConfigWithNestedTopology(), scope_id="nested")
+    checkpoint = ObjectStateTransactionCheckpoint.capture(state)
+
+    state.update_object_instance(CallbackConfig())
+    checkpoint.restore(state)
+
+    assert state.direct_parameter_paths() == (DottedFieldPath("nested"),)
+    assert state.direct_parameter_paths("nested") == (
+        DottedFieldPath("nested.value"),
+    )
 
 
 def test_checkpoint_emits_only_fields_whose_transaction_state_changed() -> None:

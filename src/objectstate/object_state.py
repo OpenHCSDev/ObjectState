@@ -171,6 +171,10 @@ class ObjectState:
 
         # === Flat Storage (NEW - for flattened architecture) ===
         self._path_to_type: Dict[str, ParameterOwner] = {}  # Maps dotted paths to their owner target
+        self._direct_parameter_paths: dict[
+            DottedFieldPath,
+            tuple[DottedFieldPath, ...],
+        ] = {}
         self._cached_object: Optional[Any] = None  # Cached result of to_object()
         self._cached_object_applied: bool = False  # True if cached delegate was applied to object_instance
 
@@ -203,20 +207,15 @@ class ObjectState:
             if hasattr(extraction_target, param_name):
                 self._excluded_params[param_name] = getattr(extraction_target, param_name)
 
-        # Flatten parameter extraction - walk nested dataclasses recursively
-        # Uses _extraction_target (delegate) instead of object_instance for delegation support
-        self._extract_all_parameters_flat(extraction_target, prefix='', exclude_params=self._exclude_param_names)
-
-        # NOTE: Signature defaults are now populated by _extract_all_parameters_flat()
-        # for all fields including nested ones (flattened dotted paths).
-
-        # Apply initial_values overrides (e.g., saved kwargs for functions)
-        if initial_values:
-            for param_name, value in initial_values.items():
-                self.parameters[param_name] = value
-                self.parameters.update(
-                    self._dataclass_parameter_updates(param_name, value)
-                )
+        # Flatten parameter extraction - walk nested dataclasses recursively.
+        # Uses _extraction_target (delegate) instead of object_instance for
+        # delegation support. The structure and its immutable path index are
+        # replaced atomically once for this extraction.
+        self._replace_parameter_structure(
+            extraction_target,
+            exclude_params=self._exclude_param_names,
+            initial_values=initial_values,
+        )
 
         # === Structure (1 attribute) ===
         self._parent_state: Optional['ObjectState'] = parent_state
@@ -501,6 +500,24 @@ class ObjectState:
             raise KeyError(
                 f"ObjectState path is not registered: {field_path!r}"
             ) from exc
+
+    def direct_parameter_paths(
+        self,
+        field_path: str = "",
+    ) -> tuple[DottedFieldPath, ...]:
+        """Return immutable direct-child paths for one flat parameter scope.
+
+        The path topology is rebuilt when ObjectState extracts a replacement
+        object. Values remain authoritative in ``parameters`` and are therefore
+        never cached in this projection.
+        """
+
+        return self._direct_parameter_paths.get(DottedFieldPath(field_path), ())
+
+    def has_parameter_descendants(self, field_path: str) -> bool:
+        """Return whether an authoritative flat parameter owns child paths."""
+
+        return bool(self.direct_parameter_paths(field_path))
 
     # === Resolved Change Subscription ===
 
@@ -1557,11 +1574,8 @@ class ObjectState:
             self._extraction_target = new_instance
 
         # Re-extract parameters from new instance
-        self.parameters.clear()
-        self._path_to_type.clear()
-        self._extract_all_parameters_flat(
+        self._replace_parameter_structure(
             new_instance,
-            prefix='',
             exclude_params=self._exclude_param_names
         )
 
@@ -1999,6 +2013,15 @@ class ObjectState:
         from objectstate.dual_axis_resolver import resolve_with_provenance
         from objectstate.lazy_factory import has_lazy_resolution
 
+        if not isinstance(self.parameters, dict):
+            raise TypeError(
+                "ObjectState.parameters must remain a canonical flat dictionary."
+            )
+        if not isinstance(self._saved_parameters, dict):
+            raise TypeError(
+                "ObjectState._saved_parameters must remain a canonical flat dictionary."
+            )
+
         # Get ancestor objects WITH scope_ids for provenance tracking
         # use_saved=True returns object_instance (saved), False returns to_object() (live)
         ancestor_objects_with_scopes = ObjectStateRegistry.get_ancestor_objects_with_scopes(
@@ -2032,34 +2055,13 @@ class ObjectState:
         # NOT "current live edits resolved with saved ancestor context".
         # This is key for dirty detection: dirty = live_resolved != saved_resolved
         #
-        # Robustness: Some older snapshot restores or partial state restores can yield
-        # `_saved_parameters=None`. Avoid crashing ("NoneType has no attribute 'get'")
-        # during save/close flows.
-        logger.debug(f"🐛 _compute_resolved_snapshot: scope={self.scope_id!r}, use_saved={use_saved}, _saved_parameters is None={self._saved_parameters is None}, parameters is None={self.parameters is None}")
-        if use_saved and self._saved_parameters is None:
-            logger.warning(f"🐛 _compute_resolved_snapshot: _saved_parameters is None for scope={self.scope_id!r}, using parameters as fallback")
-            self._saved_parameters = self._copy_parameters_for_saved_baseline()
-        if self.parameters is None:
-            logger.warning(f"🐛 _compute_resolved_snapshot: parameters is None for scope={self.scope_id!r}, initializing to empty dict")
-            self.parameters = {}
-
         params_source = self._saved_parameters if use_saved else self.parameters
-        if params_source is None:
-            logger.error(f"🐛 _compute_resolved_snapshot: params_source is STILL None after guards! scope={self.scope_id!r}, use_saved={use_saved}")
-            params_source = {}
 
         # UNIFIED: Resolve ALL fields in single context stack
         # For each path, check if it has a lazy dataclass container type
-        logger.debug(f"🐛 _compute_resolved_snapshot: About to iterate parameters, params_source type={type(params_source).__name__}, is None={params_source is None}")
         with stack:
             for dotted_path in self.parameters.keys():
-                try:
-                    raw_value = params_source.get(dotted_path)
-                except AttributeError as e:
-                    logger.error(f"🐛 _compute_resolved_snapshot: ERROR accessing params_source.get({dotted_path!r})! params_source type={type(params_source).__name__}, is None={params_source is None}, scope={self.scope_id!r}")
-                    logger.error(f"🐛 _compute_resolved_snapshot: _saved_parameters type={type(self._saved_parameters).__name__}, is None={self._saved_parameters is None}")
-                    logger.error(f"🐛 _compute_resolved_snapshot: parameters type={type(self.parameters).__name__}, is None={self.parameters is None}")
-                    raise
+                raw_value = params_source.get(dotted_path)
                 container_type = self._path_to_type.get(dotted_path)
                 parts = dotted_path.split('.')
 
@@ -2336,8 +2338,6 @@ class ObjectState:
         # CRITICAL: For delegation, extract from the delegate (pipeline_config), not the lifecycle object.
         # This keeps flat parameters aligned with the form's target object after window close/reopen.
         # Also refresh _extraction_target in case the delegate attribute was replaced externally.
-        self.parameters.clear()
-        self._path_to_type.clear()
         extraction_target = self._extraction_target
         if self._delegate_attr is not None:
             try:
@@ -2346,7 +2346,10 @@ class ObjectState:
             except Exception:
                 # Fallback to existing extraction target if delegate access fails
                 extraction_target = self._extraction_target
-        self._extract_all_parameters_flat(extraction_target, prefix='', exclude_params=self._exclude_param_names)
+        self._replace_parameter_structure(
+            extraction_target,
+            exclude_params=self._exclude_param_names,
+        )
 
         # CRITICAL: Also restore _saved_parameters to match current parameters
         # After restore, parameters == saved (both extracted from object_instance)
@@ -2511,6 +2514,48 @@ class ObjectState:
                 # Store signature default for reset functionality (flattened)
                 # info.default_value is now guaranteed to be the CLASS signature default
                 self._signature_defaults[dotted_path] = info.default_value
+
+    def _replace_parameter_structure(
+        self,
+        obj: Any,
+        *,
+        exclude_params: list[str] | None = None,
+        initial_values: dict[str, Any] | None = None,
+    ) -> None:
+        """Extract one canonical flat parameter structure and index it once."""
+
+        self.parameters.clear()
+        self._path_to_type.clear()
+        self._signature_defaults.clear()
+        self._parameter_descriptions.clear()
+        self._extract_all_parameters_flat(
+            obj,
+            prefix="",
+            exclude_params=exclude_params,
+        )
+        if initial_values:
+            for param_name, value in initial_values.items():
+                self.parameters[param_name] = value
+                self.parameters.update(
+                    self._dataclass_parameter_updates(param_name, value)
+                )
+        self._index_parameter_paths()
+
+    def _index_parameter_paths(self) -> None:
+        """Index immutable direct-child topology from canonical flat parameters."""
+
+        paths_by_owner: dict[DottedFieldPath, list[DottedFieldPath]] = {}
+        for dotted_path in self.parameters:
+            owner_path, separator, _field_name = dotted_path.rpartition(".")
+            if not separator:
+                owner_path = ""
+            paths_by_owner.setdefault(DottedFieldPath(owner_path), []).append(
+                DottedFieldPath(dotted_path)
+            )
+        self._direct_parameter_paths = {
+            owner_path: tuple(parameter_paths)
+            for owner_path, parameter_paths in paths_by_owner.items()
+        }
 
     def to_object(self, *, update_delegate: bool = False, sync_delegate: bool = True) -> Any:
         """Reconstruct object from flat parameters with updated nested configs.
