@@ -2483,12 +2483,20 @@ class ObjectState:
             # First try from type annotation, then fall back to checking actual value
             nested_type = self._get_nested_dataclass_type(info.param_type)
 
-            # For functions with injected params, param_type may be Any but value is dataclass
-            # Use is_dataclass on the TYPE, not the value (to avoid triggering lazy resolution)
-            if nested_type is None and current_value is not None:
+            # A registered lazy runtime value owns its raw reconstruction type.
+            # The enclosing annotation commonly names the concrete base config,
+            # but reconstructing unresolved ``None`` sentinels through that base
+            # would run concrete validation before inheritance resolution.
+            if current_value is not None:
                 value_type = type(current_value)
                 if is_dataclass(value_type):
-                    nested_type = value_type
+                    from objectstate.lazy_factory import get_base_type_for_lazy
+
+                    if (
+                        nested_type is None
+                        or get_base_type_for_lazy(value_type) is not None
+                    ):
+                        nested_type = value_type
 
             if nested_type is not None and current_value is not None:
                 # Store the nested config type reference at this path
