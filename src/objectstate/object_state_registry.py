@@ -897,6 +897,9 @@ class ObjectStateRegistry:
         current_head_before = cls._current_head if outermost else None
         current_timeline_before = cls._current_timeline if outermost else None
         in_time_travel_before = cls._in_time_travel if outermost else None
+        snapshot_dirty_scopes_before = (
+            set(cls._snapshot_dirty_scopes) if outermost else None
+        )
 
         cls._atomic_depth += 1
         if cls._atomic_depth == 1:
@@ -929,6 +932,8 @@ class ObjectStateRegistry:
                     cls._current_head = current_head_before
                     cls._current_timeline = current_timeline_before or "main"
                     cls._in_time_travel = bool(in_time_travel_before)
+                    if snapshot_dirty_scopes_before is not None:
+                        cls._snapshot_dirty_scopes = snapshot_dirty_scopes_before
 
     @classmethod
     def _registry_mutation_signature(

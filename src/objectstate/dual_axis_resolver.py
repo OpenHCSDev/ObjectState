@@ -21,18 +21,6 @@ _mro_resolution_cache: Dict[Tuple, Any] = {}
 _CACHE_SENTINEL = object()  # Distinguishes "cached None" from "not cached"
 
 
-def _make_context_signature(available_configs: Dict[str, Any]) -> Tuple:
-    """Create a hashable signature for the context configs.
-
-    Uses config type names as signature. The caller's scope determines which
-    ancestor configs are available, so same types = same resolution result.
-
-    NOTE: This assumes that within a single compute cycle, the same config types
-    will resolve to the same values. Cache is invalidated when values change.
-    """
-    return tuple(sorted(available_configs.keys()))
-
-
 def clear_mro_resolution_cache() -> None:
     """Clear the MRO resolution cache. Call when context fundamentally changes."""
     _mro_resolution_cache.clear()
@@ -130,7 +118,7 @@ def _direct_owner_field_default(config_type: type, field_name: str) -> Tuple[boo
 def resolve_field_inheritance(
     obj,
     field_name: str,
-    available_configs: Dict[str, Any]
+    available_configs: Dict[type, Any]
 ) -> Any:
     """
     MRO-based inheritance resolution.
@@ -149,7 +137,7 @@ def resolve_field_inheritance(
     Args:
         obj: The object requesting field resolution
         field_name: Name of the field to resolve
-        available_configs: Dict mapping config type names to config instances
+        available_configs: Dict mapping config types to config instances
 
     Returns:
         Resolved field value or None if not found
@@ -179,7 +167,7 @@ def resolve_field_inheritance(
     _debug = logger.isEnabledFor(logging.DEBUG)
 
     if needs_resolution:
-        for config_key, config_instance in available_configs.items():
+        for config_type, config_instance in available_configs.items():
             # Normalize both sides: LazyWellFilterConfig matches WellFilterConfig
             instance_base = _normalize_to_base(type(config_instance))
             if instance_base == obj_base:
@@ -190,7 +178,7 @@ def resolve_field_inheritance(
                             if field_name == 'well_filter':
                                 logger.debug(f"🔍 CONCRETE VALUE: {obj_type.__name__}.{field_name} = {field_value}")
                             if field_name == 'num_workers':
-                                logger.debug(f"🔍 SAME-TYPE MATCH: {obj_type.__name__}.{field_name} = {field_value!r} (type={type(field_value).__name__}) FROM config_key={config_key}, config_type={type(config_instance).__name__}")
+                                logger.debug(f"🔍 SAME-TYPE MATCH: {obj_type.__name__}.{field_name} = {field_value!r} (type={type(field_value).__name__}) FROM config_type={config_type.__name__}")
                         _mro_resolution_cache[_cache_key] = field_value
                         return field_value
                 except AttributeError:
@@ -367,7 +355,7 @@ def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any,
     # Therefore: for each MRO type (most→least specific), scan scopes (inner→outer)
     # looking for the first non-None value.
     if _debug and field_name == 'well_filter':
-        logger.debug(f"🔍   Phase 2 - MRO fallback, walking layers inner to outer")
+        logger.debug("🔍   Phase 2 - MRO fallback, walking layers inner to outer")
 
     # Track where the "highest-precedence" field exists even if None, so callers
     # can still navigate to a sensible provenance target when everything is None.

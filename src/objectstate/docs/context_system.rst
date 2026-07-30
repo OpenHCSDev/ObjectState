@@ -146,7 +146,7 @@ The system extracts all dataclass fields from the provided object:
 
 .. code-block:: python
 
-   def extract_all_configs(context_obj) -> Dict[str, Any]:
+   def extract_all_configs(context_obj) -> Dict[type, Any]:
        """Extract all dataclass configs from an object."""
        configs = {}
        
@@ -155,12 +155,12 @@ The system extracts all dataclass fields from the provided object:
            for field in fields(context_obj):
                value = getattr(context_obj, field.name)
                if is_dataclass(value):
-                   # Store by type name
-                   configs[type(value).__name__] = value
+                   # Store by the resolved nominal type
+                   configs[type(value)] = value
        
        return configs
 
-This flattens nested configs into a single dictionary keyed by type name.
+This flattens nested configs into a single dictionary keyed by nominal type.
 
 Global Config Context
 --------------------
@@ -175,7 +175,7 @@ Global config uses thread-local storage for stability:
    def ensure_global_config_context(config_type: Type, config_instance: Any):
        """Establish global config as base context."""
        # Store in thread-local
-       set_current_global_config(config_type, config_instance)
+       set_global_config_for_editing(config_type, config_instance)
        
        # Also inject into contextvars base
        with config_context(config_instance):
@@ -199,7 +199,7 @@ The dual-axis resolver receives the merged context:
        # Walk MRO
        for mro_class in type(obj).__mro__:
            # Check if this MRO class has a config instance in context
-           for config_name, config_instance in available_configs.items():
+           for config_type, config_instance in available_configs.items():
                if type(config_instance) == mro_class:
                    value = object.__getattribute__(config_instance, field_name)
                    if value is not None:

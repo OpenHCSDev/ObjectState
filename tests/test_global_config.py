@@ -3,24 +3,13 @@ import pytest
 from dataclasses import dataclass
 
 from objectstate import (
-    set_current_global_config,
     get_current_global_config,
     set_global_config_for_editing,
     set_saved_global_config,
     set_live_global_config,
     get_saved_global_config,
     get_live_global_config,
-    get_base_config_type,
 )
-
-
-def test_set_and_get_global_config(global_config):
-    """Test setting and getting global config."""
-    config_type = type(global_config)
-    # Current API: set_current_global_config(config_type, config_instance)
-    set_current_global_config(config_type, global_config)
-    result = get_current_global_config(config_type)
-    assert result == global_config
 
 
 def test_set_global_config_for_editing(global_config):
@@ -45,8 +34,6 @@ def test_get_global_config_not_set():
 
 def test_dual_config_pattern(global_config):
     """Test the dual saved/live config pattern."""
-    config_type = type(global_config)
-
     # Create two different configs
     @dataclass
     class DualTestConfig:
@@ -63,3 +50,19 @@ def test_dual_config_pattern(global_config):
     assert get_current_global_config(DualTestConfig, use_live=True) == live_config
     # get_current_global_config with use_live=False returns saved
     assert get_current_global_config(DualTestConfig, use_live=False) == saved_config
+
+
+@pytest.mark.parametrize("setter", [set_saved_global_config, set_live_global_config])
+def test_global_config_storage_requires_matching_nominal_type(setter) -> None:
+    @dataclass
+    class ExpectedConfig:
+        value: str = "expected"
+
+    @dataclass
+    class OtherConfig:
+        value: str = "other"
+
+    with pytest.raises(TypeError, match="ExpectedConfig"):
+        setter(ExpectedConfig, OtherConfig())
+    with pytest.raises(TypeError, match="key must be a type"):
+        setter("ExpectedConfig", ExpectedConfig())

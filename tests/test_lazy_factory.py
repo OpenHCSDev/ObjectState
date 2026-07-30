@@ -1,12 +1,15 @@
 """Tests for lazy factory module."""
 import pytest
 from dataclasses import dataclass, field, fields
+from typing import Annotated, ClassVar, get_type_hints
 
 from objectstate import (
     LazyDataclassFactory,
     register_lazy_type_mapping,
     get_base_type_for_lazy,
+    patch_lazy_constructors,
 )
+from python_introspect import optional_member_type
 
 
 def test_make_lazy_simple():
@@ -26,6 +29,48 @@ def test_make_lazy_simple():
     assert get_base_type_for_lazy(LazySimpleConfig) == SimpleConfig
 
 
+def test_make_lazy_simple_reuses_the_registered_nominal_type() -> None:
+    @dataclass
+    class SimpleConfig:
+        value: str = "default"
+
+    first = LazyDataclassFactory.make_lazy_simple(SimpleConfig)
+    second = LazyDataclassFactory.make_lazy_simple(SimpleConfig)
+
+    assert second is first
+    with pytest.raises(ValueError, match="already owns lazy type"):
+        LazyDataclassFactory.make_lazy_simple(
+            SimpleConfig,
+            lazy_class_name="AlternativeSimpleConfig",
+        )
+
+
+def test_none_default_rebuild_resolves_self_reference_before_module_binding() -> None:
+    from objectstate.lazy_factory import (
+        get_inherited_field_names,
+        rebuild_with_none_defaults,
+    )
+
+    @dataclass
+    class BaseConfig:
+        inherited: str = "base"
+
+    def rebuild_during_decoration(config_type):
+        return rebuild_with_none_defaults(
+            config_type,
+            get_inherited_field_names(config_type),
+        )
+
+    @rebuild_during_decoration
+    @dataclass
+    class StreamingConfig(BaseConfig):
+        registry: ClassVar[dict[str, type["StreamingConfig"]]] = {}
+        own: str = "own"
+
+    assert StreamingConfig.registry == {}
+    assert StreamingConfig().inherited is None
+
+
 def test_lazy_dataclass_fields():
     """Test that lazy dataclass has same fields as base."""
     @dataclass
@@ -42,6 +87,10 @@ def test_lazy_dataclass_fields():
 
     # Should have same fields
     assert lazy_fields == base_fields
+    lazy_annotations = get_type_hints(LazyConfig, include_extras=True)
+    assert optional_member_type(lazy_annotations["field1"]) is str
+    assert optional_member_type(lazy_annotations["field2"]) is int
+    assert optional_member_type(lazy_annotations["field3"]) is bool
 
 
 def test_lazy_resolution_without_context():
@@ -104,6 +153,41 @@ def test_register_and_get_lazy_type_mapping():
     assert get_base_type_for_lazy(LazyConfig) == BaseConfig
 
 
+def test_patch_lazy_constructors_uses_registered_type_mapping():
+    @dataclass
+    class NestedConfig:
+        value: str = "nested"
+
+    @dataclass
+    class BaseConfig:
+        inherited: str = "base"
+        nested: NestedConfig = field(default_factory=NestedConfig)
+
+    LazyDataclassFactory.make_lazy_simple(NestedConfig)
+    LazyConfig = LazyDataclassFactory.make_lazy_simple(BaseConfig)
+
+    with patch_lazy_constructors():
+        candidate = LazyConfig()
+
+    assert object.__getattribute__(candidate, "inherited") is None
+    nested = object.__getattribute__(candidate, "nested")
+    assert get_base_type_for_lazy(type(nested)) is NestedConfig
+    assert object.__getattribute__(nested, "value") is None
+
+
+def test_patch_lazy_constructors_does_not_hide_default_factory_failure():
+    def fail_default():
+        raise RuntimeError("default factory failed")
+
+    @dataclass
+    class LazyConfig:
+        value: str = field(default_factory=fail_default)
+
+    with patch_lazy_constructors(types=[LazyConfig]):
+        with pytest.raises(RuntimeError, match="default factory failed"):
+            LazyConfig()
+
+
 def test_nested_lazy_dataclass():
     """Test creating lazy dataclass with nested dataclass fields."""
     @dataclass
@@ -115,6 +199,7 @@ def test_nested_lazy_dataclass():
         parent_value: str = "parent"
         nested: NestedConfig = None
 
+    LazyDataclassFactory.make_lazy_simple(NestedConfig)
     LazyParent = LazyDataclassFactory.make_lazy_simple(ParentConfig)
 
     # Should handle nested dataclass
@@ -203,6 +288,43 @@ def test_lazy_from_config_composes_registered_nested_configs() -> None:
     child = object.__getattribute__(parent, "child_config")
     assert isinstance(child, LazyChildConfig)
     assert object.__getattribute__(child, "value") == "explicit"
+
+
+def test_lazy_from_config_uses_declared_type_not_class_name() -> None:
+    @dataclass
+    class ChildConfig:
+        value: str = "default"
+
+    @dataclass
+    class ParentConfig:
+        payload: Annotated[ChildConfig, "nested config"] = field(
+            default_factory=ChildConfig
+        )
+
+    LazyDataclassFactory.make_lazy_simple(ChildConfig)
+    LazyParentConfig = LazyDataclassFactory.make_lazy_simple(ParentConfig)
+    parent = LazyParentConfig.from_config(ChildConfig(value="explicit"))
+
+    child = object.__getattribute__(parent, "payload")
+    assert get_base_type_for_lazy(type(child)) is ChildConfig
+    assert object.__getattribute__(child, "value") == "explicit"
+
+
+def test_lazy_from_config_rejects_ambiguous_declared_owner() -> None:
+    @dataclass
+    class ChildConfig:
+        value: str = "default"
+
+    @dataclass
+    class ParentConfig:
+        first: ChildConfig = field(default_factory=ChildConfig)
+        second: ChildConfig = field(default_factory=ChildConfig)
+
+    LazyDataclassFactory.make_lazy_simple(ChildConfig)
+    LazyParentConfig = LazyDataclassFactory.make_lazy_simple(ParentConfig)
+
+    with pytest.raises(TypeError, match="multiple ChildConfig fields"):
+        LazyParentConfig.from_config(ChildConfig())
 
 
 def test_lazy_from_config_rejects_unknown_and_duplicate_fragments() -> None:

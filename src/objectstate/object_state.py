@@ -699,17 +699,10 @@ class ObjectState:
     # Nested ObjectStates are no longer created - flat storage handles all parameters
 
     def _analyze_parameters(self, obj: Any, exclude_params: Optional[List[str]] = None) -> Dict[str, Any]:
-        """Analyze object parameters using pure stdlib introspection.
+        """Analyze object parameters through the canonical introspection owner.
 
         Returns dict mapping param_name -> info object with .param_type, .default_value, and .description attributes.
-
-        Handles:
-        - Dataclasses: uses dataclasses.fields()
-        - Regular classes: walks MRO and analyzes __init__ signatures
-        - Callables/functions: uses python_introspect SignatureAnalyzer (if available)
         """
-        import inspect
-        from dataclasses import fields, MISSING
         from types import SimpleNamespace
 
         exclude_params = exclude_params or []
@@ -730,51 +723,6 @@ class ObjectState:
                 default_value=getattr(info, "default_value", None),
                 description=getattr(info, "description", None),
             )
-        return result
-
-        if is_dataclass(obj_type):
-            # Dataclass: use fields()
-            for field in fields(obj_type):
-                if field.name in exclude_params:
-                    continue
-                default = field.default if field.default is not MISSING else (
-                    field.default_factory() if field.default_factory is not MISSING else None
-                )
-                result[field.name] = SimpleNamespace(
-                    param_type=field.type,
-                    default_value=default,
-                    description=None  # Dataclass fields don't have descriptions in stdlib
-                )
-        else:
-            # Non-dataclass: walk MRO and analyze __init__ signatures
-            for cls in obj_type.__mro__:
-                if cls is object:
-                    continue
-                if not hasattr(cls, '__init__') or cls.__init__ is object.__init__:
-                    continue
-
-                try:
-                    sig = inspect.signature(cls.__init__)
-                except (ValueError, TypeError):
-                    continue
-
-                for name, param in sig.parameters.items():
-                    if name in ('self', 'cls', 'args', 'kwargs'):
-                        continue
-                    if name in exclude_params:
-                        continue
-                    if name in result:  # Already found in more specific class
-                        continue
-
-                    param_type = param.annotation if param.annotation is not inspect.Parameter.empty else Any
-                    default = param.default if param.default is not inspect.Parameter.empty else None
-
-                    result[name] = SimpleNamespace(
-                        param_type=param_type,
-                        default_value=default,
-                        description=None  # __init__ parameters don't have descriptions in stdlib
-                    )
-
         return result
 
     def _get_nested_dataclass_type(self, param_type: Any) -> Optional[type]:
@@ -1732,7 +1680,7 @@ class ObjectState:
         # Inherited values: need context stack for lazy resolution + provenance
         if inherited_fields:
             from objectstate.dual_axis_resolver import resolve_with_provenance
-            from objectstate.lazy_factory import is_lazy_dataclass as is_lazy
+            from objectstate.lazy_factory import has_lazy_resolution
 
             # Get ancestor objects for context stack building
             # CRITICAL: Skip delegate sync to avoid re-entrant invalidate_cache() calls
@@ -1761,11 +1709,9 @@ class ObjectState:
                     if container_type is None:
                         logger.debug(f"⚠️ _recompute: {dotted_path} has no container_type in _path_to_type")
                         continue
-                    # Skip non-lazy container types - only lazy dataclasses have inheritance resolution
-                    # Non-lazy fields with None should stay as None (no resolution)
-                    # Check is_lazy (LazyDataclass subclass) OR _has_lazy_resolution (GlobalPipelineConfig)
-                    is_lazy_type = is_lazy(container_type) or getattr(container_type, '_has_lazy_resolution', False)
-                    if not is_dataclass(container_type) or not is_lazy_type:
+                    # Non-lazy fields with None stay as None rather than
+                    # participating in contextual inheritance.
+                    if not is_dataclass(container_type) or not has_lazy_resolution(container_type):
                         # Non-lazy field: just use raw value (None)
                         logger.debug(f"⚠️ _recompute: {dotted_path} has non-lazy container_type={container_type.__name__}, using raw value=None")
                         old_val = self._live_resolved.get(dotted_path)
@@ -2051,7 +1997,7 @@ class ObjectState:
         """
         from objectstate.context_manager import build_context_stack
         from objectstate.dual_axis_resolver import resolve_with_provenance
-        from objectstate.lazy_factory import is_lazy_dataclass as is_lazy
+        from objectstate.lazy_factory import has_lazy_resolution
 
         # Get ancestor objects WITH scope_ids for provenance tracking
         # use_saved=True returns object_instance (saved), False returns to_object() (live)
@@ -2129,11 +2075,14 @@ class ObjectState:
                     # Containers are kept in parameters for UI rendering but excluded from
                     # dirty comparison since we compare leaf fields instead
                     pass
-                elif container_type is not None and is_dataclass(container_type) and (is_lazy(container_type) or getattr(container_type, '_has_lazy_resolution', False)):
+                elif (
+                    container_type is not None
+                    and is_dataclass(container_type)
+                    and has_lazy_resolution(container_type)
+                ):
                     # Leaf field inside a LAZY dataclass - resolve value AND provenance in ONE walk
                     # CRITICAL: Only resolve for lazy dataclasses! Non-lazy dataclasses with None
                     # defaults should keep None as-is, not trigger inheritance resolution.
-                    # Check is_lazy (LazyDataclass subclass) OR _has_lazy_resolution (GlobalPipelineConfig).
                     # This handles both:
                     # - Nested fields (processing_config.group_by) where parts > 1
                     # - Top-level fields on root (num_workers on PipelineConfig) where parts == 1

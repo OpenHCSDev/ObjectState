@@ -18,14 +18,13 @@ Key components:
 """
 
 import contextvars
-import dataclasses
 import functools
-import inspect
 import logging
 import threading
 from contextlib import contextmanager
-from typing import Any, Dict, Union
+from typing import Any, Dict, get_type_hints
 from dataclasses import fields, is_dataclass
+from python_introspect import resolve_annotated, resolve_optional
 
 logger = logging.getLogger(__name__)
 
@@ -819,36 +818,6 @@ def _find_live_values_for_type(target_type: type, live_context: dict) -> dict | 
 # Removed: extract_config_overrides - no longer needed with field matching approach
 
 
-# UNUSED: Kept for compatibility but no longer used with field matching approach
-def extract_from_function_signature(func) -> Dict[str, Any]:
-    """
-    Get parameter defaults as config overrides.
-    
-    This enables functions to provide config context through their parameter defaults.
-    Useful for step functions that want to specify their own config values.
-    
-    Args:
-        func: Function to extract parameter defaults from
-        
-    Returns:
-        Dict of parameter_name -> default_value for parameters with defaults
-    """
-    try:
-        sig = inspect.signature(func)
-        overrides = {}
-        
-        for name, param in sig.parameters.items():
-            if param.default != inspect.Parameter.empty:
-                overrides[name] = param.default
-                
-        logger.debug(f"Extracted {len(overrides)} overrides from function {func.__name__}")
-        return overrides
-        
-    except (ValueError, TypeError) as e:
-        logger.debug(f"Could not extract signature from {func}: {e}")
-        return {}
-
-
 def extract_from_dataclass_fields(obj) -> Dict[str, Any]:
     """
     Get non-None fields as config overrides.
@@ -1048,7 +1017,7 @@ def get_context_info() -> Dict[str, Any]:
     }
 
 
-def extract_all_configs_from_context() -> Dict[str, Any]:
+def extract_all_configs_from_context() -> Dict[type, Any]:
     """
     Extract all *_config attributes from current context.
 
@@ -1056,7 +1025,7 @@ def extract_all_configs_from_context() -> Dict[str, Any]:
     for cross-dataclass inheritance resolution.
 
     Returns:
-        Dict of config_name -> config_instance for all *_config attributes
+        Dict of config type -> config instance.
     """
     current = get_current_temp_global()
     if current is None:
@@ -1067,10 +1036,10 @@ def extract_all_configs_from_context() -> Dict[str, Any]:
 
 # PERFORMANCE: Cache extracted configs per context object id
 # Cleared when context changes (config_context push/pop)
-_extract_all_configs_cache: Dict[int, Dict[str, Any]] = {}
+_extract_all_configs_cache: Dict[int, Dict[type, Any]] = {}
 
 
-def extract_all_configs(context_obj) -> Dict[str, Any]:
+def extract_all_configs(context_obj) -> Dict[type, Any]:
     """
     Extract all config instances from a context object using type-driven approach.
 
@@ -1084,7 +1053,7 @@ def extract_all_configs(context_obj) -> Dict[str, Any]:
         context_obj: Object to extract configs from (orchestrator, merged config, etc.)
 
     Returns:
-        Dict mapping config type names to config instances
+        Dict mapping nominal config types to config instances.
     """
     if context_obj is None:
         return {}
@@ -1094,37 +1063,36 @@ def extract_all_configs(context_obj) -> Dict[str, Any]:
     if obj_id in _extract_all_configs_cache:
         return _extract_all_configs_cache[obj_id]
 
-    configs = {}
+    configs: Dict[type, Any] = {}
 
     # Include the context object itself if it's a dataclass
     if is_dataclass(context_obj):
-        configs[type(context_obj).__name__] = context_obj
+        _record_config_instance(configs, context_obj, source="context object")
 
     # Type-driven extraction: Use dataclass field annotations to find config fields
     if is_dataclass(type(context_obj)):
-        # PERFORMANCE: Hoist import out of the per-field loop
-        from objectstate.lazy_factory import get_base_type_for_lazy
+        annotations = get_type_hints(type(context_obj), include_extras=True)
         for field_info in fields(type(context_obj)):
-            field_type = field_info.type
+            field_type = annotations.get(field_info.name, field_info.type)
             field_name = field_info.name
 
-            # Handle Optional[ConfigType] annotations
-            actual_type = _unwrap_optional_type(field_type)
+            actual_type = resolve_optional(resolve_annotated(field_type))
 
             # Only process fields that are dataclass types (config objects)
             if is_dataclass(actual_type):
-                try:
-                    field_value = getattr(context_obj, field_name)
-                    if field_value is not None:
-                        # CRITICAL: Use base type for lazy configs so MRO matching works
-                        # LazyWellFilterConfig should be stored as WellFilterConfig
-                        instance_type = type(field_value)
-                        base_type = get_base_type_for_lazy(instance_type) or instance_type
-                        configs[base_type.__name__] = field_value
-
-                except AttributeError:
-                    # Field doesn't exist on instance (shouldn't happen with dataclasses)
+                field_value = getattr(context_obj, field_name)
+                if field_value is None:
                     continue
+                if not _is_compatible_config_type(field_value, actual_type):
+                    raise TypeError(
+                        f"{type(context_obj).__name__}.{field_name} declares "
+                        f"{actual_type.__name__}, got {type(field_value).__name__}."
+                    )
+                _record_config_instance(
+                    configs,
+                    field_value,
+                    source=f"{type(context_obj).__name__}.{field_name}",
+                )
 
     # For non-dataclass objects (orchestrators, etc.), extract dataclass attributes
     else:
@@ -1133,7 +1101,11 @@ def extract_all_configs(context_obj) -> Dict[str, Any]:
     # Cache result
     _extract_all_configs_cache[obj_id] = configs
     if logger.isEnabledFor(logging.DEBUG):
-        logger.debug(f"Extracted {len(configs)} configs: {list(configs.keys())}")
+        logger.debug(
+            "Extracted %d configs: %s",
+            len(configs),
+            [config_type.__name__ for config_type in configs],
+        )
     return configs
 
 
@@ -1142,52 +1114,53 @@ def clear_extract_all_configs_cache() -> None:
     _extract_all_configs_cache.clear()
 
 
-def _unwrap_optional_type(field_type):
-    """
-    Unwrap Optional[T] and Union[T, None] types to get the actual type T.
+def _record_config_instance(
+    configs: Dict[type, Any],
+    config_instance: Any,
+    *,
+    source: str,
+) -> None:
+    """Record one nominal config identity and reject ambiguous duplicates."""
 
-    This handles type annotations like Optional[ConfigType] -> ConfigType
-    """
-    # Handle typing.Optional and typing.Union
-    if hasattr(field_type, '__origin__'):
-        if field_type.__origin__ is Union:
-            # Get non-None types from Union
-            non_none_types = [arg for arg in field_type.__args__ if arg is not type(None)]
-            if len(non_none_types) == 1:
-                return non_none_types[0]
+    from objectstate.lazy_factory import get_base_type_for_lazy
 
-    return field_type
+    instance_type = type(config_instance)
+    base_type = get_base_type_for_lazy(instance_type) or instance_type
+    existing = configs.get(base_type)
+    if existing is not None and existing is not config_instance:
+        raise ValueError(
+            f"{source} introduces a second {base_type.__name__} instance into "
+            "one configuration context."
+        )
+    configs[base_type] = config_instance
 
 
-def _extract_from_object_attributes_typed(obj, configs: Dict[str, Any]) -> None:
+def _extract_from_object_attributes_typed(obj, configs: Dict[type, Any]) -> None:
     """
     Type-safe extraction from object attributes for non-dataclass objects.
 
     This is used for orchestrators and other objects that aren't dataclasses
     but have config attributes. Uses type checking instead of string matching.
     """
-    try:
-        # Get all attributes that are dataclass instances
-        for attr_name in dir(obj):
-            if attr_name.startswith('_'):
-                continue
+    for attr_name in dir(obj):
+        if attr_name.startswith('_'):
+            continue
 
-            try:
-                attr_value = getattr(obj, attr_name)
-                if attr_value is not None and is_dataclass(attr_value):
-                    # CRITICAL: Use base type for lazy configs so MRO matching works
-                    from objectstate.lazy_factory import get_base_type_for_lazy
-                    instance_type = type(attr_value)
-                    base_type = get_base_type_for_lazy(instance_type) or instance_type
-                    configs[base_type.__name__] = attr_value
-                    logger.debug(f"Extracted config {base_type.__name__} from attribute {attr_name}")
-
-            except (AttributeError, TypeError):
-                # Skip attributes that can't be accessed or aren't relevant
-                continue
-
-    except Exception as e:
-        logger.debug(f"Error in typed attribute extraction: {e}")
+        try:
+            attr_value = getattr(obj, attr_name)
+        except (AttributeError, TypeError):
+            continue
+        if attr_value is not None and is_dataclass(attr_value):
+            _record_config_instance(
+                configs,
+                attr_value,
+                source=f"{type(obj).__name__}.{attr_name}",
+            )
+            logger.debug(
+                "Extracted config %s from attribute %s",
+                type(attr_value).__name__,
+                attr_name,
+            )
 
 
 def _is_compatible_config_type(value, expected_type) -> bool:
@@ -1199,32 +1172,15 @@ def _is_compatible_config_type(value, expected_type) -> bool:
     - value is a subclass of the expected type
     - value is exactly the expected type
     """
+    from objectstate.lazy_factory import get_base_type_for_lazy
+
+    expected_type = resolve_optional(resolve_annotated(expected_type))
+    if not isinstance(expected_type, type):
+        return False
     value_type = type(value)
-
-    # Direct type match
-    if value_type == expected_type:
-        return True
-
-    # Check if value_type is a subclass of expected_type
-    try:
-        if issubclass(value_type, expected_type):
-            return True
-    except TypeError:
-        # expected_type might not be a class (e.g., Union, Optional)
-        pass
-
-    # Check lazy-to-base type mapping
-    if hasattr(value, 'to_base_config'):
-        # This is a lazy config - check if its base type matches expected_type
-        from objectstate.lazy_factory import _lazy_type_registry
-        base_type = _lazy_type_registry.get(value_type)
-        if base_type == expected_type:
-            return True
-        # Also check if base type is subclass of expected type
-        if base_type and issubclass(base_type, expected_type):
-            return True
-
-    return False
+    value_base = get_base_type_for_lazy(value_type) or value_type
+    expected_base = get_base_type_for_lazy(expected_type) or expected_type
+    return issubclass(value_base, expected_base)
 
 
 def spawn_thread_with_context(

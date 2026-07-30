@@ -21,6 +21,18 @@ _saved_global_config_contexts: Dict[Type, threading.local] = {}
 _live_global_config_contexts: Dict[Type, threading.local] = {}
 
 
+def _validate_global_config_value(config_type: Type, config_instance: Any) -> None:
+    """Validate one nominal global-config storage assignment."""
+
+    if not isinstance(config_type, type):
+        raise TypeError(f"Global config key must be a type, got {config_type!r}.")
+    if not isinstance(config_instance, config_type):
+        raise TypeError(
+            f"Global config value for {config_type.__name__} must be an "
+            f"instance of that type, got {type(config_instance).__name__}."
+        )
+
+
 def set_saved_global_config(config_type: Type, config_instance: Any) -> None:
     """Set SAVED global config (what descendants/compiler see).
 
@@ -33,6 +45,7 @@ def set_saved_global_config(config_type: Type, config_instance: Any) -> None:
         config_type: The config type to set
         config_instance: The SAVED config instance
     """
+    _validate_global_config_value(config_type, config_instance)
     if config_type not in _saved_global_config_contexts:
         _saved_global_config_contexts[config_type] = threading.local()
     _saved_global_config_contexts[config_type].value = config_instance
@@ -49,6 +62,7 @@ def set_live_global_config(config_type: Type, config_instance: Any) -> None:
         config_type: The config type to set
         config_instance: The LIVE (unsaved) config instance
     """
+    _validate_global_config_value(config_type, config_instance)
     if config_type not in _live_global_config_contexts:
         _live_global_config_contexts[config_type] = threading.local()
     _live_global_config_contexts[config_type].value = config_instance
@@ -78,15 +92,6 @@ def get_live_global_config(config_type: Type) -> Optional[Any]:
     """
     context = _live_global_config_contexts.get(config_type)
     return getattr(context, 'value', None) if context else None
-
-
-def set_current_global_config(config_type: Type, config_instance: Any, *, caller_context: str = None) -> None:
-    """DEPRECATED: Use set_saved_global_config() or set_live_global_config() explicitly.
-
-    For backward compatibility, this sets BOTH saved and live.
-    """
-    set_saved_global_config(config_type, config_instance)
-    set_live_global_config(config_type, config_instance)
 
 
 def set_global_config_for_editing(config_type: Type, config_instance: Any) -> None:

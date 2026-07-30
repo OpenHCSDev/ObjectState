@@ -1,8 +1,10 @@
 """Tests for context manager module."""
 import pytest
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Annotated
 
 from objectstate import (
+    LazyDataclassFactory,
     config_context,
     get_current_temp_global,
     set_current_temp_global,
@@ -82,5 +84,76 @@ def test_extract_all_configs(global_config):
         current = get_current_temp_global()
         configs = extract_all_configs(current)
         assert isinstance(configs, dict)
-        # Should contain the global config by type name
+        assert configs[type(current)] is current
         assert len(configs) > 0
+
+
+def test_extract_all_configs_uses_resolved_nominal_field_types() -> None:
+    @dataclass
+    class ChildConfig:
+        value: str = "child"
+
+    @dataclass
+    class ParentConfig:
+        payload: Annotated[ChildConfig, "configuration"] = field(
+            default_factory=ChildConfig
+        )
+
+    parent = ParentConfig()
+
+    assert extract_all_configs(parent) == {
+        ParentConfig: parent,
+        ChildConfig: parent.payload,
+    }
+
+
+def test_extract_all_configs_rejects_ambiguous_same_type_fields() -> None:
+    @dataclass
+    class ChildConfig:
+        value: str
+
+    @dataclass
+    class ParentConfig:
+        first: ChildConfig
+        second: ChildConfig
+
+    with pytest.raises(ValueError, match="second ChildConfig instance"):
+        extract_all_configs(
+            ParentConfig(
+                first=ChildConfig("first"),
+                second=ChildConfig("second"),
+            )
+        )
+
+
+def test_extract_all_configs_rejects_value_outside_declared_field_type() -> None:
+    @dataclass
+    class ChildConfig:
+        value: str
+
+    @dataclass
+    class ParentConfig:
+        payload: ChildConfig
+
+    with pytest.raises(TypeError, match="declares ChildConfig"):
+        extract_all_configs(ParentConfig(payload="not a config"))
+
+
+def test_extract_all_configs_accepts_concrete_value_for_lazy_declared_owner() -> None:
+    @dataclass
+    class ChildConfig:
+        value: str = "child"
+
+    LazyChildConfig = LazyDataclassFactory.make_lazy_simple(ChildConfig)
+
+    @dataclass
+    class ParentConfig:
+        payload: LazyChildConfig = field(default_factory=LazyChildConfig)
+
+    concrete = ChildConfig(value="concrete")
+    parent = ParentConfig(payload=concrete)
+
+    assert extract_all_configs(parent) == {
+        ParentConfig: parent,
+        ChildConfig: concrete,
+    }

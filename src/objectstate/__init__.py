@@ -51,46 +51,6 @@ Modules:
     - config: Framework configuration (pluggable types and behaviors)
 """
 
-# Ensure openhcs.config_framework.* imports resolve to this package's modules
-import importlib
-import sys
-
-# Keep objectstate and openhcs.config_framework pointing to the same package instance
-if __name__ == 'objectstate':
-    _alias_prefix = 'openhcs.config_framework'
-else:
-    _alias_prefix = 'objectstate'
-sys.modules[_alias_prefix] = sys.modules[__name__]
-
-_submodules = [
-    'lazy_factory',
-    'dual_axis_resolver',
-    'context_manager',
-    'placeholder',
-    'global_config',
-    'config',
-    'live_context_resolver',
-    'token_cache',
-    'object_state_registry',
-    'object_state',
-    'edit_session',
-    'snapshot_model',
-    'object_state_metadata',
-    'parametric_axes',
-    'reified_generics',
-    'field_access',
-    'subfield_semantics',
-]
-
-for _mod in _submodules:
-    try:
-        _module = importlib.import_module(f'{__name__}.{_mod}')
-    except Exception:
-        continue
-    # Ensure both namespaces resolve to the same submodule object
-    sys.modules[f'{_alias_prefix}.{_mod}'] = _module
-    sys.modules[_alias_prefix].__dict__[_mod] = _module
-
 # Factory
 from objectstate.lazy_factory import (
     LazyDataclassFactory,
@@ -100,12 +60,12 @@ from objectstate.lazy_factory import (
     get_lazy_type_for_base,
     ensure_global_config_context,
     # Constructor patching for code execution
-    register_lazy_type,
-    get_registered_lazy_types,
     patch_lazy_constructors,
     # Global config type checking
     GlobalConfigBase,
     GlobalConfigMeta,
+    LazyResolutionDataclass,
+    has_lazy_resolution,
     mark_global_config_type,
     # Abbreviation decorator for config classes and fields
     abbreviation,
@@ -154,7 +114,6 @@ from objectstate.placeholder import LazyDefaultPlaceholderService
 
 # Global config
 from objectstate.global_config import (
-    set_current_global_config,
     get_current_global_config,
     set_global_config_for_editing,
     set_saved_global_config,
@@ -200,12 +159,12 @@ __all__ = [
     'get_lazy_type_for_base',
     'ensure_global_config_context',
     # Constructor patching for code execution
-    'register_lazy_type',
-    'get_registered_lazy_types',
     'patch_lazy_constructors',
     # Global config type checking
     'GlobalConfigBase',
     'GlobalConfigMeta',
+    'LazyResolutionDataclass',
+    'has_lazy_resolution',
     'mark_global_config_type',
     'is_global_config_type',
     'is_global_config_instance',
@@ -228,7 +187,6 @@ __all__ = [
     # Placeholder
     'LazyDefaultPlaceholderService',
     # Global config
-    'set_current_global_config',
     'get_current_global_config',
     'set_global_config_for_editing',
     # Configuration
@@ -256,7 +214,7 @@ __all__ = [
     'ObjectStateEditSession',
 ]
 
-__version__ = '1.0.19'
+__version__ = '1.0.20'
 __author__ = 'OpenHCS Team'
 __description__ = 'Generic configuration framework for lazy dataclass resolution'
 
@@ -285,6 +243,7 @@ from objectstate.ui_visibility import (
 
 # Snapshot model for time-travel
 from objectstate.snapshot_model import Snapshot, StateSnapshot, Timeline
+from objectstate.transaction_checkpoint import ObjectStateTransactionCheckpoint
 
 # Parametric axes
 from objectstate.parametric_axes import axes_type, get_axes
@@ -313,6 +272,7 @@ __all__ += [
     # Snapshot model
     'Snapshot',
     'StateSnapshot', 
+    'ObjectStateTransactionCheckpoint',
     'Timeline',
     # Parametric axes
     'axes_type',

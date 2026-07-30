@@ -9,6 +9,8 @@ from typing import Any, Optional
 import dataclasses
 import logging
 
+from objectstate.lazy_factory import has_lazy_resolution
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,23 +28,6 @@ class LazyDefaultPlaceholderService:
     
     PLACEHOLDER_PREFIX = "Default"
     NONE_VALUE_TEXT = "(none)"
-
-    @staticmethod
-    def has_lazy_resolution(dataclass_type: type) -> bool:
-        """
-        Check if a type has lazy resolution capability.
-
-        Returns True for:
-        1. LazyDataclass types (all None defaults, used in PipelineConfig)
-        2. Concrete types with _has_lazy_resolution (used in GlobalPipelineConfig)
-
-        The distinction matters:
-        - is_lazy_dataclass() → only LazyDataclass types
-        - has_lazy_resolution() → any type that can resolve None via MRO
-        """
-        from objectstate.lazy_factory import is_lazy_dataclass
-        # Check if it's a LazyDataclass OR has been bound with lazy resolution
-        return is_lazy_dataclass(dataclass_type) or getattr(dataclass_type, '_has_lazy_resolution', False)
 
     @staticmethod
     def get_lazy_resolved_placeholder(
@@ -65,8 +50,7 @@ class LazyDefaultPlaceholderService:
         """
         prefix = placeholder_prefix or LazyDefaultPlaceholderService.PLACEHOLDER_PREFIX
 
-        # Check if type has lazy resolution (LazyDataclass OR concrete with _has_lazy_resolution)
-        if not LazyDefaultPlaceholderService.has_lazy_resolution(dataclass_type):
+        if not has_lazy_resolution(dataclass_type):
             # Non-lazy type - use direct class default
             return LazyDefaultPlaceholderService._get_class_default_placeholder(
                 dataclass_type, field_name, prefix
@@ -167,9 +151,3 @@ class LazyDefaultPlaceholderService:
             return ", ".join(field_summaries)
         else:
             return f"{class_name} (default settings)"
-
-
-# Backward compatibility functions
-def get_lazy_resolved_placeholder(*args, **kwargs):
-    """Backward compatibility wrapper."""
-    return LazyDefaultPlaceholderService.get_lazy_resolved_placeholder(*args, **kwargs)

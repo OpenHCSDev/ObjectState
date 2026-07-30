@@ -5,8 +5,11 @@ from dataclasses import dataclass
 from objectstate import (
     LazyDefaultPlaceholderService,
     LazyDataclassFactory,
+    LazyResolutionDataclass,
     config_context,
+    has_lazy_resolution,
 )
+from objectstate.lazy_factory import bind_lazy_resolution_to_class
 
 
 def test_placeholder_service_creation():
@@ -54,8 +57,16 @@ def test_has_lazy_resolution():
 
     LazyConfig = LazyDataclassFactory.make_lazy_simple(MyConfig)
 
-    service = LazyDefaultPlaceholderService()
+    assert has_lazy_resolution(LazyConfig)
 
-    if hasattr(service, 'has_lazy_resolution'):
-        # Lazy config should have lazy resolution
-        assert service.has_lazy_resolution(LazyConfig)
+
+def test_concrete_lazy_resolution_is_a_nominal_type_relationship():
+    @dataclass
+    class ConcreteConfig:
+        value: str | None = None
+
+    bind_lazy_resolution_to_class(ConcreteConfig)
+
+    assert issubclass(ConcreteConfig, LazyResolutionDataclass)
+    assert has_lazy_resolution(ConcreteConfig)
+    assert "_has_lazy_resolution" not in vars(ConcreteConfig)

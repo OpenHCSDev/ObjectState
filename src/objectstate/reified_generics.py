@@ -22,7 +22,7 @@ from typing import Dict as TypingDict, Tuple, Any, TypeVar, get_args, get_origin
 import weakref
 
 # =============================================================================
-# TYPE CACHE - Reuse pattern from lazy_factory._lazy_class_cache
+# TYPE CACHE - immutable reified generic identity
 # =============================================================================
 
 _reified_cache: TypingDict[Tuple[type, tuple], type] = {}
