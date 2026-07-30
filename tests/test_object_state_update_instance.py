@@ -1,8 +1,11 @@
 """ObjectState replacement lifecycle tests."""
 
 from dataclasses import dataclass, field
+from typing import Annotated
 
 import pytest
+from annotated_types import Gt
+from python_introspect import AnnotatedDataclassValidationMixin
 
 from objectstate import (
     DottedFieldPath,
@@ -216,6 +219,25 @@ def test_same_state_sibling_inheritance_invalidates_dataclass_leaf():
 
     assert state.get_resolved_value("parent_config.leaf") == value
     assert state.get_resolved_value("child_config.leaf") == value
+
+
+def test_raw_reconstruction_preserves_registered_lazy_runtime_identity():
+    @dataclass
+    class ViewerConfig(AnnotatedDataclassValidationMixin):
+        port: Annotated[int, Gt(0)] = 5555
+
+    lazy_viewer_config_type = LazyDataclassFactory.make_lazy_simple(ViewerConfig)
+
+    @dataclass
+    class RootConfig:
+        viewer_config: ViewerConfig = field(default_factory=lazy_viewer_config_type)
+
+    state = ObjectState(RootConfig(), scope_id="config")
+
+    reconstructed = state.to_object()
+
+    assert isinstance(reconstructed.viewer_config, lazy_viewer_config_type)
+    assert object.__getattribute__(reconstructed.viewer_config, "port") is None
 
 
 def test_delegate_replacement_refreshes_saved_resolved_and_default_diff():
