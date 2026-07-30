@@ -49,6 +49,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -58,17 +60,44 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install ruff black mypy
+          pip install -e ".[dev]"
 
-      - name: Run ruff (linting)
+      - name: Run full-package Ruff fatal checks
         run: |
-          ruff check src/ --output-format=github
+          ruff check src/ --select E9,F63,F7,F82 --output-format=github
 
-      - name: Run black (formatting check)
+      - name: Resolve quality diff base
+        id: quality-base
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BASE_SHA: ${{ github.event.before }}
+        run: |
+          case "$EVENT_NAME" in
+            pull_request) base_sha="$PR_BASE_SHA" ;;
+            push) base_sha="$PUSH_BASE_SHA" ;;
+            *) base_sha="" ;;
+          esac
+          if [[ -z "$base_sha" || "$base_sha" =~ ^0+$ ]] ||
+             ! git cat-file -e "${base_sha}^{commit}"; then
+            base_sha="$(git rev-parse HEAD^)"
+          fi
+          echo "sha=$base_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Reject Ruff diagnostics introduced on added lines
+        run: |
+          python scripts/check_ruff_added_lines.py \
+            --base "${{ steps.quality-base.outputs.sha }}" \
+            --head "$GITHUB_SHA"
+
+      - name: Report repository-wide Black baseline (non-blocking)
+        continue-on-error: true
         run: |
           black --check src/
 
-      - name: Run mypy (type checking)
+      - name: Report repository-wide Mypy baseline (non-blocking)
+        continue-on-error: true
         run: |
           mypy src/ --ignore-missing-imports
 

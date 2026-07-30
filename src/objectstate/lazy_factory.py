@@ -1,24 +1,25 @@
 """Generic lazy dataclass factory using flexible resolution."""
 
 # Standard library imports
+import copy
 import dataclasses
 import logging
 import re
 import sys
 from abc import ABC
 from contextlib import contextmanager
+from dataclasses import MISSING, dataclass, field, fields, is_dataclass, make_dataclass
 from functools import lru_cache
-
-from dataclasses import dataclass, fields, is_dataclass, make_dataclass, MISSING, field
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar, Union, get_type_hints
 
-from objectstate.ui_visibility import mark_ui_hidden_config
 from python_introspect import (
     make_optional,
     register_type_resolver,
     resolve_annotated,
     resolve_optional,
 )
+
+from objectstate.ui_visibility import mark_ui_hidden_config
 
 # Note: dual_axis_resolver_recursive and lazy_placeholder imports kept inline to avoid circular imports
 
@@ -38,6 +39,38 @@ def _resolved_dataclass_annotations(dataclass_type: type) -> Dict[str, object]:
         localns={dataclass_type.__name__: dataclass_type},
         include_extras=True,
     )
+
+
+def _recreated_dataclass_namespace(
+    declared_type: type,
+    recreated_name: str,
+) -> dict[str, object]:
+    """Return declaration-owned metadata for a recreated dataclass."""
+
+    namespace: dict[str, object] = {"__doc__": declared_type.__doc__}
+    if recreated_name == declared_type.__name__:
+        namespace["__qualname__"] = declared_type.__qualname__
+    return namespace
+
+
+def _restore_recreated_dataclass_metadata(
+    recreated_type: type,
+    declared_type: type,
+) -> type:
+    """Restore runtime metadata that class creation may replace or remove."""
+
+    recreated_type.__module__ = declared_type.__module__
+    recreated_type.__doc__ = declared_type.__doc__
+    if recreated_type.__name__ == declared_type.__name__:
+        recreated_type.__qualname__ = declared_type.__qualname__
+
+    declared_first_line = declared_type.__dict__.get("__firstlineno__", MISSING)
+    if declared_first_line is not MISSING:
+        try:
+            setattr(recreated_type, "__firstlineno__", declared_first_line)
+        except (AttributeError, TypeError):
+            pass
+    return recreated_type
 
 
 # =============================================================================
@@ -105,8 +138,6 @@ def rebuild_with_none_defaults(
     Returns:
         A new class with the same fields but modified defaults
     """
-    import copy
-
     if not dataclasses.is_dataclass(cls):
         raise ValueError(f"{cls} is not a dataclass")
 
@@ -138,12 +169,13 @@ def rebuild_with_none_defaults(
             field_defs.append((f.name, declared_type, copy.copy(f)))
 
     # Collect non-dunder attributes to preserve (methods, class vars, etc.)
-    namespace = {}
+    recreated_name = new_name or cls.__name__
+    namespace = _recreated_dataclass_namespace(cls, recreated_name)
     for key, value in cls.__dict__.items():
         if key.startswith('__') and key.endswith('__'):
             # Skip most dunders (make_dataclass will generate them)
-            # BUT preserve __registry_key__ for AutoRegisterMeta
-            if key != '__registry_key__':
+            # BUT preserve lifecycle/registration declarations.
+            if key not in {"__post_init__", "__registry_key__"}:
                 continue
         if key == '__dataclass_fields__':
             continue  # Will be regenerated
@@ -164,17 +196,12 @@ def rebuild_with_none_defaults(
 
     # Create new class
     new_cls = make_dataclass(
-        new_name or cls.__name__,
+        recreated_name,
         fields=field_defs,
         bases=bases,
         namespace=namespace,
         frozen=is_frozen,
     )
-
-    # Preserve module and qualname
-    new_cls.__module__ = cls.__module__
-    if new_name is None:
-        new_cls.__qualname__ = cls.__qualname__
 
     # Preserve original metaclass if it's not just type
     # This is critical for AutoRegisterMeta and other custom metaclasses
@@ -188,7 +215,7 @@ def rebuild_with_none_defaults(
             dict(new_cls.__dict__),
         )
 
-    return new_cls
+    return _restore_recreated_dataclass_metadata(new_cls, cls)
 
 
 def replace_raw(instance, **changes):
@@ -937,6 +964,10 @@ class LazyDataclassFactory:
                 debug_template,
             ),
             bases=bases,
+            namespace=_recreated_dataclass_namespace(
+                base_class,
+                lazy_class_name,
+            ),
             frozen=base_is_frozen  # Match base class frozen status
         )
 
@@ -969,10 +1000,7 @@ class LazyDataclassFactory:
         for method_name, method_impl in method_bindings.items():
             setattr(lazy_class, method_name, method_impl)
 
-        # CRITICAL: Preserve original module for proper imports in generated code
-        # make_dataclass() sets __module__ to the caller's module (lazy_factory.py)
-        # We need to set it to the base class's original module for correct import paths
-        lazy_class.__module__ = base_class.__module__
+        _restore_recreated_dataclass_metadata(lazy_class, base_class)
 
         # Automatically register the lazy dataclass with the type registry
         register_lazy_type_mapping(lazy_class, base_class)
@@ -1606,10 +1634,9 @@ def _inject_multiple_fields_into_dataclass(target_class: Type, configs: List[Dic
     """Mathematical simplification: Batch field injection with direct dataclass recreation."""
     # Imports moved to top-level
 
-    # Direct field reconstruction - guaranteed by dataclass contract
+    annotations = _resolved_dataclass_annotations(target_class)
     existing_fields = [
-        (f.name, f.type, field(default_factory=f.default_factory) if f.default_factory != MISSING
-         else f.default if f.default != MISSING else f.type)
+        (f.name, annotations.get(f.name, f.type), copy.copy(f))
         for f in fields(target_class)
     ]
 
@@ -1639,14 +1666,14 @@ def _inject_multiple_fields_into_dataclass(target_class: Type, configs: List[Dic
         target_class.__name__,
         all_fields,
         bases=target_class.__bases__,
+        namespace=_recreated_dataclass_namespace(
+            target_class,
+            target_class.__name__,
+        ),
         frozen=target_class.__dataclass_params__.frozen
     )
 
-    # CRITICAL: Preserve original module for proper imports in generated code
-    # make_dataclass() sets __module__ to the caller's module (lazy_factory.py)
-    # We need to set it to the target class's original module for correct import paths
-    new_class.__module__ = target_class.__module__
-
+    _restore_recreated_dataclass_metadata(new_class, target_class)
 
     # Preserve global-config registration across dataclass recreation.
     # Registration is set by @auto_create_decorator but lost when make_dataclass creates a new class.
