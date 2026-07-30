@@ -2172,7 +2172,7 @@ class ObjectStateRegistry:
 
     @classmethod
     def load_history_from_file(cls, filepath: str) -> None:
-        """Load a trusted type-preserving ObjectState history document.
+        """Load and materialize a trusted ObjectState history document.
 
         Args:
             filepath: Path to the binary ObjectState history document.
@@ -2181,4 +2181,13 @@ class ObjectStateRegistry:
 
         with open(filepath, "rb") as history_file:
             cls.import_history_from_dict(dill.load(history_file))
+        restored_at_head = cls._current_head is None
+        snapshot_id = cls._current_snapshot_id()
+        if snapshot_id is not None:
+            if not cls.time_travel_to_snapshot(snapshot_id):
+                raise RuntimeError(
+                    "Loaded ObjectState history could not restore its current snapshot."
+                )
+            if restored_at_head:
+                cls._current_head = None
         logger.info(f"⏱️ Loaded {len(cls._snapshots)} snapshots from {filepath}")

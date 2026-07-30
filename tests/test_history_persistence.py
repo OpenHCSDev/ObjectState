@@ -58,3 +58,29 @@ def test_history_file_round_trips_typed_values(tmp_path: Path) -> None:
     assert parameters["mode"] is HistoryMode.FAST
     assert parameters["transform"] is identity
     assert history_path.stat().st_size > 0
+
+
+def test_history_file_materializes_current_snapshot_into_registered_state(
+    tmp_path: Path,
+) -> None:
+    state = ObjectState(
+        HistoryConfig(
+            output_path=tmp_path / "before",
+            mode=HistoryMode.FAST,
+            transform=identity,
+        ),
+        scope_id="restored_history",
+    )
+    ObjectStateRegistry.register(state, _skip_snapshot=True)
+    ObjectStateRegistry.record_snapshot("baseline", scope_id=state.scope_id)
+    state.update_parameter("output_path", tmp_path / "persisted")
+    ObjectStateRegistry.record_snapshot("persisted edit", scope_id=state.scope_id)
+    history_path = tmp_path / "history.objectstate"
+    ObjectStateRegistry.save_history_to_file(str(history_path))
+
+    state.update_parameter("output_path", tmp_path / "after-save")
+    ObjectStateRegistry.load_history_from_file(str(history_path))
+
+    assert state.parameters["output_path"] == tmp_path / "persisted"
+    assert state.to_resolved_object().output_path == tmp_path / "persisted"
+    assert ObjectStateRegistry.get_current_snapshot_index() == -1
