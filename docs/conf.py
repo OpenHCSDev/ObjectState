@@ -11,7 +11,7 @@ project = "objectstate"
 copyright = "2024, Tristan Simas"
 author = "Tristan Simas"
 version = "1.0"
-release = "1.0.20"
+release = "1.0.21"
 
 # General configuration
 extensions = [

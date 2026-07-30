@@ -1692,6 +1692,7 @@ class ObjectStateRegistry:
         state._live_resolved = copy.deepcopy(state_snap.live_resolved)
         state._live_provenance = copy.deepcopy(state_snap.provenance)
         state.parameters = parameters
+        state._index_parameter_paths()
         state._saved_parameters = saved_parameters
         state._cached_object = None
         state._cached_object_applied = False

@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import pytest
 
 from objectstate import (
+    DottedFieldPath,
     LazyDataclassFactory,
     ObjectState,
     ObjectStateRegistry,
@@ -54,6 +55,18 @@ class ConfigWithDataclassLeaf:
     leaf: DataclassLeaf | None = None
 
 
+@dataclass
+class NestedTopology:
+    threshold: int = 1
+    label: str = "nested"
+
+
+@dataclass
+class ConfigWithNestedTopology:
+    enabled: bool = True
+    nested: NestedTopology = field(default_factory=NestedTopology)
+
+
 class DelegatedHost:
     __objectstate_delegate__ = "config"
 
@@ -74,6 +87,70 @@ def test_update_object_instance_notifies_resolved_changes_and_saved_baseline():
     assert state.dirty_fields == set()
     assert state.is_raw_dirty is False
     assert state.last_changed_field == "threshold"
+
+
+def test_direct_parameter_paths_project_canonical_flat_topology_without_values():
+    state = ObjectState(ConfigWithNestedTopology(), scope_id="config")
+
+    assert state.direct_parameter_paths() == (
+        DottedFieldPath("enabled"),
+        DottedFieldPath("nested"),
+    )
+    assert state.direct_parameter_paths("nested") == (
+        DottedFieldPath("nested.threshold"),
+        DottedFieldPath("nested.label"),
+    )
+    assert state.direct_parameter_paths("nested.threshold") == ()
+    assert state.has_parameter_descendants("nested") is True
+    assert state.has_parameter_descendants("nested.threshold") is False
+
+    state.update_parameter("nested.threshold", 7)
+
+    assert state.direct_parameter_paths("nested") == (
+        DottedFieldPath("nested.threshold"),
+        DottedFieldPath("nested.label"),
+    )
+    assert state.parameters["nested.threshold"] == 7
+
+
+def test_resolved_snapshot_rejects_partial_parameter_state_without_recovery():
+    state = ObjectState(ConfigWithNestedTopology(), scope_id="config")
+    expected_topology = state.direct_parameter_paths("nested")
+    state.parameters = None
+
+    with pytest.raises(
+        TypeError,
+        match="parameters must remain a canonical flat dictionary",
+    ):
+        state._compute_resolved_snapshot()
+
+    assert state.parameters is None
+    assert state.direct_parameter_paths("nested") == expected_topology
+
+
+def test_replacement_rebuilds_direct_parameter_topology_once(monkeypatch):
+    state = ObjectState(PlainConfig(), scope_id="config")
+    index_calls = 0
+    original_index = state._index_parameter_paths
+
+    def counted_index() -> None:
+        nonlocal index_calls
+        index_calls += 1
+        original_index()
+
+    monkeypatch.setattr(state, "_index_parameter_paths", counted_index)
+
+    state.update_object_instance(ConfigWithNestedTopology())
+
+    assert index_calls == 1
+    assert state.direct_parameter_paths() == (
+        DottedFieldPath("enabled"),
+        DottedFieldPath("nested"),
+    )
+    assert state.direct_parameter_paths("nested") == (
+        DottedFieldPath("nested.threshold"),
+        DottedFieldPath("nested.label"),
+    )
 
 
 def test_update_object_instance_publishes_registry_resolved_change_without_local_subscriber():

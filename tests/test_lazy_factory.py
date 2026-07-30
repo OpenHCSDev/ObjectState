@@ -1,15 +1,22 @@
 """Tests for lazy factory module."""
-import pytest
+import sys
 from dataclasses import dataclass, field, fields
 from typing import Annotated, ClassVar, get_type_hints
 
+import pytest
+from annotated_types import Ge
+from python_introspect import (
+    AnnotatedDataclassValidationMixin,
+    AnnotationValidationError,
+    optional_member_type,
+)
+
 from objectstate import (
     LazyDataclassFactory,
-    register_lazy_type_mapping,
     get_base_type_for_lazy,
     patch_lazy_constructors,
+    register_lazy_type_mapping,
 )
-from python_introspect import optional_member_type
 
 
 def test_make_lazy_simple():
@@ -69,6 +76,112 @@ def test_none_default_rebuild_resolves_self_reference_before_module_binding() ->
 
     assert StreamingConfig.registry == {}
     assert StreamingConfig().inherited is None
+
+
+def test_none_default_rebuild_preserves_declaration_metadata_and_validation() -> None:
+    from objectstate.lazy_factory import rebuild_with_none_defaults
+
+    @dataclass
+    class ValidatedConfig(AnnotatedDataclassValidationMixin):
+        """Authoritative rationale for the validated configuration."""
+
+        workers: Annotated[int, Ge(1)] = 1
+
+    rebuilt = rebuild_with_none_defaults(ValidatedConfig, set())
+
+    assert rebuilt.__doc__ == ValidatedConfig.__doc__
+    assert rebuilt.__module__ == ValidatedConfig.__module__
+    assert rebuilt.__qualname__ == ValidatedConfig.__qualname__
+    if "__firstlineno__" in ValidatedConfig.__dict__:
+        assert rebuilt.__firstlineno__ == ValidatedConfig.__firstlineno__
+    with pytest.raises(AnnotationValidationError, match="must be at least 1"):
+        rebuilt(workers=0)
+
+
+def test_lazy_dataclass_preserves_declaration_metadata_and_validation() -> None:
+    @dataclass
+    class ValidatedConfig(AnnotatedDataclassValidationMixin):
+        """Authoritative rationale inherited by the lazy projection."""
+
+        port: Annotated[int, Ge(1)] = 5555
+
+    lazy_validated_config = LazyDataclassFactory.make_lazy_simple(ValidatedConfig)
+
+    assert lazy_validated_config.__doc__ == ValidatedConfig.__doc__
+    assert lazy_validated_config.__module__ == ValidatedConfig.__module__
+    if "__firstlineno__" in ValidatedConfig.__dict__:
+        assert (
+            lazy_validated_config.__firstlineno__
+            == ValidatedConfig.__firstlineno__
+        )
+    assert object.__getattribute__(lazy_validated_config(), "port") is None
+    with pytest.raises(AnnotationValidationError, match="must be at least 1"):
+        lazy_validated_config(port=0)
+
+
+def test_injected_global_config_preserves_metadata_and_validation(
+    monkeypatch,
+) -> None:
+    from objectstate.lazy_factory import _inject_multiple_fields_into_dataclass
+
+    @dataclass
+    class GlobalMetadataValidationRoot(AnnotatedDataclassValidationMixin):
+        """Authoritative rationale for the global configuration."""
+
+        workers: Annotated[int, Ge(1)] = field(
+            default=1,
+            metadata={"description": "Worker count rationale."},
+        )
+
+    @dataclass
+    class InjectedConstraintConfig(AnnotatedDataclassValidationMixin):
+        """Authoritative rationale for the injected configuration."""
+
+        port: Annotated[int, Ge(1)] = 5555
+
+    module = sys.modules[__name__]
+    generated_names = (
+        "GlobalMetadataValidationRoot",
+        "MetadataValidationRoot",
+        "LazyInjectedConstraintConfig",
+    )
+    for generated_name in generated_names:
+        monkeypatch.setattr(module, generated_name, None, raising=False)
+
+    _inject_multiple_fields_into_dataclass(
+        GlobalMetadataValidationRoot,
+        [
+            {
+                "config_class": InjectedConstraintConfig,
+                "field_name": "injected_constraint_config",
+                "lazy_class_name": "LazyInjectedConstraintConfig",
+            }
+        ],
+    )
+
+    rebuilt_global = module.GlobalMetadataValidationRoot
+    lazy_global = module.MetadataValidationRoot
+    lazy_injected = module.LazyInjectedConstraintConfig
+
+    assert rebuilt_global.__doc__ == GlobalMetadataValidationRoot.__doc__
+    assert lazy_global.__doc__ == GlobalMetadataValidationRoot.__doc__
+    assert lazy_injected.__doc__ == InjectedConstraintConfig.__doc__
+    rebuilt_workers = next(
+        item for item in fields(rebuilt_global) if item.name == "workers"
+    )
+    assert rebuilt_workers.metadata == {
+        "description": "Worker count rationale.",
+    }
+    assert isinstance(
+        rebuilt_global().injected_constraint_config,
+        InjectedConstraintConfig,
+    )
+    with pytest.raises(AnnotationValidationError, match="must be at least 1"):
+        rebuilt_global(workers=0)
+    with pytest.raises(AnnotationValidationError, match="must be at least 1"):
+        lazy_global(workers=0)
+    with pytest.raises(AnnotationValidationError, match="must be at least 1"):
+        lazy_injected(port=0)
 
 
 def test_lazy_dataclass_fields():

@@ -108,6 +108,7 @@ class ObjectStateTransactionCheckpoint:
                 self.extraction_target,
             )
         state.parameters = copied["parameters"]
+        state._index_parameter_paths()
         state._saved_parameters = copied["saved_parameters"]
         state._live_resolved = copied["live_resolved"]
         state._saved_resolved = copied["saved_resolved"]
