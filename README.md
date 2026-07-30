@@ -167,8 +167,8 @@ history_dict = ObjectStateRegistry.export_history_to_dict()
 ObjectStateRegistry.import_history_from_dict(history_dict)
 
 # Or save to file
-ObjectStateRegistry.save_history_to_file("history.json")
-ObjectStateRegistry.load_history_from_file("history.json")
+ObjectStateRegistry.save_history_to_file("history.objectstate")
+ObjectStateRegistry.load_history_from_file("history.objectstate")
 ```
 
 ## Automatic Lazy Config Generation with Decorators
