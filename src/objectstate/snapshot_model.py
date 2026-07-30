@@ -64,7 +64,7 @@ class Snapshot:
         )
     
     def to_dict(self) -> Dict:
-        """Export to JSON-serializable dict."""
+        """Export the typed snapshot document payload."""
         return {
             'id': self.id,
             'timestamp': self.timestamp,
@@ -86,21 +86,15 @@ class Snapshot:
     
     @classmethod
     def from_dict(cls, data: Dict) -> 'Snapshot':
-        """Import from dict (e.g., loaded from JSON)."""
+        """Import a typed snapshot document payload."""
         all_states = {
             scope_id: StateSnapshot(
                 saved_resolved=state_data['saved_resolved'],
                 live_resolved=state_data['live_resolved'],
                 parameters=state_data['parameters'],
-                # Back-compat: old snapshots may be missing saved_parameters entirely.
-                # Also guard against explicit null saved_parameters in older exported histories.
-                saved_parameters=(
-                    state_data.get('saved_parameters')
-                    if state_data.get('saved_parameters') is not None
-                    else state_data['parameters']
-                ),
+                saved_parameters=state_data['saved_parameters'],
                 provenance=state_data['provenance'],
-                meta=state_data.get('meta') or {},
+                meta=state_data['meta'],
             )
             for scope_id, state_data in data['states'].items()
         }

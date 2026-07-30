@@ -1,17 +1,18 @@
 """Sphinx configuration for objectstate."""
-import os
 import sys
 from pathlib import Path
 
 # Add source to path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from objectstate import __version__  # noqa: E402
+
 # Project information
 project = "objectstate"
 copyright = "2024, Tristan Simas"
 author = "Tristan Simas"
 version = "1.0"
-release = "1.0.21"
+release = __version__
 
 # General configuration
 extensions = [

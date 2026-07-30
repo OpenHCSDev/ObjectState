@@ -2097,7 +2097,7 @@ class ObjectStateRegistry:
 
     @classmethod
     def export_history_to_dict(cls) -> Dict[str, Any]:
-        """Export history to a JSON-serializable dict.
+        """Export the complete typed history document payload.
 
         Returns:
             Dict with 'snapshots', 'timelines', 'current_head', 'current_timeline'.
@@ -2111,7 +2111,7 @@ class ObjectStateRegistry:
 
     @classmethod
     def import_history_from_dict(cls, data: Dict[str, Any]) -> None:
-        """Import history from a dict (e.g., loaded from JSON).
+        """Import a complete typed history document payload.
 
         Only imports state data for scope_ids that currently exist in the registry.
         Scopes in the snapshot but not in the app are skipped.
@@ -2123,16 +2123,7 @@ class ObjectStateRegistry:
         cls._timelines.clear()
         current_scopes = set(cls._states.keys())
 
-        # Handle both old list format and new dict format
-        snapshots_data = data['snapshots']
-        if isinstance(snapshots_data, list):
-            # Old format: list of snapshots
-            snapshot_items = [(s['id'], s) for s in snapshots_data]
-        else:
-            # New format: dict of id -> snapshot
-            snapshot_items = snapshots_data.items()
-
-        for _snapshot_id, snapshot_data in snapshot_items:
+        for _snapshot_id, snapshot_data in data['snapshots'].items():
             # Filter to only scopes that exist in current registry
             filtered_states: Dict[str, StateSnapshot] = {}
             for scope_id, state_data in snapshot_data['states'].items():
@@ -2141,68 +2132,53 @@ class ObjectStateRegistry:
                         saved_resolved=state_data['saved_resolved'],
                         live_resolved=state_data['live_resolved'],
                         parameters=state_data['parameters'],
-                        # Back-compat: old history may omit saved_parameters or explicitly store it as null.
-                        # In either case, treat it as "same as parameters".
-                        saved_parameters=(
-                            state_data.get('saved_parameters')
-                            if state_data.get('saved_parameters') is not None
-                            else state_data['parameters']
-                        ),
+                        saved_parameters=state_data['saved_parameters'],
                         provenance=state_data['provenance'],
-                        meta=state_data.get('meta') or {},
+                        meta=state_data['meta'],
                     )
 
             snapshot = Snapshot(
                 id=snapshot_data['id'],
                 timestamp=snapshot_data['timestamp'],
                 label=snapshot_data['label'],
-                triggering_scope=snapshot_data.get('triggering_scope'),
-                parent_id=snapshot_data.get('parent_id'),
+                triggering_scope=snapshot_data['triggering_scope'],
+                parent_id=snapshot_data['parent_id'],
                 all_states=filtered_states,
             )
             cls._snapshots[snapshot.id] = snapshot
 
-        # Import timelines
-        if 'timelines' in data:
-            for tl_data in data['timelines']:
-                tl = Timeline.from_dict(tl_data)
-                cls._timelines[tl.name] = tl
-            cls._current_timeline = data.get('current_timeline', 'main')
-        else:
-            cls._current_timeline = 'main'
-
-        # Handle both old index format and new head format
-        if 'current_head' in data:
-            cls._current_head = data['current_head']
-        elif 'current_index' in data:
-            # Old format - convert index to head
-            # Can't reliably convert, just go to head
-            cls._current_head = None
-        else:
-            cls._current_head = None
+        for timeline_data in data['timelines']:
+            timeline = Timeline.from_dict(timeline_data)
+            cls._timelines[timeline.name] = timeline
+        cls._current_timeline = data['current_timeline']
+        cls._current_head = data['current_head']
 
     @classmethod
     def save_history_to_file(cls, filepath: str) -> None:
-        """Save history to a JSON file.
+        """Save history as a type-preserving ObjectState document.
+
+        The document is intended for trusted local persistence. Dill preserves
+        arbitrary Python values and graph identity without a parallel type-tag
+        registry.
 
         Args:
-            filepath: Path to save the JSON file.
+            filepath: Path to the binary ObjectState history document.
         """
-        import json
-        data = cls.export_history_to_dict()
-        with open(filepath, 'w') as f:
-            json.dump(data, f, indent=2)
+        import dill
+
+        with open(filepath, "wb") as history_file:
+            dill.dump(cls.export_history_to_dict(), history_file)
         logger.info(f"⏱️ Saved {len(cls._snapshots)} snapshots to {filepath}")
 
     @classmethod
     def load_history_from_file(cls, filepath: str) -> None:
-        """Load history from a JSON file.
+        """Load a trusted type-preserving ObjectState history document.
 
         Args:
-            filepath: Path to the JSON file.
+            filepath: Path to the binary ObjectState history document.
         """
-        import json
-        with open(filepath, 'r') as f:
-            data = json.load(f)
-        cls.import_history_from_dict(data)
+        import dill
+
+        with open(filepath, "rb") as history_file:
+            cls.import_history_from_dict(dill.load(history_file))
         logger.info(f"⏱️ Loaded {len(cls._snapshots)} snapshots from {filepath}")
