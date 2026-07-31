@@ -594,6 +594,31 @@ class LazyMethodBindings:
             return next((getattr(cls, name) for cls in base_class.__mro__
                         if _has_concrete_field_override(cls, name)), None)
 
+        def _standalone_field_value(self, name):
+            """Resolve one inherited field without an active config context."""
+            instance_type = object.__getattribute__(self, '__class__')
+            base_type = get_base_type_for_lazy(instance_type) or instance_type
+            mro_value = _find_mro_concrete_value(base_type, name)
+            if mro_value is not None:
+                return mro_value
+
+            fields_by_name = instance_type.__dict__.get('_fields_by_name')
+            if fields_by_name is None:
+                field_tuple = fields(instance_type)
+                fields_by_name = {item.name: item for item in field_tuple}
+                instance_type._fields_by_name = fields_by_name
+            field_definition = fields_by_name.get(name)
+            if field_definition and '_inherited_default' in field_definition.metadata:
+                inherited = field_definition.metadata['_inherited_default']
+                if inherited is not MISSING:
+                    return inherited
+                factory = field_definition.metadata.get(
+                    '_inherited_default_factory', MISSING
+                )
+                if factory is not MISSING:
+                    return factory()
+            return None
+
         def __getattribute__(self: Any, name: str) -> Any:
             """
             Three-stage resolution using new context system.
@@ -612,9 +637,8 @@ class LazyMethodBindings:
             # Use object.__getattribute__ for __class__ to avoid recursion.
             # Lazily populate if not yet set (e.g. class created outside _create_lazy_dataclass_unified).
             _cls = object.__getattribute__(self, '__class__')
-            try:
-                _fns = _cls._field_names_set
-            except AttributeError:
+            _fns = _cls.__dict__.get('_field_names_set')
+            if _fns is None:
                 _ft = fields(_cls)
                 _fns = frozenset(f.name for f in _ft)
                 _cls._field_names_set = _fns
@@ -650,6 +674,8 @@ class LazyMethodBindings:
             # Stage 3: Inheritance resolution using same merged context
             try:
                 current_context = current_temp_global.get()
+                if current_context is None:
+                    return _standalone_field_value(self, name)
                 available_configs = extract_all_configs(current_context)
                 resolved_value = resolve_field_inheritance(self, name, available_configs)
 
@@ -658,7 +684,7 @@ class LazyMethodBindings:
 
                 # For nested dataclass fields, return lazy instance
                 # PERFORMANCE: O(1) dict lookup instead of O(n) linear scan
-                _fbm = getattr(self.__class__, '_fields_by_name', None)
+                _fbm = self.__class__.__dict__.get('_fields_by_name')
                 if _fbm is None:
                     _ft = fields(self.__class__)
                     _fbm = {f.name: f for f in _ft}
@@ -667,43 +693,10 @@ class LazyMethodBindings:
                 if field_obj and is_dataclass(field_obj.type):
                     return field_obj.type()
 
-                # Fallback to inherited default from parent class (for standalone usage)
-                if field_obj and '_inherited_default' in field_obj.metadata:
-                    inherited = field_obj.metadata['_inherited_default']
-                    if inherited is not MISSING:
-                        return inherited
-                    # Check for default_factory
-                    factory = field_obj.metadata.get('_inherited_default_factory', MISSING)
-                    if factory is not MISSING:
-                        return factory()
-
-                return None
+                return _standalone_field_value(self, name)
 
             except LookupError:
-                # No context available - fallback to MRO concrete values
-                # For LazyDataclass types, get the base type; for concrete types, use self.__class__ directly
-                base_type = get_base_type_for_lazy(self.__class__) or self.__class__
-                mro_value = _find_mro_concrete_value(base_type, name)
-                if mro_value is not None:
-                    return mro_value
-
-                # Also check inherited default metadata
-                # PERFORMANCE: O(1) dict lookup instead of O(n) linear scan
-                _fbm = getattr(self.__class__, '_fields_by_name', None)
-                if _fbm is None:
-                    _ft = fields(self.__class__)
-                    _fbm = {f.name: f for f in _ft}
-                    self.__class__._fields_by_name = _fbm
-                field_obj = _fbm.get(name)
-                if field_obj and '_inherited_default' in field_obj.metadata:
-                    inherited = field_obj.metadata['_inherited_default']
-                    if inherited is not MISSING:
-                        return inherited
-                    factory = field_obj.metadata.get('_inherited_default_factory', MISSING)
-                    if factory is not MISSING:
-                        return factory()
-
-                return None
+                return _standalone_field_value(self, name)
         return __getattribute__
 
     @staticmethod
@@ -1097,12 +1090,13 @@ def patch_lazy_constructors(types: Optional[List[Type]] = None):
         original_constructors[lazy_type] = lazy_type.__init__
 
         # Create patched constructor that uses raw values
-        def create_patched_init(dataclass_type):
+        def create_patched_init(dataclass_type, original_init):
             def patched_init(self, **kwargs):
-                # Use raw value approach instead of calling original constructor
-                # This prevents lazy resolution during code execution, while still
-                # honoring default_factory for nested lazy configs so attributes
-                # are not left as None (e.g., path_planning_config).
+                # Materialize the raw constructor payload without reading fields
+                # through lazy ``__getattribute__``.  The nominal constructor must
+                # still run: it owns dataclass ``__post_init__`` validation and any
+                # other declaration-level invariants.
+                raw_values = {}
                 for field_definition in dataclasses.fields(dataclass_type):
                     if field_definition.name in kwargs:
                         value = kwargs[field_definition.name]
@@ -1113,15 +1107,22 @@ def patch_lazy_constructors(types: Optional[List[Type]] = None):
                     else:
                         value = None
 
-                    object.__setattr__(self, field_definition.name, value)
+                    raw_values[field_definition.name] = value
 
-                # Track explicit fields for downstream logic that inspects this flag
+                original_init(self, **raw_values)
+
+                # The generated lazy constructor tracks every received keyword.
+                # Restore the authored subset because the remaining raw values were
+                # supplied only to preserve inheritance during reconstruction.
                 object.__setattr__(self, '_explicitly_set_fields', set(kwargs.keys()))
 
             return patched_init
 
         # Apply the patch
-        lazy_type.__init__ = create_patched_init(lazy_type)
+        lazy_type.__init__ = create_patched_init(
+            lazy_type,
+            original_constructors[lazy_type],
+        )
 
     try:
         yield

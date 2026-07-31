@@ -78,6 +78,73 @@ def test_none_default_rebuild_resolves_self_reference_before_module_binding() ->
     assert StreamingConfig().inherited is None
 
 
+def test_cleared_context_resolves_inherited_standalone_default() -> None:
+    from objectstate.context_manager import current_temp_global
+    from objectstate.lazy_factory import (
+        bind_lazy_resolution_to_class,
+        get_inherited_field_names,
+        rebuild_with_none_defaults,
+    )
+
+    @dataclass
+    class DisplayConfig:
+        dimension_mode: str = "stack"
+
+    @dataclass
+    class StreamingConfig(DisplayConfig):
+        enabled: bool = False
+
+    StreamingConfig = rebuild_with_none_defaults(
+        StreamingConfig,
+        get_inherited_field_names(StreamingConfig),
+    )
+    bind_lazy_resolution_to_class(StreamingConfig)
+    context_token = current_temp_global.set(None)
+    try:
+        assert object.__getattribute__(StreamingConfig(), "dimension_mode") is None
+        assert StreamingConfig().dimension_mode == "stack"
+    finally:
+        current_temp_global.reset(context_token)
+
+
+def test_lazy_field_cache_is_owned_by_exact_runtime_class() -> None:
+    from objectstate.context_manager import current_temp_global
+    from objectstate.lazy_factory import (
+        bind_lazy_resolution_to_class,
+        get_inherited_field_names,
+        rebuild_with_none_defaults,
+    )
+
+    @dataclass
+    class StreamingDefaults:
+        enabled: bool | None = None
+
+    @dataclass
+    class DisplayConfig:
+        dimension_mode: str = "stack"
+
+    @dataclass
+    class ViewerConfig(StreamingDefaults, DisplayConfig):
+        pass
+
+    ViewerConfig = rebuild_with_none_defaults(
+        ViewerConfig,
+        get_inherited_field_names(ViewerConfig),
+    )
+    bind_lazy_resolution_to_class(StreamingDefaults)
+    bind_lazy_resolution_to_class(ViewerConfig)
+    context_token = current_temp_global.set(None)
+    try:
+        assert StreamingDefaults().enabled is None
+        assert "_field_names_set" in StreamingDefaults.__dict__
+        assert "_field_names_set" not in ViewerConfig.__dict__
+        assert ViewerConfig().dimension_mode == "stack"
+        assert "_field_names_set" in ViewerConfig.__dict__
+        assert "dimension_mode" in ViewerConfig.__dict__["_field_names_set"]
+    finally:
+        current_temp_global.reset(context_token)
+
+
 def test_none_default_rebuild_preserves_declaration_metadata_and_validation() -> None:
     from objectstate.lazy_factory import rebuild_with_none_defaults
 
@@ -299,6 +366,24 @@ def test_patch_lazy_constructors_does_not_hide_default_factory_failure():
     with patch_lazy_constructors(types=[LazyConfig]):
         with pytest.raises(RuntimeError, match="default factory failed"):
             LazyConfig()
+
+
+def test_patch_lazy_constructors_preserves_nominal_validation_and_authored_fields():
+    @dataclass
+    class BaseConfig(AnnotatedDataclassValidationMixin):
+        count: int = 1
+        label: str = "default"
+
+    lazy_config_type = LazyDataclassFactory.make_lazy_simple(BaseConfig)
+
+    with patch_lazy_constructors(types=[lazy_config_type]):
+        candidate = lazy_config_type(count=3)
+        with pytest.raises(TypeError, match="LazyBaseConfig.count"):
+            lazy_config_type(count="invalid")
+
+    assert object.__getattribute__(candidate, "count") == 3
+    assert object.__getattribute__(candidate, "label") is None
+    assert candidate.__dict__["_explicitly_set_fields"] == {"count"}
 
 
 def test_nested_lazy_dataclass():
