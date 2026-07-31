@@ -94,15 +94,15 @@ def test_cleared_context_resolves_inherited_standalone_default() -> None:
     class StreamingConfig(DisplayConfig):
         enabled: bool = False
 
-    StreamingConfig = rebuild_with_none_defaults(
+    streaming_config_type = rebuild_with_none_defaults(
         StreamingConfig,
         get_inherited_field_names(StreamingConfig),
     )
-    bind_lazy_resolution_to_class(StreamingConfig)
+    bind_lazy_resolution_to_class(streaming_config_type)
     context_token = current_temp_global.set(None)
     try:
-        assert object.__getattribute__(StreamingConfig(), "dimension_mode") is None
-        assert StreamingConfig().dimension_mode == "stack"
+        assert object.__getattribute__(streaming_config_type(), "dimension_mode") is None
+        assert streaming_config_type().dimension_mode == "stack"
     finally:
         current_temp_global.reset(context_token)
 
@@ -127,20 +127,20 @@ def test_lazy_field_cache_is_owned_by_exact_runtime_class() -> None:
     class ViewerConfig(StreamingDefaults, DisplayConfig):
         pass
 
-    ViewerConfig = rebuild_with_none_defaults(
+    viewer_config_type = rebuild_with_none_defaults(
         ViewerConfig,
         get_inherited_field_names(ViewerConfig),
     )
     bind_lazy_resolution_to_class(StreamingDefaults)
-    bind_lazy_resolution_to_class(ViewerConfig)
+    bind_lazy_resolution_to_class(viewer_config_type)
     context_token = current_temp_global.set(None)
     try:
         assert StreamingDefaults().enabled is None
         assert "_field_names_set" in StreamingDefaults.__dict__
-        assert "_field_names_set" not in ViewerConfig.__dict__
-        assert ViewerConfig().dimension_mode == "stack"
-        assert "_field_names_set" in ViewerConfig.__dict__
-        assert "dimension_mode" in ViewerConfig.__dict__["_field_names_set"]
+        assert "_field_names_set" not in viewer_config_type.__dict__
+        assert viewer_config_type().dimension_mode == "stack"
+        assert "_field_names_set" in viewer_config_type.__dict__
+        assert "dimension_mode" in viewer_config_type.__dict__["_field_names_set"]
     finally:
         current_temp_global.reset(context_token)
 
