@@ -92,6 +92,34 @@ def test_update_object_instance_notifies_resolved_changes_and_saved_baseline():
     assert state.last_changed_field == "threshold"
 
 
+def test_update_parameter_notifies_origin_once_and_preserves_dirty_baseline():
+    state = ObjectState(PlainConfig(), scope_id="config")
+    ObjectStateRegistry.register(state, _skip_snapshot=True)
+    events: list[tuple[str, set[str]]] = []
+    ObjectStateRegistry.add_resolved_changed_callback(
+        lambda scope_id, changed: events.append((scope_id, set(changed)))
+    )
+
+    state.update_parameter("threshold", 2)
+
+    assert events == [("config", {"threshold"})]
+    assert state.dirty_fields == {"threshold"}
+    assert state.get_saved_resolved_value("threshold") == 1
+
+
+def test_update_parameter_notifies_global_scope_origin_once():
+    state = ObjectState(PlainConfig(), scope_id="")
+    ObjectStateRegistry.register(state, _skip_snapshot=True)
+    events: list[tuple[str, set[str]]] = []
+    ObjectStateRegistry.add_resolved_changed_callback(
+        lambda scope_id, changed: events.append((scope_id, set(changed)))
+    )
+
+    state.update_parameter("threshold", 2)
+
+    assert events == [("", {"threshold"})]
+
+
 def test_direct_parameter_paths_project_canonical_flat_topology_without_values():
     state = ObjectState(ConfigWithNestedTopology(), scope_id="config")
 

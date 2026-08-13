@@ -103,6 +103,7 @@ class DeferredFieldInvalidation:
     changed_type: ParameterOwner
     field_name: str
     invalidate_saved: bool = False
+    include_origin: bool = True
 
 
 class ObjectStateRegistry:
@@ -228,6 +229,7 @@ class ObjectStateRegistry:
                     changed_type=request.changed_type,
                     field_name=request.field_name,
                     invalidate_saved=request.invalidate_saved,
+                    include_origin=request.include_origin,
                 )
         finally:
             cls._deferred_invalidation_depth = previous_depth
@@ -634,7 +636,8 @@ class ObjectStateRegistry:
         scope_id: Optional[str],
         changed_type: ParameterOwner,
         field_name: str,
-        invalidate_saved: bool = False
+        invalidate_saved: bool = False,
+        include_origin: bool = True,
     ) -> None:
         """Invalidate a specific field in states that could inherit from changed_type at scope_id.
 
@@ -653,6 +656,8 @@ class ObjectStateRegistry:
             changed_type: The type of the ObjectState that was modified
             field_name: The specific field that changed
             invalidate_saved: If True, also invalidate saved_resolved cache for descendants
+            include_origin: Whether to invalidate the state at ``scope_id`` as
+                well as its descendants.
         """
         changed_scope = cls._normalize_scope_id(scope_id)
         if cls._deferred_invalidation_depth > 0:
@@ -662,6 +667,7 @@ class ObjectStateRegistry:
                     changed_type=changed_type,
                     field_name=field_name,
                     invalidate_saved=invalidate_saved,
+                    include_origin=include_origin,
                 )
             )
             return
@@ -671,6 +677,7 @@ class ObjectStateRegistry:
             changed_type=changed_type,
             field_name=field_name,
             invalidate_saved=invalidate_saved,
+            include_origin=include_origin,
         )
 
     @classmethod
@@ -680,6 +687,7 @@ class ObjectStateRegistry:
         changed_type: ParameterOwner,
         field_name: str,
         invalidate_saved: bool = False,
+        include_origin: bool = True,
     ) -> None:
         """Immediate implementation for scope/type/field-aware invalidation."""
         from objectstate.lazy_factory import get_base_type_for_lazy
@@ -703,6 +711,9 @@ class ObjectStateRegistry:
 
         for state in cls._states.values():
             state_scope = cls._normalize_scope_id(state.scope_id)
+            is_self = state_scope == changed_scope
+            if is_self and not include_origin:
+                continue
 
             # SCOPE CHECK: must be at or below changed scope
             # Global scope (empty string) affects ALL states
@@ -713,7 +724,6 @@ class ObjectStateRegistry:
                 logger.debug(f"[SCOPE] Global change affects state scope={state_scope!r}")
             else:
                 # Non-global: check exact match or descendant
-                is_self = (state_scope == changed_scope)
                 prefix = changed_scope + "::"
                 is_descendant = state_scope.startswith(prefix)
                 if not (is_self or is_descendant):

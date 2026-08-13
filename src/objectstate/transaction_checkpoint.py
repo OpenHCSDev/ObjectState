@@ -8,6 +8,7 @@ from typing import Any
 
 from objectstate.object_state import ObjectState
 from objectstate.object_state_metadata import ObjectStateMetadataStore
+from objectstate.value_semantics import semantic_values_equal
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,27 +152,12 @@ class ObjectStateTransactionCheckpoint:
             fields.update(
                 key
                 for key in set(current) | set(target)
-                if not self._values_equal(
+                if not semantic_values_equal(
                     current.get(key, missing),
                     target.get(key, missing),
                 )
             )
         return state._most_specific_notification_fields(fields)
-
-    @staticmethod
-    def _values_equal(left: Any, right: Any) -> bool:
-        """Compare checkpoint values without assuming scalar equality."""
-
-        if left is right:
-            return True
-        try:
-            comparison = left == right
-        except Exception:
-            return False
-        try:
-            return bool(comparison)
-        except (TypeError, ValueError):
-            return False
 
     @staticmethod
     def _copy_mappings(

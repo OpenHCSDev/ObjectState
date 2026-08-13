@@ -965,11 +965,6 @@ class ObjectState:
 
         # SELF-INVALIDATION: Mark changed fields and same-state inherited siblings.
         local_invalidations = set(changed_semantic_params)
-        # Descendants resolve through ancestor live values. Recompute this state
-        # before cascading invalidation so child snapshots cannot lag one edit
-        # behind their parent.
-        changed_paths = self._ensure_live_resolved(notify_flash=False)
-
         for changed_param in changed_semantic_params:
             container_type = self._path_to_type.get(changed_param, type(self.object_instance))
             leaf_field_name = changed_param.split('.')[-1] if '.' in changed_param else changed_param
@@ -1032,6 +1027,9 @@ class ObjectState:
             except Exception as e:
                 logger.warning(f"Failed to update LIVE thread-local: {e}")
 
+        # Materialize the origin once after its live context is authoritative,
+        # then cascade only to descendants.
+        changed_paths = self._ensure_live_resolved(notify_flash=False)
         for changed_param in changed_semantic_params:
             # SCOPE + TYPE + FIELD AWARE INVALIDATION:
             # Get the CONTAINER type for this field (e.g., WellFilterConfig for 'well_filter_config.well_filter')
@@ -1049,7 +1047,8 @@ class ObjectState:
             ObjectStateRegistry.invalidate_by_type_and_scope(
                 scope_id=self.scope_id,
                 changed_type=container_type,
-                field_name=leaf_field_name
+                field_name=leaf_field_name,
+                include_origin=False,
             )
 
         # Increment global token for LiveContextService.collect() cache invalidation

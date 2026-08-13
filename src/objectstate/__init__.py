@@ -240,6 +240,7 @@ from objectstate.ui_visibility import (
     mark_ui_hidden_config,
     should_hide_ui_parameter,
 )
+from objectstate.value_semantics import semantic_values_equal
 
 # Snapshot model for time-travel
 from objectstate.snapshot_model import Snapshot, StateSnapshot, Timeline
@@ -269,6 +270,7 @@ __all__ += [
     'mark_ui_special_fields',
     'mark_ui_hidden_config',
     'should_hide_ui_parameter',
+    'semantic_values_equal',
     # Snapshot model
     'Snapshot',
     'StateSnapshot', 
