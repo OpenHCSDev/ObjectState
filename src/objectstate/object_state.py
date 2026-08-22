@@ -7,19 +7,20 @@ PFM attaches to ObjectState when editor opens, detaches when closed.
 
 FieldProxy: Type-safe proxy for accessing ObjectState fields via dotted attribute syntax.
 """
-from dataclasses import is_dataclass, fields as dataclass_fields
+import copy
 import logging
+from dataclasses import fields as dataclass_fields
+from dataclasses import is_dataclass
 from types import FunctionType
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeAlias
-import copy
 
+from objectstate.field_access import DataclassFieldAccess, DottedFieldPath
 from objectstate.object_state_metadata import (
     ObjectStateMetadataContract,
     ObjectStateMetadataContractRegistry,
     ObjectStateMetadataStore,
 )
 from objectstate.object_state_registry import ObjectStateRegistry
-from objectstate.field_access import DataclassFieldAccess, DottedFieldPath
 from objectstate.subfield_semantics import (
     MISSING,
     ObjectStateSubfieldSemanticIndex,
@@ -27,6 +28,7 @@ from objectstate.subfield_semantics import (
     changed_structural_leaf_paths,
 )
 from objectstate.time_travel_profile import TimeTravelProfiler
+from objectstate.value_semantics import semantic_values_equal
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +84,7 @@ class FieldProxy:
         field_type = field_info.type
 
         # Handle Optional[DataclassType]
-        from typing import get_origin, get_args, Union
+        from typing import Union, get_args, get_origin
         origin = get_origin(field_type)
         if origin is Union:
             args = get_args(field_type)
@@ -751,7 +753,7 @@ class ObjectState:
         Returns:
             The dataclass type if nested, None otherwise
         """
-        from typing import get_origin, get_args, Union
+        from typing import Union, get_args, get_origin
 
         # Check Optional[dataclass]
         origin = get_origin(param_type)
@@ -982,8 +984,8 @@ class ObjectState:
         from objectstate.lazy_factory import is_global_config_type
         if is_global_config_type(obj_type):
             try:
-                from objectstate.global_config import set_live_global_config, get_live_global_config
                 from objectstate.context_manager import clear_current_temp_global
+                from objectstate.global_config import get_live_global_config, set_live_global_config
                 from objectstate.lazy_factory import replace_raw
 
                 # Get current LIVE config
@@ -1556,6 +1558,8 @@ class ObjectState:
             new_instance: The new object instance to extract parameters from
         """
         self._ensure_live_resolved(notify_flash=False)
+        previous_parameters = dict(self.parameters)
+        previous_saved_parameters = dict(self._saved_parameters)
         old_live_resolved = copy.deepcopy(self._live_resolved or {})
 
         if self._delegate_attr is not None:
@@ -1580,6 +1584,15 @@ class ObjectState:
 
         # Update saved parameters to match
         self._saved_parameters = self._copy_parameters_for_saved_baseline()
+
+        if not semantic_values_equal(
+            previous_parameters,
+            self.parameters,
+        ) or not semantic_values_equal(
+            previous_saved_parameters,
+            self._saved_parameters,
+        ):
+            ObjectStateRegistry.mark_snapshot_dirty_scope(self.scope_id)
 
         self._cached_object = None
         self._cached_object_applied = False

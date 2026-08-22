@@ -37,6 +37,11 @@ class Dummy:
     x: int = 1
 
 
+@dataclass(frozen=True)
+class StructuralRoot:
+    child_scope_ids: tuple[str, ...]
+
+
 class FilterSubject(Enum):
     FILE = "file"
     DIRECTORY = "directory"
@@ -504,6 +509,32 @@ def test_snapshot_capture_reuses_unchanged_scope_snapshots() -> None:
     snapshot = ObjectStateRegistry.get_branch_history()[-1]
     assert snapshot.all_states["clean"] is baseline.all_states["clean"]
     assert snapshot.all_states["edited"] is not baseline.all_states["edited"]
+
+
+def test_clean_instance_replacement_is_captured_for_time_travel() -> None:
+    _reset_registry_and_history()
+
+    root_scope = "/tmp/plate::root"
+    root_state = ObjectState(StructuralRoot(child_scope_ids=()), scope_id=root_scope)
+    ObjectStateRegistry.register(root_state, _skip_snapshot=True)
+    ObjectStateRegistry.ensure_baseline_snapshot()
+
+    with ObjectStateRegistry.atomic("replace clean declaration", scope_id=root_scope):
+        root_state.update_object_instance(
+            StructuralRoot(child_scope_ids=("child_0", "child_1"))
+        )
+
+    history = ObjectStateRegistry.get_branch_history()
+    assert len(history) == 2
+    assert history[-1].all_states[root_scope].parameters["child_scope_ids"] == (
+        "child_0",
+        "child_1",
+    )
+
+    assert ObjectStateRegistry.time_travel_to_snapshot(history[0].id)
+    assert root_state.to_object().child_scope_ids == ()
+    assert ObjectStateRegistry.time_travel_to_snapshot(history[1].id)
+    assert root_state.to_object().child_scope_ids == ("child_0", "child_1")
 
 
 def test_snapshot_mapping_reuses_parent_entries_but_copies_changed_values() -> None:
