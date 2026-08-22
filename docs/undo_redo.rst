@@ -26,6 +26,9 @@ Behavior
 --------
 - Recording from a non-head position creates a new branch (preserves old future as an auto-branch).
 - Undo/redo/time travel rewires the live registry: registers/unregisters ObjectStates to match the snapshot and restores saved/live resolved values.
+- ``update_object_instance()`` marks the scope for snapshot capture when the
+  replacement changes its working or saved parameters, even when the resulting
+  state remains clean relative to its new saved baseline.
 - History size is bounded by ``_max_history_size``; unreachable snapshots are pruned.
 
 Example
