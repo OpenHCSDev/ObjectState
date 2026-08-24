@@ -7,6 +7,9 @@ PFM attaches to ObjectState when editor opens, detaches when closed.
 
 FieldProxy: Type-safe proxy for accessing ObjectState fields via dotted attribute syntax.
 """
+
+from __future__ import annotations
+
 import copy
 import logging
 from collections.abc import Callable
@@ -133,10 +136,10 @@ class ObjectState:
     def __init__(
         self,
         object_instance: Any,
-        scope_id: Optional[str] = None,
+        scope_id: str | None = None,
         parent_state: Optional['ObjectState'] = None,
-        exclude_params: Optional[list[str]] = None,
-        initial_values: Optional[dict[str, Any]] = None,
+        exclude_params: list[str] | None = None,
+        initial_values: dict[str, Any] | None = None,
     ):
         """
         Initialize ObjectState with minimal attributes.
@@ -177,7 +180,7 @@ class ObjectState:
             DottedFieldPath,
             tuple[DottedFieldPath, ...],
         ] = {}
-        self._cached_object: Optional[Any] = None  # Cached result of to_object()
+        self._cached_object: Any | None = None  # Cached result of to_object()
         self._cached_object_applied: bool = False  # True if cached delegate was applied to object_instance
 
         # UI / integration metadata (never participates in dirty detection).
@@ -198,7 +201,7 @@ class ObjectState:
         self.parameters: dict[str, Any] = {}
         self._signature_defaults: dict[str, Any] = {}
         # Maps dotted paths to their descriptions (value may be None when no description exists).
-        self._parameter_descriptions: dict[str, Optional[str]] = {}
+        self._parameter_descriptions: dict[str, str | None] = {}
 
         # Store excluded params and their original values for reconstruction
         # Excluded constructor parameters must be preserved for reconstruction.
@@ -220,15 +223,15 @@ class ObjectState:
         )
 
         # === Structure (1 attribute) ===
-        self._parent_state: Optional['ObjectState'] = parent_state
+        self._parent_state: ObjectState | None = parent_state
         # NOTE: nested_states DELETED - flat storage eliminates nested ObjectState instances
 
         # === Cache (3 attributes) ===
-        self._live_resolved: Optional[dict[str, Any]] = None  # None = needs full compute
+        self._live_resolved: dict[str, Any] | None = None  # None = needs full compute
         self._invalid_fields: set[str] = set()  # Fields needing partial recompute
         # Maps dotted_path → (source_scope_id, source_type) for inherited fields
         # source_type may differ from local container_type due to MRO inheritance
-        self._live_provenance: dict[str, tuple[Optional[str], Optional[type]]] = {}
+        self._live_provenance: dict[str, tuple[str | None, type | None]] = {}
 
         # === Saved baseline (2 attributes) ===
         self._saved_resolved: dict[str, Any] = {}
@@ -242,7 +245,7 @@ class ObjectState:
         # === Change tracking for navigation (2 attributes) ===
         # Track which field most recently changed VALUE (not just dirty status)
         # Used for time-travel navigation to scroll to what changed in a transition
-        self._last_changed_field: Optional[str] = None
+        self._last_changed_field: str | None = None
         self._last_changed_concrete_paths: set[str] = set()
         self._last_changed_paths: set[str] = set()
 
@@ -250,7 +253,7 @@ class ObjectState:
         self._in_reset = False
         self._block_cross_window_updates = False
         self._forwarding_to_parent = False
-        self._parent_field_name: Optional[str] = None
+        self._parent_field_name: str | None = None
 
         # === State Change Callbacks ===
         # Callbacks notified when materialized state changes (dirty/signature diffs)
@@ -326,7 +329,7 @@ class ObjectState:
         return self.metadata.copy_for_snapshot()
 
     @property
-    def context_obj(self) -> Optional[Any]:
+    def context_obj(self) -> Any | None:
         """Derive context_obj from parent_state (no separate attribute needed)."""
         return self._parent_state.object_instance if self._parent_state else None
 
@@ -479,7 +482,7 @@ class ObjectState:
         return self._reconstruct_from_resolved("", self._saved_resolved)
 
     @property
-    def parameter_descriptions(self) -> dict[str, Optional[str]]:
+    def parameter_descriptions(self) -> dict[str, str | None]:
         """Get parameter descriptions for all parameters.
 
         Returns:
@@ -617,7 +620,7 @@ class ObjectState:
                     e,
                 )
 
-    def forward_to_parent_state(self, field_path: Optional[str] = None) -> None:
+    def forward_to_parent_state(self, field_path: str | None = None) -> None:
         """Forward child state changes to parent state.
 
         Notifies the parent state that a field has conceptually changed, causing
@@ -717,7 +720,11 @@ class ObjectState:
     # DELETED: _create_nested_states() - No longer needed with flat storage
     # Nested ObjectStates are no longer created - flat storage handles all parameters
 
-    def _analyze_parameters(self, obj: Any, exclude_params: Optional[list[str]] = None) -> dict[str, Any]:
+    def _analyze_parameters(
+        self,
+        obj: Any,
+        exclude_params: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Analyze object parameters through the canonical introspection owner.
 
         Returns dict mapping param_name -> info object with .param_type, .default_value, and .description attributes.
@@ -744,7 +751,7 @@ class ObjectState:
             )
         return result
 
-    def _get_nested_dataclass_type(self, param_type: Any) -> Optional[type]:
+    def _get_nested_dataclass_type(self, param_type: Any) -> type | None:
         """Get the nested dataclass type if param_type is a nested dataclass.
 
         Args:
@@ -1303,7 +1310,7 @@ class ObjectState:
 
         return result
 
-    def get_provenance(self, param_name: str) -> Optional[tuple[str, type]]:
+    def get_provenance(self, param_name: str) -> tuple[str, type] | None:
         """Get the source scope_id and type for an inherited field value.
 
         For fields where the local value is None (inherited), returns the scope_id
@@ -1332,7 +1339,7 @@ class ObjectState:
             return None  # Field not found in hierarchy (shouldn't happen)
         return (scope_id, source_type)
 
-    def find_path_for_type(self, container_type: type) -> Optional[str]:
+    def find_path_for_type(self, container_type: type) -> str | None:
         """Find the path prefix for a container type in this ObjectState.
 
         With flat storage, nested configs are identified by their path prefix.
@@ -1370,7 +1377,7 @@ class ObjectState:
 
         return None
 
-    def project_ui_visible_field_path(self, container_type: type, field_name: str) -> Optional[str]:
+    def project_ui_visible_field_path(self, container_type: type, field_name: str) -> str | None:
         """Project a container type and field name to the visible UI field path.
 
         Hidden configuration classes can own inherited values even when the form
@@ -1394,7 +1401,7 @@ class ObjectState:
             return None
         return field_path
 
-    def _find_visible_subclass_field_path(self, hidden_type: type, field_name: str) -> Optional[str]:
+    def _find_visible_subclass_field_path(self, hidden_type: type, field_name: str) -> str | None:
         """Find a rendered field path for a hidden config type via a visible subclass."""
         from objectstate.lazy_factory import get_base_type_for_lazy
         from objectstate.ui_visibility import UIVisibilityRegistry
@@ -1466,7 +1473,7 @@ class ObjectState:
             self._invalid_fields.add(field_name)
 
     @staticmethod
-    def _select_changed_field(changed_paths: set[str]) -> Optional[str]:
+    def _select_changed_field(changed_paths: set[str]) -> str | None:
         """Choose a stable representative changed path for navigation."""
         if not changed_paths:
             return None
@@ -1779,7 +1786,7 @@ class ObjectState:
         return self.notification_fields_for_value_changes(changed_values)
 
     @property
-    def last_changed_field(self) -> Optional[str]:
+    def last_changed_field(self) -> str | None:
         """Field that most recently changed value (not just dirty status).
 
         This tracks any value change regardless of saved/unsaved state,
@@ -2060,7 +2067,7 @@ class ObjectState:
         )
 
         snapshot: dict[str, Any] = {}
-        provenance: dict[str, tuple[Optional[str], Optional[type]]] = {}
+        provenance: dict[str, tuple[str | None, type | None]] = {}
 
         # CRITICAL: When computing saved_resolved, use _saved_parameters for raw values.
         # This ensures saved_resolved represents "what was last saved locally" + ancestor saved values,
@@ -2442,7 +2449,12 @@ class ObjectState:
 
     # ==================== FLAT STORAGE METHODS (NEW) ====================
 
-    def _extract_all_parameters_flat(self, obj: Any, prefix: str = '', exclude_params: Optional[list[str]] = None) -> None:
+    def _extract_all_parameters_flat(
+        self,
+        obj: Any,
+        prefix: str = '',
+        exclude_params: list[str] | None = None,
+    ) -> None:
         """Recursively extract parameters into flat dict with dotted paths.
 
         Populates self.parameters, self._path_to_type, and self._parameter_descriptions with dotted path keys.
