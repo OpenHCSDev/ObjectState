@@ -9,10 +9,11 @@ FieldProxy: Type-safe proxy for accessing ObjectState fields via dotted attribut
 """
 import copy
 import logging
+from collections.abc import Callable
 from dataclasses import fields as dataclass_fields
 from dataclasses import is_dataclass
 from types import FunctionType
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Optional
 
 from objectstate.field_access import DataclassFieldAccess, DottedFieldPath
 from objectstate.object_state_metadata import (
@@ -134,8 +135,8 @@ class ObjectState:
         object_instance: Any,
         scope_id: Optional[str] = None,
         parent_state: Optional['ObjectState'] = None,
-        exclude_params: Optional[List[str]] = None,
-        initial_values: Optional[Dict[str, Any]] = None,
+        exclude_params: Optional[list[str]] = None,
+        initial_values: Optional[dict[str, Any]] = None,
     ):
         """
         Initialize ObjectState with minimal attributes.
@@ -171,7 +172,7 @@ class ObjectState:
             self._delegate_attr = None
 
         # === Flat Storage (NEW - for flattened architecture) ===
-        self._path_to_type: Dict[str, ParameterOwner] = {}  # Maps dotted paths to their owner target
+        self._path_to_type: dict[str, ParameterOwner] = {}  # Maps dotted paths to their owner target
         self._direct_parameter_paths: dict[
             DottedFieldPath,
             tuple[DottedFieldPath, ...],
@@ -186,23 +187,23 @@ class ObjectState:
 
         # Time-travel navigation helpers (set by ObjectStateRegistry time travel)
         # Maps param_name -> (before, after) for the last time-travel transition.
-        self._last_changed_values: Dict[str, Tuple[Any, Any]] = {}
+        self._last_changed_values: dict[str, tuple[Any, Any]] = {}
 
         # Maps metadata key -> (before, after) for the last time-travel transition.
-        self._last_changed_meta_keys: Set[str] = set()
-        self._last_changed_meta_values: Dict[str, Tuple[Any, Any]] = {}
+        self._last_changed_meta_keys: set[str] = set()
+        self._last_changed_meta_values: dict[str, tuple[Any, Any]] = {}
 
         # Extract parameters using FLAT extraction (dotted paths)
         # This replaces the old UnifiedParameterAnalyzer + _create_nested_states() approach
-        self.parameters: Dict[str, Any] = {}
-        self._signature_defaults: Dict[str, Any] = {}
+        self.parameters: dict[str, Any] = {}
+        self._signature_defaults: dict[str, Any] = {}
         # Maps dotted paths to their descriptions (value may be None when no description exists).
-        self._parameter_descriptions: Dict[str, Optional[str]] = {}
+        self._parameter_descriptions: dict[str, Optional[str]] = {}
 
         # Store excluded params and their original values for reconstruction
         # Excluded constructor parameters must be preserved for reconstruction.
-        self._exclude_param_names: List[str] = list(exclude_params or [])  # For restore_saved()
-        self._excluded_params: Dict[str, Any] = {}
+        self._exclude_param_names: list[str] = list(exclude_params or [])  # For restore_saved()
+        self._excluded_params: dict[str, Any] = {}
         extraction_target = self._extraction_target
         for param_name in self._exclude_param_names:
             if hasattr(extraction_target, param_name):
@@ -223,27 +224,27 @@ class ObjectState:
         # NOTE: nested_states DELETED - flat storage eliminates nested ObjectState instances
 
         # === Cache (3 attributes) ===
-        self._live_resolved: Optional[Dict[str, Any]] = None  # None = needs full compute
-        self._invalid_fields: Set[str] = set()  # Fields needing partial recompute
+        self._live_resolved: Optional[dict[str, Any]] = None  # None = needs full compute
+        self._invalid_fields: set[str] = set()  # Fields needing partial recompute
         # Maps dotted_path → (source_scope_id, source_type) for inherited fields
         # source_type may differ from local container_type due to MRO inheritance
-        self._live_provenance: Dict[str, Tuple[Optional[str], Optional[type]]] = {}
+        self._live_provenance: dict[str, tuple[Optional[str], Optional[type]]] = {}
 
         # === Saved baseline (2 attributes) ===
-        self._saved_resolved: Dict[str, Any] = {}
-        self._saved_parameters: Dict[str, Any] = {}  # Immutable snapshot for diff on restore
+        self._saved_resolved: dict[str, Any] = {}
+        self._saved_parameters: dict[str, Any] = {}  # Immutable snapshot for diff on restore
 
         # === Materialized diffs (3 attributes) ===
         self._raw_dirty = False
-        self._dirty_fields: Set[str] = set()
-        self._signature_diff_fields: Set[str] = set()
+        self._dirty_fields: set[str] = set()
+        self._signature_diff_fields: set[str] = set()
 
         # === Change tracking for navigation (2 attributes) ===
         # Track which field most recently changed VALUE (not just dirty status)
         # Used for time-travel navigation to scroll to what changed in a transition
         self._last_changed_field: Optional[str] = None
-        self._last_changed_concrete_paths: Set[str] = set()
-        self._last_changed_paths: Set[str] = set()
+        self._last_changed_concrete_paths: set[str] = set()
+        self._last_changed_paths: set[str] = set()
 
         # === Flags (kept for batch operations) ===
         self._in_reset = False
@@ -253,15 +254,15 @@ class ObjectState:
 
         # === State Change Callbacks ===
         # Callbacks notified when materialized state changes (dirty/signature diffs)
-        self._on_state_changed_callbacks: List[Callable[[Set[str]], None]] = []
+        self._on_state_changed_callbacks: list[Callable[[set[str]], None]] = []
 
         # === Resolved Change Callbacks ===
         # Callbacks notified when resolved values actually change (for UI flashing)
-        self._on_resolved_changed_callbacks: List[Callable[[Set[str]], None]] = []
+        self._on_resolved_changed_callbacks: list[Callable[[set[str]], None]] = []
 
         # === Time-Travel Callbacks ===
         # Callbacks notified when time-travel restores parameters (for widget refresh)
-        self._on_time_travel_callbacks: List[Callable[[], None]] = []
+        self._on_time_travel_callbacks: list[Callable[[], None]] = []
 
         # === Time-Travel ===
         # Instance-level time-travel removed - use ObjectStateRegistry class-level DAG instead
@@ -319,7 +320,7 @@ class ObjectState:
             operation=operation,
         )
 
-    def copy_metadata_for_snapshot(self) -> Dict[str, Any]:
+    def copy_metadata_for_snapshot(self) -> dict[str, Any]:
         """Return validated metadata payload for StateSnapshot."""
 
         return self.metadata.copy_for_snapshot()
@@ -374,23 +375,23 @@ class ObjectState:
 
         return self._delegate_attr is not None
 
-    def _copy_parameters_for_saved_baseline(self) -> Dict[str, Any]:
+    def _copy_parameters_for_saved_baseline(self) -> dict[str, Any]:
         """Snapshot raw parameters without cloning callable identity values.
 
         Callables can be semantic identities in object declarations. A plain
         deepcopy can rebuild callable wrapper instances through ``__reduce__``,
         making live and saved function specs unequal immediately after load.
         """
-        memo: Dict[int, Any] = {}
+        memo: dict[int, Any] = {}
         self._seed_callable_identity_memo(self.parameters, memo, set())
         return copy.deepcopy(self.parameters, memo)
 
     @classmethod
     def copy_parameter_pair_preserving_callable_identity(
         cls,
-        parameters: Dict[str, Any],
-        saved_parameters: Dict[str, Any],
-    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        parameters: dict[str, Any],
+        saved_parameters: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Copy live/saved raw parameters as one identity-preserving pair.
 
         Time-travel snapshots must preserve callable identity relationships across
@@ -398,8 +399,8 @@ class ObjectState:
         can rebuild callable wrappers twice and make a clean state appear dirty.
         """
 
-        memo: Dict[int, Any] = {}
-        seen: Set[int] = set()
+        memo: dict[int, Any] = {}
+        seen: set[int] = set()
         cls._seed_callable_identity_memo(parameters, memo, seen)
         cls._seed_callable_identity_memo(saved_parameters, memo, seen)
         return copy.deepcopy(parameters, memo), copy.deepcopy(saved_parameters, memo)
@@ -408,8 +409,8 @@ class ObjectState:
     def _seed_callable_identity_memo(
         cls,
         value: Any,
-        memo: Dict[int, Any],
-        seen: Set[int],
+        memo: dict[int, Any],
+        seen: set[int],
     ) -> None:
         value_id = id(value)
         if value_id in seen:
@@ -478,7 +479,7 @@ class ObjectState:
         return self._reconstruct_from_resolved("", self._saved_resolved)
 
     @property
-    def parameter_descriptions(self) -> Dict[str, Optional[str]]:
+    def parameter_descriptions(self) -> dict[str, Optional[str]]:
         """Get parameter descriptions for all parameters.
 
         Returns:
@@ -522,7 +523,7 @@ class ObjectState:
 
     # === Resolved Change Subscription ===
 
-    def on_resolved_changed(self, callback: Callable[[Set[str]], None]) -> None:
+    def on_resolved_changed(self, callback: Callable[[set[str]], None]) -> None:
         """Subscribe to resolved value change notifications.
 
         The callback is called when resolved values actually change (not just when
@@ -536,22 +537,22 @@ class ObjectState:
         if callback not in self._on_resolved_changed_callbacks:
             self._on_resolved_changed_callbacks.append(callback)
 
-    def off_resolved_changed(self, callback: Callable[[Set[str]], None]) -> None:
+    def off_resolved_changed(self, callback: Callable[[set[str]], None]) -> None:
         """Unsubscribe from resolved value change notifications."""
         if callback in self._on_resolved_changed_callbacks:
             self._on_resolved_changed_callbacks.remove(callback)
 
-    def on_state_changed(self, callback: Callable[[Set[str]], None]) -> None:
+    def on_state_changed(self, callback: Callable[[set[str]], None]) -> None:
         """Subscribe to materialized state change notifications (dirty/signature diffs)."""
         if callback not in self._on_state_changed_callbacks:
             self._on_state_changed_callbacks.append(callback)
 
-    def off_state_changed(self, callback: Callable[[Set[str]], None]) -> None:
+    def off_state_changed(self, callback: Callable[[set[str]], None]) -> None:
         """Unsubscribe from materialized state change notifications."""
         if callback in self._on_state_changed_callbacks:
             self._on_state_changed_callbacks.remove(callback)
 
-    def _notify_state_changed(self, changed_paths: Set[str]) -> None:
+    def _notify_state_changed(self, changed_paths: set[str]) -> None:
         """Fire state change callbacks (best-effort)."""
         for callback in list(self._on_state_changed_callbacks):
             try:
@@ -561,7 +562,7 @@ class ObjectState:
 
     def _notify_resolved_changed(
         self,
-        changed_paths: Set[str],
+        changed_paths: set[str],
         *,
         context: str,
     ) -> None:
@@ -673,7 +674,7 @@ class ObjectState:
         finally:
             self._forwarding_to_parent = False
 
-    def _ensure_live_resolved(self, notify_flash: bool = True) -> Set[str]:
+    def _ensure_live_resolved(self, notify_flash: bool = True) -> set[str]:
         """Ensure _live_resolved cache is populated.
 
         PERFORMANCE: Field-level invalidation only.
@@ -716,7 +717,7 @@ class ObjectState:
     # DELETED: _create_nested_states() - No longer needed with flat storage
     # Nested ObjectStates are no longer created - flat storage handles all parameters
 
-    def _analyze_parameters(self, obj: Any, exclude_params: Optional[List[str]] = None) -> Dict[str, Any]:
+    def _analyze_parameters(self, obj: Any, exclude_params: Optional[list[str]] = None) -> dict[str, Any]:
         """Analyze object parameters through the canonical introspection owner.
 
         Returns dict mapping param_name -> info object with .param_type, .default_value, and .description attributes.
@@ -782,7 +783,7 @@ class ObjectState:
         finally:
             self._in_reset = False
 
-    def _dataclass_parameter_updates(self, prefix: str, value: Any) -> Dict[str, Any]:
+    def _dataclass_parameter_updates(self, prefix: str, value: Any) -> dict[str, Any]:
         """Flatten a dataclass container update into registered child parameters."""
         if value is None or not is_dataclass(type(value)):
             return {}
@@ -795,7 +796,7 @@ class ObjectState:
         ):
             return {}
 
-        updates: Dict[str, Any] = {}
+        updates: dict[str, Any] = {}
         for field in dataclass_fields(value):
             field_path = f"{prefix_dot}{field.name}"
             field_value = DataclassFieldAccess.raw_value(value, field.name)
@@ -807,14 +808,14 @@ class ObjectState:
     def _dataclass_ancestor_parameter_updates(
         self,
         param_name: str,
-        parameters: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        parameters: dict[str, Any],
+    ) -> dict[str, Any]:
         """Rebuild dataclass container parameters that own a changed child path."""
 
         if "." not in param_name:
             return {}
 
-        updates: Dict[str, Any] = {}
+        updates: dict[str, Any] = {}
         path_parts = param_name.split(".")
         for part_count in range(len(path_parts) - 1, 0, -1):
             prefix = ".".join(path_parts[:part_count])
@@ -886,7 +887,7 @@ class ObjectState:
 
         return tuple(paths)
 
-    def update_parameter(self, param_name: str, value: Any) -> Set[str]:
+    def update_parameter(self, param_name: str, value: Any) -> set[str]:
         """Update parameter value in state.
 
         Enforces invariants:
@@ -1245,7 +1246,7 @@ class ObjectState:
 
         return result
 
-    def _reconstruct_from_resolved(self, prefix: str, resolved_snapshot: Dict[str, Any]) -> Any:
+    def _reconstruct_from_resolved(self, prefix: str, resolved_snapshot: dict[str, Any]) -> Any:
         """Recursively reconstruct dataclass from resolved snapshot.
 
         Unified method for both live and saved resolved values. The only difference
@@ -1302,7 +1303,7 @@ class ObjectState:
 
         return result
 
-    def get_provenance(self, param_name: str) -> Optional[Tuple[str, type]]:
+    def get_provenance(self, param_name: str) -> Optional[tuple[str, type]]:
         """Get the source scope_id and type for an inherited field value.
 
         For fields where the local value is None (inherited), returns the scope_id
@@ -1465,7 +1466,7 @@ class ObjectState:
             self._invalid_fields.add(field_name)
 
     @staticmethod
-    def _select_changed_field(changed_paths: Set[str]) -> Optional[str]:
+    def _select_changed_field(changed_paths: set[str]) -> Optional[str]:
         """Choose a stable representative changed path for navigation."""
         if not changed_paths:
             return None
@@ -1473,7 +1474,7 @@ class ObjectState:
 
     def _set_last_changed_values(
         self,
-        changed_values: Dict[str, Tuple[Any, Any]],
+        changed_values: dict[str, tuple[Any, Any]],
     ) -> None:
         """Store the latest value changes for UI/time-travel navigation."""
         if not changed_values:
@@ -1489,12 +1490,12 @@ class ObjectState:
 
     def _changed_parameter_values(
         self,
-        changed_params: Set[str],
-        pending_parameters: Dict[str, Any],
-    ) -> Dict[str, Tuple[Any, Any]]:
+        changed_params: set[str],
+        pending_parameters: dict[str, Any],
+    ) -> dict[str, tuple[Any, Any]]:
         """Return old/new values for changed flat parameter paths."""
 
-        changed_values: Dict[str, Tuple[Any, Any]] = {}
+        changed_values: dict[str, tuple[Any, Any]] = {}
         for param_path in pending_parameters:
             if param_path not in changed_params:
                 continue
@@ -1506,11 +1507,11 @@ class ObjectState:
 
     def notification_fields_for_value_changes(
         self,
-        changed_values: Dict[str, Tuple[Any, Any]],
-    ) -> Set[str]:
+        changed_values: dict[str, tuple[Any, Any]],
+    ) -> set[str]:
         """Return ObjectState display paths affected by concrete value changes."""
 
-        fields: Set[str] = set()
+        fields: set[str] = set()
         for param_path, (old_value, new_value) in changed_values.items():
             if self._is_flat_container_parameter(param_path, new_value):
                 continue
@@ -1525,14 +1526,14 @@ class ObjectState:
         return fields
 
     @staticmethod
-    def _most_specific_notification_fields(fields: Set[str]) -> Set[str]:
+    def _most_specific_notification_fields(fields: set[str]) -> set[str]:
         """Drop container notifications when a concrete descendant path is present."""
 
         if len(fields) < 2:
             return set(fields)
 
         paths = tuple(DottedFieldPath(field) for field in fields)
-        result: Set[str] = set()
+        result: set[str] = set()
         for field_path in paths:
             if any(
                 field_path.value != candidate.value
@@ -1652,7 +1653,7 @@ class ObjectState:
             f"Updated ObjectState(scope={self.scope_id!r}) to new instance of type {type(new_instance).__name__}"
         )
 
-    def _recompute_invalid_fields(self) -> Set[str]:
+    def _recompute_invalid_fields(self) -> set[str]:
         """Recompute only the invalid fields, not the entire snapshot.
 
         PERFORMANCE: For explicitly set values, use parameters directly.
@@ -1663,8 +1664,8 @@ class ObjectState:
         """
         from objectstate.context_manager import build_context_stack
 
-        changed_paths: Set[str] = set()
-        changed_values: Dict[str, Tuple[Any, Any]] = {}
+        changed_paths: set[str] = set()
+        changed_values: dict[str, tuple[Any, Any]] = {}
 
         # _live_resolved must exist when this is called (from _ensure_live_resolved)
         if self._live_resolved is None:
@@ -1807,7 +1808,7 @@ class ObjectState:
             )
         return self._signature_defaults[param_name]
 
-    def get_current_values(self) -> Dict[str, Any]:
+    def get_current_values(self) -> dict[str, Any]:
         """
         Get current parameter values from state.
 
@@ -1821,7 +1822,7 @@ class ObjectState:
         self._check_and_sync_delegate()
         return dict(self.parameters)
 
-    def reconstruct_top_level_parameters(self) -> Dict[str, Any]:
+    def reconstruct_top_level_parameters(self) -> dict[str, Any]:
         """Return top-level parameters with nested dataclass values rebuilt.
 
         ObjectState stores nested fields in a flat dotted-path mapping. Function
@@ -1831,7 +1832,7 @@ class ObjectState:
         """
         self._check_and_sync_delegate()
 
-        values: Dict[str, Any] = {}
+        values: dict[str, Any] = {}
         root_type = type(self._extraction_target)
         top_level_params = {
             key
@@ -1856,12 +1857,12 @@ class ObjectState:
     # ==================== MATERIALIZED DIFFS ====================
 
     @property
-    def dirty_fields(self) -> Set[str]:
+    def dirty_fields(self) -> set[str]:
         """Fields where resolved_live != resolved_saved."""
         return self._dirty_fields
 
     @property
-    def signature_diff_fields(self) -> Set[str]:
+    def signature_diff_fields(self) -> set[str]:
         """Fields where raw != signature_default."""
         return self._signature_diff_fields
 
@@ -1878,7 +1879,7 @@ class ObjectState:
             return True
         return False
 
-    def _compute_dirty_fields(self) -> Set[str]:
+    def _compute_dirty_fields(self) -> set[str]:
         """Compute dirty set from live vs saved caches."""
         if self._live_resolved is None:
             return set()
@@ -1913,7 +1914,7 @@ class ObjectState:
             logger.debug(f"🔴 DIRTY_SUMMARY: scope={self.scope_id!r} dirty_fields={dirty}")
         return dirty
 
-    def _compute_signature_diff_fields(self) -> Set[str]:
+    def _compute_signature_diff_fields(self) -> set[str]:
         """Compute signature-diff set from parameters vs defaults.
 
         Any field that differs from its signature default is included.
@@ -1930,7 +1931,7 @@ class ObjectState:
                     result.add(k)
         return result
 
-    def _update_dirty_fields(self) -> Set[str]:
+    def _update_dirty_fields(self) -> set[str]:
         """Recompute _dirty_fields, return set of fields that changed dirty status.
 
         Returns fields that either became dirty OR became clean.
@@ -1955,7 +1956,7 @@ class ObjectState:
     def _sync_materialized_state(
         self,
         *,
-        changed_value_fields: Set[str] | None = None,
+        changed_value_fields: set[str] | None = None,
         emit_notifications: bool = True,
     ) -> bool:
         """Single point where materialized diffs are recomputed and notified.
@@ -2007,7 +2008,7 @@ class ObjectState:
 
     # ==================== SAVED STATE / DIRTY TRACKING ====================
 
-    def _compute_resolved_snapshot(self, use_saved: bool = False) -> Dict[str, Any]:
+    def _compute_resolved_snapshot(self, use_saved: bool = False) -> dict[str, Any]:
         """Resolve all fields for this state into a snapshot dict.
 
         PERFORMANCE: Build context stack ONCE and resolve ALL fields in bulk (not per-field).
@@ -2058,8 +2059,8 @@ class ObjectState:
             use_live=not use_saved,
         )
 
-        snapshot: Dict[str, Any] = {}
-        provenance: Dict[str, Tuple[Optional[str], Optional[type]]] = {}
+        snapshot: dict[str, Any] = {}
+        provenance: dict[str, tuple[Optional[str], Optional[type]]] = {}
 
         # CRITICAL: When computing saved_resolved, use _saved_parameters for raw values.
         # This ensures saved_resolved represents "what was last saved locally" + ancestor saved values,
@@ -2441,7 +2442,7 @@ class ObjectState:
 
     # ==================== FLAT STORAGE METHODS (NEW) ====================
 
-    def _extract_all_parameters_flat(self, obj: Any, prefix: str = '', exclude_params: Optional[List[str]] = None) -> None:
+    def _extract_all_parameters_flat(self, obj: Any, prefix: str = '', exclude_params: Optional[list[str]] = None) -> None:
         """Recursively extract parameters into flat dict with dotted paths.
 
         Populates self.parameters, self._path_to_type, and self._parameter_descriptions with dotted path keys.
@@ -2725,7 +2726,7 @@ class ObjectState:
     def _reconstruct_from_parameter_snapshot(
         self,
         prefix: str,
-        parameters: Dict[str, Any],
+        parameters: dict[str, Any],
     ) -> Any:
         """Recursively reconstruct dataclass from a flat parameter snapshot."""
         # Determine the type to reconstruct
@@ -2797,7 +2798,7 @@ class ObjectState:
 
     def _get_changed_params_with_types(
         self, old_target: Any, new_target: Any
-    ) -> List[Tuple[str, type, str]]:
+    ) -> list[tuple[str, type, str]]:
         """
         Compare old and new extraction targets to find changed parameters.
 
