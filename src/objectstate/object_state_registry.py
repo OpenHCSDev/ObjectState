@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKIN
 import copy
 
 from objectstate.object_state_metadata import ObjectStateMetadataStore
+from objectstate.parameter_owner import ParameterOwner
 from objectstate.snapshot_model import Snapshot, StateSnapshot, Timeline
 from objectstate.time_travel_profile import TimeTravelProfiler
 
@@ -17,8 +18,6 @@ if TYPE_CHECKING:
 
 TimeTravelStateEntry: TypeAlias = Tuple[str, 'ObjectState']
 TimeTravelCompleteCallback: TypeAlias = Callable[[List[TimeTravelStateEntry], Optional[str]], None]
-ParameterOwner: TypeAlias = type | Callable[..., Any]
-
 logger = logging.getLogger(__name__)
 
 

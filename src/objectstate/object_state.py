@@ -12,7 +12,7 @@ import logging
 from dataclasses import fields as dataclass_fields
 from dataclasses import is_dataclass
 from types import FunctionType
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeAlias
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from objectstate.field_access import DataclassFieldAccess, DottedFieldPath
 from objectstate.object_state_metadata import (
@@ -21,6 +21,7 @@ from objectstate.object_state_metadata import (
     ObjectStateMetadataStore,
 )
 from objectstate.object_state_registry import ObjectStateRegistry
+from objectstate.parameter_owner import ParameterOwner
 from objectstate.subfield_semantics import (
     MISSING,
     ObjectStateSubfieldSemanticIndex,
@@ -31,8 +32,6 @@ from objectstate.time_travel_profile import TimeTravelProfiler
 from objectstate.value_semantics import semantic_values_equal
 
 logger = logging.getLogger(__name__)
-
-ParameterOwner: TypeAlias = type | Callable[..., Any]
 
 class FieldProxy:
     """Type-safe proxy for accessing ObjectState fields via dotted attribute syntax.

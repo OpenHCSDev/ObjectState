@@ -136,6 +136,7 @@ from objectstate.token_cache import TokenCache, SingleValueTokenCache, CacheKey
 
 # Field access authority
 from objectstate.field_access import DataclassFieldAccess, DottedFieldPath, FieldAccessError
+from objectstate.parameter_owner import ParameterOwner
 from objectstate.subfield_semantics import (
     MISSING,
     MissingValue,
@@ -202,6 +203,7 @@ __all__ = [
     'DataclassFieldAccess',
     'DottedFieldPath',
     'FieldAccessError',
+    'ParameterOwner',
     'MISSING',
     'MissingValue',
     'ObjectStateSubfieldSemantic',
@@ -214,7 +216,7 @@ __all__ = [
     'ObjectStateEditSession',
 ]
 
-__version__ = "1.1.3"
+__version__ = "1.1.4"
 __author__ = 'OpenHCS Team'
 __description__ = 'Generic configuration framework for lazy dataclass resolution'
 
