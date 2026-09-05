@@ -227,7 +227,7 @@ class ObjectStateRegistry:
     @classmethod
     def _subscribe_callback(
         cls,
-        callbacks: List[RegistryCallback],
+        callbacks: list[RegistryCallback],
         callback: RegistryCallback,
     ) -> ObjectStateRegistrySubscription:
         if callback in callbacks:
@@ -239,7 +239,7 @@ class ObjectStateRegistry:
 
     @staticmethod
     def _remove_callback(
-        callbacks: List[RegistryCallback],
+        callbacks: list[RegistryCallback],
         callback: RegistryCallback,
     ) -> bool:
         if callback not in callbacks:

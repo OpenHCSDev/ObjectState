@@ -2,7 +2,8 @@
 
 import pytest
 
-from objectstate import ObjectStateRegistry, ObjectStateRegistrySubscription
+from objectstate import ObjectStateRegistry
+from objectstate.object_state_registry import ObjectStateRegistrySubscription
 
 
 @pytest.mark.parametrize(
