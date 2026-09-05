@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "objectstate"
-version = "1.1.4"
+version = "1.1.5"
 description = "Generic lazy dataclass configuration framework with dual-axis inheritance and contextvars-based resolution"
 authors = [{name = "Tristan Simas", email = "tristan.simas@mail.mcgill.ca"}]
 license = {text = "MIT"}
@@ -50,10 +50,10 @@ Issues = "https://github.com/OpenHCSDev/objectstate/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/objectstate"]
-core-metadata-version = "2.4"
+core-metadata-version = "1.1.5"
 
 [tool.hatch.build.targets.sdist]
-core-metadata-version = "2.4"
+core-metadata-version = "1.1.5"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -68,13 +68,13 @@ target-version = ["py311", "py312", "py313"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "1.1.5"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "1.1.5"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
