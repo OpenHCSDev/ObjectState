@@ -5,19 +5,7 @@ Replaces LiveContextService._active_form_managers as the single source of truth.
 from contextlib import contextmanager
 from dataclasses import dataclass, is_dataclass
 import logging
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Callable,
-    Dict,
-    Generator,
-    List,
-    Optional,
-    Set,
-    Tuple,
-    TypeAlias,
-    TypeVar,
-)
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING, Generator, TypeAlias
 import copy
 
 from objectstate.object_state_metadata import ObjectStateMetadataStore
@@ -30,7 +18,7 @@ if TYPE_CHECKING:
 
 TimeTravelStateEntry: TypeAlias = Tuple[str, 'ObjectState']
 TimeTravelCompleteCallback: TypeAlias = Callable[[List[TimeTravelStateEntry], Optional[str]], None]
-RegistryCallback = TypeVar("RegistryCallback", bound=Callable[..., None])
+RegistryCallback: TypeAlias = Callable[..., None]
 logger = logging.getLogger(__name__)
 
 
