@@ -5,7 +5,19 @@ Replaces LiveContextService._active_form_managers as the single source of truth.
 from contextlib import contextmanager
 from dataclasses import dataclass, is_dataclass
 import logging
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING, Generator, TypeAlias
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    Generator,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    TypeAlias,
+    TypeVar,
+)
 import copy
 
 from objectstate.object_state_metadata import ObjectStateMetadataStore
@@ -18,7 +30,24 @@ if TYPE_CHECKING:
 
 TimeTravelStateEntry: TypeAlias = Tuple[str, 'ObjectState']
 TimeTravelCompleteCallback: TypeAlias = Callable[[List[TimeTravelStateEntry], Optional[str]], None]
+RegistryCallback = TypeVar("RegistryCallback", bound=Callable[..., None])
 logger = logging.getLogger(__name__)
+
+
+class ObjectStateRegistrySubscription:
+    """Idempotent ownership handle for one registry callback registration."""
+
+    def __init__(self, release: Callable[[], bool] | None) -> None:
+        self._release = release
+
+    def release(self) -> bool:
+        """Release this registration once, returning whether it was active."""
+
+        release = self._release
+        if release is None:
+            return False
+        self._release = None
+        return release()
 
 
 @dataclass(frozen=True)
@@ -139,57 +168,96 @@ class ObjectStateRegistry:
     _on_history_changed_callbacks: List[Callable[[], None]] = []
 
     @classmethod
-    def add_register_callback(cls, callback: Callable[[str, 'ObjectState'], None]) -> None:
-        """Subscribe to ObjectState registration events."""
-        if callback not in cls._on_register_callbacks:
-            cls._on_register_callbacks.append(callback)
+    def add_register_callback(
+        cls,
+        callback: Callable[[str, 'ObjectState'], None],
+    ) -> ObjectStateRegistrySubscription:
+        """Subscribe to registration events and return its ownership handle."""
+        return cls._subscribe_callback(cls._on_register_callbacks, callback)
 
     @classmethod
-    def remove_register_callback(cls, callback: Callable[[str, 'ObjectState'], None]) -> None:
+    def remove_register_callback(
+        cls,
+        callback: Callable[[str, 'ObjectState'], None],
+    ) -> bool:
         """Unsubscribe from ObjectState registration events."""
-        if callback in cls._on_register_callbacks:
-            cls._on_register_callbacks.remove(callback)
+        return cls._remove_callback(cls._on_register_callbacks, callback)
 
     @classmethod
-    def add_unregister_callback(cls, callback: Callable[[str, 'ObjectState'], None]) -> None:
-        """Subscribe to ObjectState unregistration events."""
-        if callback not in cls._on_unregister_callbacks:
-            cls._on_unregister_callbacks.append(callback)
+    def add_unregister_callback(
+        cls,
+        callback: Callable[[str, 'ObjectState'], None],
+    ) -> ObjectStateRegistrySubscription:
+        """Subscribe to unregistration events and return its ownership handle."""
+        return cls._subscribe_callback(cls._on_unregister_callbacks, callback)
 
     @classmethod
-    def remove_unregister_callback(cls, callback: Callable[[str, 'ObjectState'], None]) -> None:
+    def remove_unregister_callback(
+        cls,
+        callback: Callable[[str, 'ObjectState'], None],
+    ) -> bool:
         """Unsubscribe from ObjectState unregistration events."""
-        if callback in cls._on_unregister_callbacks:
-            cls._on_unregister_callbacks.remove(callback)
+        return cls._remove_callback(cls._on_unregister_callbacks, callback)
 
     @classmethod
-    def add_time_travel_complete_callback(cls, callback: TimeTravelCompleteCallback) -> None:
+    def add_time_travel_complete_callback(
+        cls,
+        callback: TimeTravelCompleteCallback,
+    ) -> ObjectStateRegistrySubscription:
         """Subscribe to time-travel completion events.
 
         Callback receives (dirty_states, triggering_scope) where:
         - dirty_states: list of (scope_id, ObjectState) tuples with unsaved changes
         - triggering_scope: scope_id that triggered the snapshot (may be None)
         """
-        if callback not in cls._on_time_travel_complete_callbacks:
-            cls._on_time_travel_complete_callbacks.append(callback)
+        return cls._subscribe_callback(
+            cls._on_time_travel_complete_callbacks,
+            callback,
+        )
 
     @classmethod
-    def remove_time_travel_complete_callback(cls, callback: TimeTravelCompleteCallback) -> None:
+    def remove_time_travel_complete_callback(
+        cls,
+        callback: TimeTravelCompleteCallback,
+    ) -> bool:
         """Unsubscribe from time-travel completion events."""
-        if callback in cls._on_time_travel_complete_callbacks:
-            cls._on_time_travel_complete_callbacks.remove(callback)
+        return cls._remove_callback(cls._on_time_travel_complete_callbacks, callback)
 
     @classmethod
-    def add_history_changed_callback(cls, callback: Callable[[], None]) -> None:
-        """Subscribe to history change events (snapshot added or time-travel)."""
-        if callback not in cls._on_history_changed_callbacks:
-            cls._on_history_changed_callbacks.append(callback)
+    def add_history_changed_callback(
+        cls,
+        callback: Callable[[], None],
+    ) -> ObjectStateRegistrySubscription:
+        """Subscribe to history changes and return its ownership handle."""
+        return cls._subscribe_callback(cls._on_history_changed_callbacks, callback)
 
     @classmethod
-    def remove_history_changed_callback(cls, callback: Callable[[], None]) -> None:
+    def remove_history_changed_callback(cls, callback: Callable[[], None]) -> bool:
         """Unsubscribe from history change events."""
-        if callback in cls._on_history_changed_callbacks:
-            cls._on_history_changed_callbacks.remove(callback)
+        return cls._remove_callback(cls._on_history_changed_callbacks, callback)
+
+    @classmethod
+    def _subscribe_callback(
+        cls,
+        callbacks: List[RegistryCallback],
+        callback: RegistryCallback,
+    ) -> ObjectStateRegistrySubscription:
+        if callback in callbacks:
+            return ObjectStateRegistrySubscription(None)
+        callbacks.append(callback)
+        return ObjectStateRegistrySubscription(
+            lambda: cls._remove_callback(callbacks, callback)
+        )
+
+    @staticmethod
+    def _remove_callback(
+        callbacks: List[RegistryCallback],
+        callback: RegistryCallback,
+    ) -> bool:
+        if callback not in callbacks:
+            return False
+        callbacks.remove(callback)
+        return True
 
     @classmethod
     def _fire_history_changed_callbacks(cls) -> None:
@@ -474,39 +542,42 @@ class ObjectStateRegistry:
             cls._change_callbacks.remove(cb)
 
     @classmethod
-    def connect_listener(cls, callback: Callable[[], None]) -> None:
+    def connect_listener(
+        cls,
+        callback: Callable[[], None],
+    ) -> ObjectStateRegistrySubscription:
         """Connect a listener callback that's called on any change.
 
         The callback should debounce and call collect() to get fresh values.
         """
-        if callback not in cls._change_callbacks:
-            cls._change_callbacks.append(callback)
+        subscription = cls._subscribe_callback(cls._change_callbacks, callback)
+        if callback in cls._change_callbacks:
             logger.debug(f"Connected change listener: {callback}")
+        return subscription
 
     @classmethod
-    def disconnect_listener(cls, callback: Callable[[], None]) -> None:
+    def disconnect_listener(cls, callback: Callable[[], None]) -> bool:
         """Disconnect a change listener."""
-        if callback in cls._change_callbacks:
-            cls._change_callbacks.remove(callback)
+        removed = cls._remove_callback(cls._change_callbacks, callback)
+        if removed:
             logger.debug(f"Disconnected change listener: {callback}")
+        return removed
 
     @classmethod
     def add_resolved_changed_callback(
         cls,
         callback: Callable[[str, Set[str]], None],
-    ) -> None:
-        """Subscribe to resolved-value changes from any registered ObjectState."""
-        if callback not in cls._resolved_changed_callbacks:
-            cls._resolved_changed_callbacks.append(callback)
+    ) -> ObjectStateRegistrySubscription:
+        """Subscribe to resolved changes and return its ownership handle."""
+        return cls._subscribe_callback(cls._resolved_changed_callbacks, callback)
 
     @classmethod
     def remove_resolved_changed_callback(
         cls,
         callback: Callable[[str, Set[str]], None],
-    ) -> None:
+    ) -> bool:
         """Unsubscribe from registry-wide resolved-value changes."""
-        if callback in cls._resolved_changed_callbacks:
-            cls._resolved_changed_callbacks.remove(callback)
+        return cls._remove_callback(cls._resolved_changed_callbacks, callback)
 
     @classmethod
     def notify_resolved_changed(

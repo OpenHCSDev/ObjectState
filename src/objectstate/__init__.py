@@ -222,7 +222,10 @@ __description__ = 'Generic configuration framework for lazy dataclass resolution
 
 
 # Object state management
-from objectstate.object_state_registry import ObjectStateRegistry
+from objectstate.object_state_registry import (
+    ObjectStateRegistry,
+    ObjectStateRegistrySubscription,
+)
 from objectstate.object_state import ObjectState
 from objectstate.object_state_metadata import (
     ObjectStateMetadataContract,
@@ -259,6 +262,7 @@ __all__ += [
     # Object state
     'ObjectState',
     'ObjectStateRegistry',
+    'ObjectStateRegistrySubscription',
     'ObjectStateMetadataContract',
     'ObjectStateMetadataContractRegistry',
     'ObjectStateMetadataStore',
