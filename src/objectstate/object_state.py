@@ -959,10 +959,9 @@ class ObjectState:
             changed_semantic_params,
             pending_parameters,
         )
-        value_change_notification_fields = self.notification_fields_for_value_changes(
-            changed_param_values,
-        )
-
+        # Establish the pre-mutation resolved authority even for a state that
+        # has not yet been displayed. Raw edits can preserve the resolved value.
+        self._ensure_live_resolved(notify_flash=False)
         ObjectStateRegistry.ensure_baseline_snapshot()
 
         # Update state directly (no type conversion - that's VIEW responsibility)
@@ -1063,14 +1062,11 @@ class ObjectState:
         # Increment global token for LiveContextService.collect() cache invalidation
         ObjectStateRegistry.increment_token(notify=False)
 
-        # Recompute live cache, then notify once from the materialized sync layer.
-        # First-populate states have no prior resolved cache to diff against, so
-        # raw changed child paths are the notification/navigation authority for
-        # inline dataclass editors.
+        # Raw edits own history/navigation; the resolved delta owns value flashes.
         self._set_last_changed_values(changed_param_values)
         # Sync materialized state (single point for dirty/sig_diff update + notification)
         self._sync_materialized_state(
-            changed_value_fields=changed_paths | value_change_notification_fields
+            changed_value_fields=changed_paths
         )
 
         # Record snapshot for time-travel (registry-level for coherent system history)
@@ -1091,7 +1087,7 @@ class ObjectState:
         if snapshot_field:
             ObjectStateRegistry.record_snapshot(f"edit {snapshot_field}", self.scope_id)
 
-        return changed_paths | value_change_notification_fields
+        return changed_paths
 
     def get_resolved_value(self, param_name: str) -> Any:
         """Get resolved value for a field from the bulk snapshot.
@@ -1975,16 +1971,18 @@ class ObjectState:
 
         Correctness guarantee: All mutation paths call this ONE method.
 
-        Flash behavior: Fires on_resolved_changed for fields that changed value
-        and fields that changed dirty status. This ensures flash animation
-        triggers for edits within an already-dirty value, not just clean/dirty
-        transitions.
+        Resolved-value subscribers receive only value changes. Materialized
+        state subscribers also receive dirty/signature transitions, including
+        saving or changing explicitness without changing the resolved value.
         """
         raw_dirty_changed = self._update_raw_dirty()
         dirty_status_changed_fields = self._update_dirty_fields()
         sig_diff_changed = self._update_signature_diff_fields()
+        value_notification_fields = self._most_specific_notification_fields(
+            changed_value_fields or set()
+        )
         notification_fields = self._most_specific_notification_fields(
-            dirty_status_changed_fields | (changed_value_fields or set())
+            dirty_status_changed_fields | value_notification_fields
         )
 
         materialized_changed = raw_dirty_changed or bool(notification_fields) or sig_diff_changed
@@ -1993,7 +1991,7 @@ class ObjectState:
 
         if emit_notifications:
             self._notify_resolved_changed(
-                notification_fields,
+                value_notification_fields,
                 context="_sync_materialized_state",
             )
 
