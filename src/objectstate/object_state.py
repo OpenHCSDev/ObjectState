@@ -1948,13 +1948,12 @@ class ObjectState:
             return changed_fields
         return set()
 
-    def _update_signature_diff_fields(self) -> bool:
-        """Recompute _signature_diff_fields, return True if changed."""
+    def _update_signature_diff_fields(self) -> set[str]:
+        """Recompute signature differences and retain the changed field paths."""
         new_sig_diff = self._compute_signature_diff_fields()
-        if new_sig_diff != self._signature_diff_fields:
-            self._signature_diff_fields = new_sig_diff
-            return True
-        return False
+        changed_fields = new_sig_diff ^ self._signature_diff_fields
+        self._signature_diff_fields = new_sig_diff
+        return changed_fields
 
     def _sync_materialized_state(
         self,
@@ -1977,15 +1976,17 @@ class ObjectState:
         """
         raw_dirty_changed = self._update_raw_dirty()
         dirty_status_changed_fields = self._update_dirty_fields()
-        sig_diff_changed = self._update_signature_diff_fields()
+        signature_changed_fields = self._update_signature_diff_fields()
         value_notification_fields = self._most_specific_notification_fields(
             changed_value_fields or set()
         )
         notification_fields = self._most_specific_notification_fields(
-            dirty_status_changed_fields | value_notification_fields
+            dirty_status_changed_fields
+            | signature_changed_fields
+            | value_notification_fields
         )
 
-        materialized_changed = raw_dirty_changed or bool(notification_fields) or sig_diff_changed
+        materialized_changed = raw_dirty_changed or bool(notification_fields)
         if materialized_changed:
             ObjectStateRegistry.mark_snapshot_dirty_scope(self.scope_id)
 

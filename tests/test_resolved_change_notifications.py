@@ -28,8 +28,10 @@ def test_same_resolved_default_changes_storage_without_value_notification():
     assert state.get_resolved_value("number") == 3
     values = []
     chrome = []
+    chrome_paths = []
     state.on_resolved_changed(lambda paths: values.append(set(paths)))
     state.on_state_changed(lambda paths: chrome.append(state.is_raw_dirty))
+    state.on_state_changed(lambda paths: chrome_paths.append(set(paths)))
     assert state.update_parameter("number", 3) == set()
     assert state.parameters["number"] == 3
     state.reset_parameter("number")
@@ -37,6 +39,7 @@ def test_same_resolved_default_changes_storage_without_value_notification():
     assert state.get_resolved_value("number") == 3
     assert values == []
     assert chrome == [True, False]
+    assert chrome_paths == [{"number"}, {"number"}]
 
 
 @pytest.mark.parametrize("warm", (False, True))
