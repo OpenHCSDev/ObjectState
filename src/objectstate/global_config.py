@@ -13,8 +13,8 @@ Explicit override: Compilation uses SAVED (via use_live_global=False)
 """
 
 import threading
+from dataclasses import dataclass
 from typing import Dict, Type, Optional, Any
-
 
 # Dual thread-local storage: saved (for descendants/compiler) and live (for UI editing)
 _saved_global_config_contexts: Dict[Type, threading.local] = {}
@@ -33,6 +33,52 @@ def _validate_global_config_value(config_type: Type, config_instance: Any) -> No
         )
 
 
+def _assign_global_config_value(
+    contexts: Dict[Type, threading.local], config_type: Type, value: Any
+) -> None:
+    """One storage boundary for installing or unsetting a context projection."""
+
+    if value is None:
+        local = contexts.get(config_type)
+        if local is not None and hasattr(local, "value"):
+            del local.value
+        return
+    _validate_global_config_value(config_type, value)
+    if config_type not in contexts:
+        contexts[config_type] = threading.local()
+    contexts[config_type].value = value
+
+
+@dataclass(frozen=True)
+class GlobalContextValues:
+    """Prepared saved/live projections, or exact local rollback context values."""
+
+    config_type: Type
+    saved: Any
+    live: Any
+
+    @classmethod
+    def capture(cls, config_type: Type) -> "GlobalContextValues":
+        return cls(
+            config_type,
+            get_saved_global_config(config_type),
+            get_live_global_config(config_type),
+        )
+
+    def validate(self) -> None:
+        for value in (self.saved, self.live):
+            if value is not None:
+                _validate_global_config_value(self.config_type, value)
+
+    def apply(self) -> None:
+        _assign_global_config_value(
+            _saved_global_config_contexts, self.config_type, self.saved
+        )
+        _assign_global_config_value(
+            _live_global_config_contexts, self.config_type, self.live
+        )
+
+
 def set_saved_global_config(config_type: Type, config_instance: Any) -> None:
     """Set SAVED global config (what descendants/compiler see).
 
@@ -46,9 +92,9 @@ def set_saved_global_config(config_type: Type, config_instance: Any) -> None:
         config_instance: The SAVED config instance
     """
     _validate_global_config_value(config_type, config_instance)
-    if config_type not in _saved_global_config_contexts:
-        _saved_global_config_contexts[config_type] = threading.local()
-    _saved_global_config_contexts[config_type].value = config_instance
+    _assign_global_config_value(
+        _saved_global_config_contexts, config_type, config_instance
+    )
 
 
 def set_live_global_config(config_type: Type, config_instance: Any) -> None:
@@ -63,9 +109,9 @@ def set_live_global_config(config_type: Type, config_instance: Any) -> None:
         config_instance: The LIVE (unsaved) config instance
     """
     _validate_global_config_value(config_type, config_instance)
-    if config_type not in _live_global_config_contexts:
-        _live_global_config_contexts[config_type] = threading.local()
-    _live_global_config_contexts[config_type].value = config_instance
+    _assign_global_config_value(
+        _live_global_config_contexts, config_type, config_instance
+    )
 
 
 def get_saved_global_config(config_type: Type) -> Optional[Any]:
@@ -78,7 +124,7 @@ def get_saved_global_config(config_type: Type) -> Optional[Any]:
         Saved config instance or None
     """
     context = _saved_global_config_contexts.get(config_type)
-    return getattr(context, 'value', None) if context else None
+    return getattr(context, "value", None) if context else None
 
 
 def get_live_global_config(config_type: Type) -> Optional[Any]:
@@ -91,7 +137,7 @@ def get_live_global_config(config_type: Type) -> Optional[Any]:
         Live config instance or None
     """
     context = _live_global_config_contexts.get(config_type)
-    return getattr(context, 'value', None) if context else None
+    return getattr(context, "value", None) if context else None
 
 
 def set_global_config_for_editing(config_type: Type, config_instance: Any) -> None:
@@ -109,7 +155,9 @@ def set_global_config_for_editing(config_type: Type, config_instance: Any) -> No
     set_live_global_config(config_type, config_instance)
 
 
-def get_current_global_config(config_type: Type, use_live: bool = True) -> Optional[Any]:
+def get_current_global_config(
+    config_type: Type, use_live: bool = True
+) -> Optional[Any]:
     """Get current global config.
 
     Args:

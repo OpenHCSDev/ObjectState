@@ -19,6 +19,11 @@ from types import FunctionType
 from typing import Any, Optional
 
 from objectstate.field_access import DataclassFieldAccess, DottedFieldPath
+from objectstate.construction_binding import (
+    DelegatedStateBinding,
+    DirectStateBinding,
+    StateConstructionBinding,
+)
 from objectstate.object_state_metadata import (
     ObjectStateMetadataContract,
     ObjectStateMetadataContractRegistry,
@@ -26,6 +31,9 @@ from objectstate.object_state_metadata import (
 )
 from objectstate.object_state_registry import ObjectStateRegistry
 from objectstate.parameter_owner import ParameterOwner
+from objectstate.parameter_structure import ParameterStructure
+from objectstate.global_config import GlobalContextValues
+from objectstate.lazy_factory import is_global_config_type
 from objectstate.subfield_semantics import (
     MISSING,
     ObjectStateSubfieldSemanticIndex,
@@ -175,11 +183,7 @@ class ObjectState:
             self._delegate_attr = None
 
         # === Flat Storage (NEW - for flattened architecture) ===
-        self._path_to_type: dict[str, ParameterOwner] = {}  # Maps dotted paths to their owner target
-        self._direct_parameter_paths: dict[
-            DottedFieldPath,
-            tuple[DottedFieldPath, ...],
-        ] = {}
+        self._parameter_structure = ParameterStructure()
         self._cached_object: Any | None = None  # Cached result of to_object()
         self._cached_object_applied: bool = False  # True if cached delegate was applied to object_instance
 
@@ -199,18 +203,7 @@ class ObjectState:
         # Extract parameters using FLAT extraction (dotted paths)
         # This replaces the old UnifiedParameterAnalyzer + _create_nested_states() approach
         self.parameters: dict[str, Any] = {}
-        self._signature_defaults: dict[str, Any] = {}
-        # Maps dotted paths to their descriptions (value may be None when no description exists).
-        self._parameter_descriptions: dict[str, str | None] = {}
-
-        # Store excluded params and their original values for reconstruction
-        # Excluded constructor parameters must be preserved for reconstruction.
-        self._exclude_param_names: list[str] = list(exclude_params or [])  # For restore_saved()
-        self._excluded_params: dict[str, Any] = {}
         extraction_target = self._extraction_target
-        for param_name in self._exclude_param_names:
-            if hasattr(extraction_target, param_name):
-                self._excluded_params[param_name] = getattr(extraction_target, param_name)
 
         # Flatten parameter extraction - walk nested dataclasses recursively.
         # Uses _extraction_target (delegate) instead of object_instance for
@@ -218,7 +211,7 @@ class ObjectState:
         # replaced atomically once for this extraction.
         self._replace_parameter_structure(
             extraction_target,
-            exclude_params=self._exclude_param_names,
+            exclude_params=exclude_params,
             initial_values=initial_values,
         )
 
@@ -667,13 +660,13 @@ class ObjectState:
                     {parent_field},
                     context="forward_to_parent_state",
                 )
-                
+
             logger.debug(
                 "[ObjectState] Forwarded %s to parent, field=%r",
                 self.scope_id,
                 parent_field,
             )
-            
+
         finally:
             self._forwarding_to_parent = False
 
@@ -1547,6 +1540,106 @@ class ObjectState:
             result.add(field_path.value)
         return result
 
+    @property
+    def _path_to_type(self) -> dict[str, ParameterOwner]:
+        return self._parameter_structure.owner_paths
+
+    @_path_to_type.setter
+    def _path_to_type(self, value: dict[str, ParameterOwner]) -> None:
+        self._parameter_structure.owner_paths = value
+
+    @property
+    def _direct_parameter_paths(self) -> dict[DottedFieldPath, tuple[DottedFieldPath, ...]]:
+        return self._parameter_structure.direct_paths
+
+    @_direct_parameter_paths.setter
+    def _direct_parameter_paths(
+        self, value: dict[DottedFieldPath, tuple[DottedFieldPath, ...]]
+    ) -> None:
+        self._parameter_structure.direct_paths = value
+
+    @property
+    def _signature_defaults(self) -> dict[str, Any]:
+        return self._parameter_structure.defaults
+
+    @_signature_defaults.setter
+    def _signature_defaults(self, value: dict[str, Any]) -> None:
+        self._parameter_structure.defaults = value
+
+    @property
+    def _parameter_descriptions(self) -> dict[str, str | None]:
+        return self._parameter_structure.descriptions
+
+    @_parameter_descriptions.setter
+    def _parameter_descriptions(self, value: dict[str, str | None]) -> None:
+        self._parameter_structure.descriptions = value
+
+    @property
+    def _exclude_param_names(self) -> list[str]:
+        return self._parameter_structure.exclusions
+
+    @_exclude_param_names.setter
+    def _exclude_param_names(self, value: list[str]) -> None:
+        self._parameter_structure.exclusions = value
+
+    @property
+    def _excluded_params(self) -> dict[str, Any]:
+        return self._parameter_structure.excluded_values
+
+    @_excluded_params.setter
+    def _excluded_params(self, value: dict[str, Any]) -> None:
+        self._parameter_structure.excluded_values = value
+
+    def construction_binding(self) -> StateConstructionBinding:
+        """Capture construction from this state, not a parallel factory registry."""
+
+        arguments = dict(
+            state_type=type(self),
+            target=self._extraction_target,
+            parent_scope=(
+                self._parent_state.scope_id or "" if self._parent_state is not None else None
+            ),
+            exclusions=tuple(self._exclude_param_names),
+            parent_field=self._parent_field_name,
+        )
+        if self._delegate_attr is not None:
+            return DelegatedStateBinding(
+                **arguments,
+                lifecycle_type=type(self.object_instance),
+                delegate_attribute=self._delegate_attr,
+            )
+        return DirectStateBinding(**arguments)
+
+    def apply_prepared_construction(
+        self,
+        binding: StateConstructionBinding,
+        prepared: ObjectState,
+        parent: ObjectState | None,
+    ) -> None:
+        """Attach a prevalidated owner/schema without replacing state callbacks."""
+
+        binding.attach(self)
+        self._parent_state = parent
+        self._parent_field_name = binding.parent_field
+        self._parameter_structure = prepared._parameter_structure.clone()
+        self._cached_object = None
+        self._cached_object_applied = False
+        self._invalid_fields.clear()
+
+    def prepare_history_global_context(self) -> GlobalContextValues | None:
+        """Derive saved/live global projections from canonical raw state values."""
+
+        target_type = type(self._extraction_target)
+        if not is_global_config_type(target_type):
+            return None
+        contexts = GlobalContextValues(
+            target_type,
+            self._reconstruct_from_parameter_snapshot("", self._saved_parameters),
+            self._reconstruct_from_parameter_snapshot("", self.parameters),
+        )
+        contexts.validate()
+        return contexts
+
     def update_object_instance(self, new_instance: Any) -> None:
         """Replace object_instance with a new instance and re-extract parameters.
 
@@ -1563,6 +1656,7 @@ class ObjectState:
         self._ensure_live_resolved(notify_flash=False)
         previous_parameters = dict(self.parameters)
         previous_saved_parameters = dict(self._saved_parameters)
+        ObjectStateRegistry.mark_snapshot_dirty_scope(self.scope_id)
         old_live_resolved = copy.deepcopy(self._live_resolved or {})
 
         if self._delegate_attr is not None:
@@ -2251,7 +2345,7 @@ class ObjectState:
         # when GlobalPipelineConfig is saved, plates/steps clear their dirty markers (*).
         logger.debug(f"🔧 mark_saved: Propagating saved baseline to descendants for scope={self.scope_id!r}")
         logger.debug(f"🔧 mark_saved: Total states in registry: {len(ObjectStateRegistry._states)}")
-        
+
         # Collect descendant scopes first to avoid modifying registry during iteration.
         #
         # IMPORTANT: Global scope is represented by "" (empty string).
@@ -2271,7 +2365,7 @@ class ObjectState:
                 if s.scope_id is not None and ObjectStateRegistry._normalize_scope_id(s.scope_id).startswith(prefix)
             ]
         logger.debug(f"🔧 mark_saved: Found {len(descendant_scopes)} descendant scopes: {descendant_scopes}")
-        
+
         for descendant_scope in descendant_scopes:
             state = ObjectStateRegistry._states.get(descendant_scope)
             if state is not None:
@@ -2556,9 +2650,7 @@ class ObjectState:
         """Extract one canonical flat parameter structure and index it once."""
 
         self.parameters.clear()
-        self._path_to_type.clear()
-        self._signature_defaults.clear()
-        self._parameter_descriptions.clear()
+        self._parameter_structure = ParameterStructure.for_target(obj, exclude_params)
         self._extract_all_parameters_flat(
             obj,
             prefix="",

@@ -2,23 +2,44 @@
 ObjectStateRegistry: Singleton registry of all ObjectState instances.
 Replaces LiveContextService._active_form_managers as the single source of truth.
 """
+
 from contextlib import contextmanager
 from dataclasses import dataclass, is_dataclass
 import logging
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING, Generator, TypeAlias
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    TYPE_CHECKING,
+    Generator,
+    TypeAlias,
+)
 import copy
 
 from objectstate.object_state_metadata import ObjectStateMetadataStore
+from objectstate.construction_binding import StateConstructionBinding
+from objectstate.history_migration import HistoryMigration
+from objectstate.global_config import GlobalContextValues
+from objectstate.context_manager import clear_current_temp_global
+from objectstate.dual_axis_resolver import clear_mro_resolution_cache
 from objectstate.parameter_owner import ParameterOwner
 from objectstate.snapshot_model import Snapshot, StateSnapshot, Timeline
 from objectstate.time_travel_profile import TimeTravelProfiler
+from objectstate.transaction_checkpoint import ObjectStateTransactionCheckpoint
 
 if TYPE_CHECKING:
     from objectstate.object_state import ObjectState
 
-TimeTravelStateEntry: TypeAlias = Tuple[str, 'ObjectState']
+TimeTravelStateEntry: TypeAlias = Tuple[str, "ObjectState"]
 TimeTravelCompleteCallback: TypeAlias = Callable[[List[TimeTravelStateEntry], Optional[str]], None]
 RegistryCallback: TypeAlias = Callable[..., None]
+RegistryMutationSignature: TypeAlias = Tuple[
+    Tuple[str, int, Dict[str, Any], Dict[str, Any], StateConstructionBinding], ...
+]
 logger = logging.getLogger(__name__)
 
 
@@ -58,6 +79,18 @@ class TimeTravelScopeReconciliation:
 
 
 @dataclass(frozen=True)
+class PreparedStateRestore:
+    """Prevalidated construction and historical values for one scope."""
+
+    snapshot: StateSnapshot
+    state: "ObjectState"
+    schema: "ObjectState"
+    diff: "TimeTravelStateDiff"
+    construction_changed: bool
+    context: GlobalContextValues | None
+
+
+@dataclass(frozen=True)
 class TimeTravelScopeChange:
     """Per-scope facts produced by restoring one ObjectState."""
 
@@ -65,10 +98,11 @@ class TimeTravelScopeChange:
     changed_param_keys: Set[str]
     meta_changed_keys: Set[str]
     is_concrete_dirty: bool
+    construction_changed: bool = False
 
     @property
     def needs_navigation(self) -> bool:
-        return bool(self.changed_paths or self.meta_changed_keys)
+        return bool(self.changed_paths or self.meta_changed_keys or self.construction_changed)
 
 
 @dataclass(frozen=True)
@@ -335,6 +369,7 @@ class ObjectStateRegistry:
             logger.warning(f"Overwriting existing ObjectState for scope: {key}")
 
         cls._states[key] = state
+        cls.mark_snapshot_dirty_scope(key)
         logger.debug(f"Registered ObjectState: scope={key}, type={type(state.object_instance).__name__}")
 
         # Fire callbacks for UI binding
@@ -879,7 +914,7 @@ class ObjectStateRegistry:
     _atomic_label: Optional[str] = None  # Label for the coalesced snapshot
     _atomic_triggering_scope: Optional[str] = None
     _atomic_snapshot_requested: bool = False
-    _atomic_entry_signature: Optional[Tuple[Tuple[str, int, Dict[str, Any], Dict[str, Any]], ...]] = None
+    _atomic_entry_signature: Optional[RegistryMutationSignature] = None
 
     # Limbo: ObjectStates temporarily removed during time-travel
     # When traveling to a snapshot, ObjectStates not in that snapshot are moved here.
@@ -1006,18 +1041,20 @@ class ObjectStateRegistry:
     @classmethod
     def _registry_mutation_signature(
         cls,
-    ) -> Tuple[Tuple[str, int, Dict[str, Any], Dict[str, Any]], ...]:
+    ) -> RegistryMutationSignature:
         """Return the active registry state used to suppress no-op atomics."""
 
-        entries: list[Tuple[str, int, Dict[str, Any], Dict[str, Any]]] = []
+        entries: list[Tuple[str, int, Dict[str, Any], Dict[str, Any], StateConstructionBinding]] = (
+            []
+        )
         for key, state in sorted(cls._states.items()):
-            parameters, saved_parameters = (
-                state.copy_parameter_pair_preserving_callable_identity(
-                    state.parameters,
-                    state._saved_parameters,
-                )
+            parameters, saved_parameters = state.copy_parameter_pair_preserving_callable_identity(
+                state.parameters,
+                state._saved_parameters,
             )
-            entries.append((key, id(state), parameters, saved_parameters))
+            entries.append(
+                (key, id(state), parameters, saved_parameters, state.construction_binding())
+            )
         return tuple(entries)
 
     @classmethod
@@ -1204,6 +1241,40 @@ class ObjectStateRegistry:
                 cls._snapshot_dirty_scopes & current_state_keys
             ) | (current_state_keys - set(parent_snapshot.all_states))
 
+        for state in cls._states.values():
+            state.validate_metadata_contracts("snapshot")
+        capture_values = {
+            key: StateSnapshot(
+                saved_resolved=state._saved_resolved,
+                live_resolved=state._live_resolved,
+                parameters=state.parameters,
+                saved_parameters=state._saved_parameters,
+                provenance=state._live_provenance,
+                construction=state.construction_binding(),
+                meta=state.copy_metadata_for_snapshot(),
+            )
+            for key, state in cls._states.items()
+        }
+        # A changed scope also invalidates immutable snapshots that share a
+        # copied object with it. Independent clean scopes retain structural
+        # sharing; connected scopes are copied together with one graph memo.
+        alias_scopes: Dict[int, Set[str]] = {}
+        for key, values in capture_values.items():
+            memo: Dict[int, Any] = {}
+            copy.deepcopy(values, memo)
+            for identity in memo:
+                if identity not in (id(memo), id(values), id(values.construction)):
+                    alias_scopes.setdefault(identity, set()).add(key)
+        pending = list(snapshot_candidate_keys)
+        while pending:
+            key = pending.pop()
+            for scopes in alias_scopes.values():
+                if key in scopes:
+                    additional = scopes - snapshot_candidate_keys
+                    snapshot_candidate_keys.update(additional)
+                    pending.extend(additional)
+        captured = copy.deepcopy({key: capture_values[key] for key in snapshot_candidate_keys})
+
         with TimeTravelProfiler.phase(
             "objectstate.snapshot_capture_states",
             states=len(cls._states),
@@ -1213,69 +1284,7 @@ class ObjectStateRegistry:
             for key in snapshot_candidate_keys:
                 state = cls._states[key]
                 state.validate_metadata_contracts("snapshot")
-                meta = state.copy_metadata_for_snapshot()
-                parent_state_snapshot = (
-                    parent_snapshot.all_states.get(key)
-                    if parent_snapshot is not None
-                    else None
-                )
-                live_resolved = state._live_resolved if state._live_resolved else {}
-
-                if (
-                    parent_state_snapshot is not None
-                    and parent_state_snapshot.parameters == state.parameters
-                    and parent_state_snapshot.saved_parameters == state._saved_parameters
-                ):
-                    parameters = parent_state_snapshot.parameters
-                    saved_parameters = parent_state_snapshot.saved_parameters
-                else:
-                    parameters, saved_parameters = (
-                        state.copy_parameter_pair_preserving_callable_identity(
-                            state.parameters,
-                            state._saved_parameters,
-                        )
-                    )
-
-                saved_resolved = (
-                    parent_state_snapshot.saved_resolved
-                    if (
-                        parent_state_snapshot is not None
-                        and parent_state_snapshot.saved_resolved == state._saved_resolved
-                    )
-                    else copy.deepcopy(state._saved_resolved)
-                )
-                provenance = (
-                    parent_state_snapshot.provenance
-                    if (
-                        parent_state_snapshot is not None
-                        and parent_state_snapshot.provenance == state._live_provenance
-                    )
-                    else copy.deepcopy(state._live_provenance)
-                )
-                snapshot_meta = (
-                    parent_state_snapshot.meta
-                    if (
-                        parent_state_snapshot is not None
-                        and parent_state_snapshot.meta == meta
-                    )
-                    else meta
-                )
-                live_resolved_snapshot = cls._copy_snapshot_mapping_with_parent_sharing(
-                    live_resolved,
-                    (
-                        parent_state_snapshot.live_resolved
-                        if parent_state_snapshot is not None
-                        else None
-                    ),
-                )
-                all_states[key] = StateSnapshot(
-                    saved_resolved=saved_resolved,
-                    live_resolved=live_resolved_snapshot,
-                    parameters=parameters,
-                    saved_parameters=saved_parameters,
-                    provenance=provenance,
-                    meta=snapshot_meta,
-                )
+                all_states[key] = captured[key]
         cls._snapshot_dirty_scopes.clear()
 
         # Create new snapshot
@@ -1442,6 +1451,7 @@ class ObjectStateRegistry:
     def _reconcile_time_travel_scopes(
         cls,
         transaction: TimeTravelTransaction,
+        prepared: Dict[str, PreparedStateRestore],
     ) -> TimeTravelScopeReconciliation:
         moved_to_limbo: Set[str] = set()
         restored_scopes: Set[str] = set()
@@ -1449,16 +1459,14 @@ class ObjectStateRegistry:
         for scope_key in transaction.current_scopes - transaction.snapshot_scopes:
             state = cls._states.pop(scope_key)
             cls._time_travel_limbo[scope_key] = state
-            cls._fire_unregister_callbacks(scope_key, state)
             moved_to_limbo.add(scope_key)
             logger.debug(f"⏱️ TIME_TRAVEL: Moved to limbo: {scope_key}")
 
         for scope_key in transaction.snapshot_scopes - transaction.current_scopes:
-            state = cls._pop_time_travel_restored_state(scope_key)
-            if state is None:
-                continue
+            state = prepared[scope_key].state
+            cls._time_travel_limbo.pop(scope_key, None)
+            cls._graveyard.pop(scope_key, None)
             cls._states[scope_key] = state
-            cls._fire_register_callbacks(scope_key, state)
             restored_scopes.add(scope_key)
 
         return TimeTravelScopeReconciliation(
@@ -1467,30 +1475,72 @@ class ObjectStateRegistry:
         )
 
     @classmethod
-    def _pop_time_travel_restored_state(cls, scope_key: str) -> Optional['ObjectState']:
-        if scope_key in cls._time_travel_limbo:
-            logger.debug(f"⏱️ TIME_TRAVEL: Restored from limbo: {scope_key}")
-            return cls._time_travel_limbo.pop(scope_key)
+    def _prepare_time_travel_states(cls, snapshot: Snapshot) -> Dict[str, PreparedStateRestore]:
+        """Validate and construct the entire scope graph before publishing it."""
 
-        if scope_key in cls._graveyard:
-            logger.debug(f"⏱️ TIME_TRAVEL: Resurrected from graveyard: {scope_key}")
-            return cls._graveyard.pop(scope_key)
-
-        logger.error(f"⏱️ TIME_TRAVEL: Cannot restore {scope_key} - not in limbo or graveyard")
-        return None
+        values = copy.deepcopy(snapshot.all_states)
+        prepared: Dict[str, PreparedStateRestore] = {}
+        pending = dict(values)
+        while pending:
+            progressed = False
+            for scope, state_snapshot in list(pending.items()):
+                binding = state_snapshot.construction
+                if not isinstance(binding, StateConstructionBinding):
+                    raise ValueError(f"Missing typed construction binding at {scope!r}.")
+                parent_scope = binding.parent_scope
+                if parent_scope is not None and parent_scope not in values:
+                    raise ValueError(f"Missing historical parent {parent_scope!r} for {scope!r}.")
+                if parent_scope is not None and parent_scope not in prepared:
+                    continue
+                state = (
+                    cls._states.get(scope)
+                    or cls._time_travel_limbo.get(scope)
+                    or cls._graveyard.get(scope)
+                )
+                parent = prepared[parent_scope].schema if parent_scope is not None else None
+                schema = binding.prepare(scope, state, parent)
+                schema.metadata = ObjectStateMetadataStore.from_snapshot(
+                    scope_id=scope, metadata=state_snapshot.meta
+                )
+                schema.validate_metadata_contracts("time_travel")
+                cls._apply_time_travel_snapshot_state(schema, state_snapshot, materialize=False)
+                binding.validate_scope_membership(schema, values.keys())
+                schema._raw_dirty = schema.parameters != schema._saved_parameters
+                schema._dirty_fields = schema._compute_dirty_fields()
+                schema._signature_diff_fields = schema._compute_signature_diff_fields()
+                prepared[scope] = PreparedStateRestore(
+                    snapshot=state_snapshot,
+                    state=state if state is not None else schema,
+                    schema=schema,
+                    diff=cls._time_travel_state_diff(
+                        state if state is not None else schema, state_snapshot
+                    ),
+                    construction_changed=(
+                        state is not None and state.construction_binding() != binding
+                    ),
+                    context=schema.prepare_history_global_context(),
+                )
+                del pending[scope]
+                progressed = True
+            if not progressed:
+                raise ValueError(f"Cyclic historical ObjectState parents: {sorted(pending)!r}.")
+        return prepared
 
     @classmethod
     def _restore_time_travel_states(
         cls,
         transaction: TimeTravelTransaction,
         reconciliation: TimeTravelScopeReconciliation,
+        prepared: Dict[str, PreparedStateRestore],
     ) -> TimeTravelChangeSet:
         scope_changes: Dict[str, TimeTravelScopeChange] = {}
 
-        for scope_key, state_snap in transaction.snapshot.all_states.items():
-            state = cls._states.get(scope_key)
-            if not state:
-                continue
+        for scope_key, restoration in prepared.items():
+            state = restoration.state
+            state_snap = restoration.snapshot
+            binding = state_snap.construction
+            parent = cls._states[binding.parent_scope] if binding.parent_scope is not None else None
+            state.apply_prepared_construction(binding, restoration.schema, parent)
 
             with TimeTravelProfiler.phase("objectstate.restore_scope", scope=scope_key):
                 scope_changes[scope_key] = cls._restore_time_travel_state(
@@ -1498,6 +1548,8 @@ class ObjectStateRegistry:
                     state=state,
                     state_snap=state_snap,
                     was_restored_from_limbo=scope_key in reconciliation.restored_scopes,
+                    construction_changed=restoration.construction_changed,
+                    diff=restoration.diff,
                 )
 
         return TimeTravelChangeSet(
@@ -1510,13 +1562,12 @@ class ObjectStateRegistry:
         cls,
         *,
         scope_key: str,
-        state: 'ObjectState',
+        state: "ObjectState",
         state_snap: StateSnapshot,
         was_restored_from_limbo: bool,
+        diff: TimeTravelStateDiff,
+        construction_changed: bool = False,
     ) -> TimeTravelScopeChange:
-        with TimeTravelProfiler.phase("objectstate.scope_diff", scope=scope_key):
-            diff = cls._time_travel_state_diff(state, state_snap)
-
         with TimeTravelProfiler.phase(
             "objectstate.scope_navigation_meta",
             scope=scope_key,
@@ -1541,20 +1592,15 @@ class ObjectStateRegistry:
                 meta_changed_values=diff.meta_changed_values,
             )
 
-        if not diff.requires_snapshot_apply and not was_restored_from_limbo:
-            return TimeTravelScopeChange(
-                changed_paths=diff.changed_paths,
-                changed_param_keys=set(diff.changed_param_values.keys()),
-                meta_changed_keys=set(diff.meta_changed_values.keys()),
-                is_concrete_dirty=state.parameters != state._saved_parameters,
-            )
-
         with TimeTravelProfiler.phase(
             "objectstate.scope_apply_snapshot",
             scope=scope_key,
             changed_paths=len(diff.changed_paths),
         ):
-            cls._apply_time_travel_snapshot_state(state, state_snap)
+            cls._apply_time_travel_snapshot_state(
+                state, state_snap,
+                materialize=(diff.requires_snapshot_apply or was_restored_from_limbo or construction_changed),
+            )
         is_concrete_dirty = state.parameters != state._saved_parameters
         if is_concrete_dirty:
             cls._log_time_travel_concrete_dirty(scope_key, state)
@@ -1564,6 +1610,7 @@ class ObjectStateRegistry:
             changed_param_keys=set(diff.changed_param_values.keys()),
             meta_changed_keys=set(diff.meta_changed_values.keys()),
             is_concrete_dirty=is_concrete_dirty,
+            construction_changed=construction_changed,
         )
 
     @classmethod
@@ -1747,33 +1794,29 @@ class ObjectStateRegistry:
 
     @staticmethod
     def _apply_time_travel_snapshot_state(
-        state: 'ObjectState',
+        state: "ObjectState",
         state_snap: StateSnapshot,
+        *,
+        materialize: bool = True,
     ) -> None:
-        parameters, saved_parameters = (
-            state.copy_parameter_pair_preserving_callable_identity(
-                state_snap.parameters,
-                state_snap.saved_parameters,
-            )
-        )
-        state._saved_resolved = copy.deepcopy(state_snap.saved_resolved)
-        state._live_resolved = copy.deepcopy(state_snap.live_resolved)
-        state._live_provenance = copy.deepcopy(state_snap.provenance)
-        state.parameters = parameters
+        # The complete historical graph was copied once during preparation.
+        state._saved_resolved = state_snap.saved_resolved
+        state._live_resolved = state_snap.live_resolved
+        state._live_provenance = state_snap.provenance
+        state.parameters = state_snap.parameters
         state._index_parameter_paths()
-        state._saved_parameters = saved_parameters
+        state._saved_parameters = state_snap.saved_parameters
         state._cached_object = None
         state._cached_object_applied = False
         state.metadata = ObjectStateMetadataStore.from_snapshot(
             scope_id=state.scope_id,
             metadata=state_snap.meta,
         )
-        if state._saved_parameters is None:
-            state._saved_parameters = copy.deepcopy(state.parameters)
-        state._sync_materialized_state(emit_notifications=False)
+        if materialize:
+            state._sync_materialized_state(emit_notifications=False)
 
     @staticmethod
-    def _log_time_travel_concrete_dirty(scope_key: str, state: 'ObjectState') -> None:
+    def _log_time_travel_concrete_dirty(scope_key: str, state: "ObjectState") -> None:
         for param_key in set(state.parameters.keys()) | set(state._saved_parameters.keys()):
             parameter_value = state.parameters.get(param_key)
             saved_value = state._saved_parameters.get(param_key)
@@ -1816,6 +1859,7 @@ class ObjectStateRegistry:
                 change.changed_paths
                 or change.changed_param_keys
                 or change.meta_changed_keys
+                or change.construction_changed
             ):
                 continue
             with TimeTravelProfiler.phase(
@@ -1869,6 +1913,30 @@ class ObjectStateRegistry:
         if transaction is None:
             return False
 
+        prepared = cls._prepare_time_travel_states(transaction.snapshot)
+        contexts = {
+            restoration.context.config_type: restoration.context
+            for restoration in prepared.values()
+            if restoration.context is not None
+        }
+        for state in cls._states.values():
+            previous_context = state.prepare_history_global_context()
+            if previous_context is not None and previous_context.config_type not in contexts:
+                contexts[previous_context.config_type] = GlobalContextValues(
+                    previous_context.config_type, None, None
+                )
+        contexts_before = [GlobalContextValues.capture(config_type) for config_type in contexts]
+        states_before = dict(cls._states)
+        limbo_before = dict(cls._time_travel_limbo)
+        graveyard_before = dict(cls._graveyard)
+        head_before = cls._current_head
+        dirty_before = set(cls._snapshot_dirty_scopes)
+        checkpoints = {
+            scope: ObjectStateTransactionCheckpoint.capture(
+                restoration.state, preserve_value_identity=True
+            )
+            for scope, restoration in prepared.items()
+        }
         cls._current_head = snapshot_id
         cls._in_time_travel = True
         try:
@@ -1876,7 +1944,7 @@ class ObjectStateRegistry:
                 "objectstate.reconcile_scopes",
                 snapshot=snapshot_id[:8],
             ):
-                reconciliation = cls._reconcile_time_travel_scopes(transaction)
+                reconciliation = cls._reconcile_time_travel_scopes(transaction, prepared)
             with TimeTravelProfiler.phase(
                 "objectstate.restore_states",
                 snapshot=snapshot_id[:8],
@@ -1885,7 +1953,35 @@ class ObjectStateRegistry:
                 change_set = cls._restore_time_travel_states(
                     transaction,
                     reconciliation,
+                    prepared,
                 )
+            for context in contexts.values():
+                context.apply()
+            clear_current_temp_global()
+            clear_mro_resolution_cache()
+        except Exception:
+            try:
+                for scope, restoration in reversed(list(prepared.items())):
+                    checkpoints[scope].restore(restoration.state, emit_notifications=False)
+            finally:
+                for context in contexts_before:
+                    context.apply()
+                cls._states = states_before
+                cls._time_travel_limbo = limbo_before
+                cls._graveyard = graveyard_before
+                cls._current_head = head_before
+                cls._snapshot_dirty_scopes = dirty_before
+            raise
+        finally:
+            cls._in_time_travel = False
+
+        cls._in_time_travel = True
+        try:
+            # Lifecycle subscribers only see a complete, rebound scope graph.
+            for scope in reconciliation.moved_to_limbo:
+                cls._fire_unregister_callbacks(scope, cls._time_travel_limbo[scope])
+            for scope in reconciliation.restored_scopes:
+                cls._fire_register_callbacks(scope, cls._states[scope])
             with TimeTravelProfiler.phase(
                 "objectstate.notify_resolved_all",
                 snapshot=snapshot_id[:8],
@@ -2171,6 +2267,7 @@ class ObjectStateRegistry:
             Dict with 'snapshots', 'timelines', 'current_head', 'current_timeline'.
         """
         return {
+            'format_version': 2,
             'snapshots': {sid: snap.to_dict() for sid, snap in cls._snapshots.items()},
             'timelines': [tl.to_dict() for tl in cls._timelines.values()],
             'current_head': cls._current_head,
@@ -2178,48 +2275,57 @@ class ObjectStateRegistry:
         }
 
     @classmethod
-    def import_history_from_dict(cls, data: Dict[str, Any]) -> None:
+    def import_history_from_dict(
+        cls, data: Dict[str, Any], *, migration: HistoryMigration | None = None
+    ) -> None:
         """Import a complete typed history document payload.
 
-        Only imports state data for scope_ids that currently exist in the registry.
-        Scopes in the snapshot but not in the app are skipped.
+        Version 2 includes exact construction declarations. Older documents
+        cannot prove callable ownership and are rejected without mutation.
 
         Args:
             data: Dict with 'snapshots', 'timelines', 'current_head', 'current_timeline'.
         """
-        cls._snapshots.clear()
-        cls._timelines.clear()
-        current_scopes = set(cls._states.keys())
-
-        for _snapshot_id, snapshot_data in data['snapshots'].items():
-            # Filter to only scopes that exist in current registry
-            filtered_states: Dict[str, StateSnapshot] = {}
-            for scope_id, state_data in snapshot_data['states'].items():
-                if scope_id in current_scopes:
-                    filtered_states[scope_id] = StateSnapshot(
-                        saved_resolved=state_data['saved_resolved'],
-                        live_resolved=state_data['live_resolved'],
-                        parameters=state_data['parameters'],
-                        saved_parameters=state_data['saved_parameters'],
-                        provenance=state_data['provenance'],
-                        meta=state_data['meta'],
-                    )
-
-            snapshot = Snapshot(
-                id=snapshot_data['id'],
-                timestamp=snapshot_data['timestamp'],
-                label=snapshot_data['label'],
-                triggering_scope=snapshot_data['triggering_scope'],
-                parent_id=snapshot_data['parent_id'],
-                all_states=filtered_states,
+        document, constructions = copy.deepcopy(
+            (data, {scope: state.construction_binding() for scope, state in cls._states.items()})
+        )
+        if document.get("format_version") != 2 and migration is not None:
+            document = migration.migrate(document, constructions)
+        if document.get("format_version") != 2:
+            raise ValueError(
+                "Unsupported ObjectState history version; construction ownership is required."
             )
-            cls._snapshots[snapshot.id] = snapshot
-
-        for timeline_data in data['timelines']:
-            timeline = Timeline.from_dict(timeline_data)
-            cls._timelines[timeline.name] = timeline
-        cls._current_timeline = data['current_timeline']
-        cls._current_head = data['current_head']
+        snapshots = {
+            sid: Snapshot.from_dict(payload) for sid, payload in document["snapshots"].items()
+        }
+        timelines = {
+            timeline.name: timeline for timeline in map(Timeline.from_dict, document["timelines"])
+        }
+        for sid, snapshot in snapshots.items():
+            if sid != snapshot.id or (
+                snapshot.parent_id is not None and snapshot.parent_id not in snapshots
+            ):
+                raise ValueError(f"Invalid ObjectState snapshot ancestry at {sid!r}.")
+        for sid, snapshot in snapshots.items():
+            ancestry = set()
+            ancestor = sid
+            while ancestor is not None:
+                if ancestor in ancestry:
+                    raise ValueError(f"Cyclic ObjectState snapshot ancestry at {sid!r}.")
+                ancestry.add(ancestor)
+                ancestor = snapshots[ancestor].parent_id
+            cls._prepare_time_travel_states(snapshot)
+        for timeline in timelines.values():
+            if timeline.head_id not in snapshots or timeline.base_id not in snapshots:
+                raise ValueError(f"Invalid ObjectState timeline {timeline.name!r}.")
+        if timelines and document["current_timeline"] not in timelines:
+            raise ValueError("Missing current ObjectState timeline.")
+        if document["current_head"] is not None and document["current_head"] not in snapshots:
+            raise ValueError("Missing current ObjectState snapshot.")
+        cls._snapshots = snapshots
+        cls._timelines = timelines
+        cls._current_timeline = document["current_timeline"]
+        cls._current_head = document["current_head"]
 
     @classmethod
     def save_history_to_file(cls, filepath: str) -> None:
@@ -2239,7 +2345,9 @@ class ObjectStateRegistry:
         logger.info(f"⏱️ Saved {len(cls._snapshots)} snapshots to {filepath}")
 
     @classmethod
-    def load_history_from_file(cls, filepath: str) -> None:
+    def load_history_from_file(
+        cls, filepath: str, *, migration: HistoryMigration | None = None
+    ) -> None:
         """Load and materialize a trusted ObjectState history document.
 
         Args:
@@ -2247,15 +2355,27 @@ class ObjectStateRegistry:
         """
         import dill
 
-        with open(filepath, "rb") as history_file:
-            cls.import_history_from_dict(dill.load(history_file))
-        restored_at_head = cls._current_head is None
-        snapshot_id = cls._current_snapshot_id()
-        if snapshot_id is not None:
-            if not cls.time_travel_to_snapshot(snapshot_id):
-                raise RuntimeError(
-                    "Loaded ObjectState history could not restore its current snapshot."
-                )
-            if restored_at_head:
-                cls._current_head = None
+        previous_history = (
+            cls._snapshots,
+            cls._timelines,
+            cls._current_timeline,
+            cls._current_head,
+        )
+        try:
+            with open(filepath, "rb") as history_file:
+                cls.import_history_from_dict(dill.load(history_file), migration=migration)
+            restored_at_head = cls._current_head is None
+            snapshot_id = cls._current_snapshot_id()
+            if snapshot_id is not None:
+                if not cls.time_travel_to_snapshot(snapshot_id):
+                    raise RuntimeError(
+                        "Loaded ObjectState history could not restore its current snapshot."
+                    )
+                if restored_at_head:
+                    cls._current_head = None
+        except Exception:
+            cls._snapshots, cls._timelines, cls._current_timeline, cls._current_head = (
+                previous_history
+            )
+            raise
         logger.info(f"⏱️ Loaded {len(cls._snapshots)} snapshots from {filepath}")
