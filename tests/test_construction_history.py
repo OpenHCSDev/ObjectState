@@ -188,6 +188,41 @@ def test_equal_signature_owner_change_records_and_notifies_without_fake_value_ch
     assert values == []
 
 
+def test_history_values_reconcile_to_current_construction_schema():
+    state = register(Config(value=7, excluded="declaration default"), "evolving")
+    snapshot_id = record("historical schema")
+    document = ObjectStateRegistry.export_history_to_dict()
+    for snapshot in document["snapshots"].values():
+        stored = snapshot["states"]["evolving"]
+        for mapping_name in (
+            "parameters",
+            "saved_parameters",
+            "saved_resolved",
+            "live_resolved",
+            "provenance",
+        ):
+            mapping = stored[mapping_name]
+            mapping.pop("excluded", None)
+            mapping["removed_field"] = "historical-only"
+
+    ObjectStateRegistry.clear()
+    fresh = register(Config(value=99, excluded="fresh value"), "evolving")
+    ObjectStateRegistry.import_history_from_dict(document)
+
+    assert ObjectStateRegistry.time_travel_to_snapshot(snapshot_id)
+    assert ObjectStateRegistry.get_by_scope("evolving") is fresh
+    assert fresh.parameters["value"] == 7
+    assert fresh.parameters["excluded"] == "declaration default"
+    assert fresh._saved_parameters["excluded"] == "declaration default"
+    assert fresh._live_resolved["excluded"] == "declaration default"
+    assert fresh._saved_resolved["excluded"] == "declaration default"
+    assert "removed_field" not in fresh.parameters
+    assert "removed_field" not in fresh._saved_parameters
+    assert "removed_field" not in fresh._live_resolved
+    assert "removed_field" not in fresh._saved_resolved
+    assert "removed_field" not in fresh._live_provenance
+
+
 def test_same_scope_registered_replacement_captures_exact_owner_with_equal_parameters():
     initial_state = register(first_callable, "registered-owner")
     initial = record("original registered owner")
