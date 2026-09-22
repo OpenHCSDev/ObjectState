@@ -4,7 +4,7 @@ Replaces LiveContextService._active_form_managers as the single source of truth.
 """
 
 from contextlib import contextmanager
-from dataclasses import dataclass, is_dataclass
+from dataclasses import dataclass, is_dataclass, replace
 import logging
 from typing import (
     Any,
@@ -1503,6 +1503,10 @@ class ObjectStateRegistry:
                     scope_id=scope, metadata=state_snapshot.meta
                 )
                 schema.validate_metadata_contracts("time_travel")
+                state_snapshot = cls._reconcile_snapshot_schema(
+                    schema,
+                    state_snapshot,
+                )
                 cls._apply_time_travel_snapshot_state(schema, state_snapshot, materialize=False)
                 binding.validate_scope_membership(schema, values.keys())
                 schema._raw_dirty = schema.parameters != schema._saved_parameters
@@ -1525,6 +1529,46 @@ class ObjectStateRegistry:
             if not progressed:
                 raise ValueError(f"Cyclic historical ObjectState parents: {sorted(pending)!r}.")
         return prepared
+
+    @staticmethod
+    def _reconcile_snapshot_schema(
+        schema: "ObjectState",
+        snapshot: StateSnapshot,
+    ) -> StateSnapshot:
+        """Project historical values onto the declaration's current field schema.
+
+        Construction owns the valid parameter surface. Historical snapshots own
+        values only for fields still declared on that surface. This gives newly
+        declared fields their construction-derived defaults and prevents removed
+        fields from surviving as detached historical parameters.
+        """
+
+        def reconcile(current: dict, historical: dict) -> dict:
+            return {
+                key: historical[key] if key in historical else value
+                for key, value in current.items()
+            }
+
+        return replace(
+            snapshot,
+            parameters=reconcile(schema.parameters, snapshot.parameters),
+            saved_parameters=reconcile(
+                schema._saved_parameters,
+                snapshot.saved_parameters,
+            ),
+            saved_resolved=reconcile(
+                schema._saved_resolved,
+                snapshot.saved_resolved,
+            ),
+            live_resolved=reconcile(
+                schema._live_resolved,
+                snapshot.live_resolved,
+            ),
+            provenance=reconcile(
+                schema._live_provenance,
+                snapshot.provenance,
+            ),
+        )
 
     @classmethod
     def _restore_time_travel_states(
