@@ -189,7 +189,7 @@ def test_equal_signature_owner_change_records_and_notifies_without_fake_value_ch
 
 
 def test_history_values_reconcile_to_current_construction_schema():
-    state = register(Config(value=7, excluded="declaration default"), "evolving")
+    register(Config(value=7, excluded="declaration default"), "evolving")
     snapshot_id = record("historical schema")
     document = ObjectStateRegistry.export_history_to_dict()
     for snapshot in document["snapshots"].values():

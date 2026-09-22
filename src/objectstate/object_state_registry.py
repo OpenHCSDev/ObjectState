@@ -1543,7 +1543,7 @@ class ObjectStateRegistry:
         fields from surviving as detached historical parameters.
         """
 
-        def reconcile(current: Dict, historical: Dict) -> Dict:
+        def reconcile(current: dict, historical: dict) -> dict:
             return {
                 key: historical[key] if key in historical else value
                 for key, value in current.items()
