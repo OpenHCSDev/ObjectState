@@ -796,7 +796,7 @@ class LazyDataclassFactory:
     """Generic factory for creating lazy dataclasses with flexible resolution."""
 
     @staticmethod
-    def registered_type_pairs() -> tuple[tuple[Type, Type], ...]:
+    def registered_type_pairs() -> tuple[tuple[type, type], ...]:
         """Project current lazy/public declarations without constructing values."""
         return tuple(_lazy_type_registry.items())
 
