@@ -3,7 +3,13 @@
 from dataclasses import dataclass
 from typing import ClassVar
 
-from objectstate import ObjectState, ObjectStateRegistry
+from objectstate import (
+    LazyDataclassFactory,
+    ObjectState,
+    ObjectStateRegistry,
+    set_base_config_type,
+    set_global_config_for_editing,
+)
 
 
 def _reset_registry_and_history() -> None:
@@ -105,6 +111,80 @@ def test_saved_baseline_preserves_callable_identity_values():
     assert state._saved_parameters[StepLike.callable_parameter()] is func
     assert state.dirty_fields == set()
     assert state.is_raw_dirty is False
+
+
+def test_one_shot_saved_resolution_detaches_mutables_and_preserves_callable_identity():
+    @dataclass
+    class Options:
+        values: list[str]
+
+    class Submitted:
+        def __init__(self, func, options: Options):
+            self.func = func
+            self.options = options
+
+    func = RebuiltCallable()
+    original = Submitted(func, Options(["saved"]))
+    resolved, provenance = ObjectState.resolve_saved_object(original)
+
+    class DelegatingOwner:
+        __objectstate_delegate__ = "declaration"
+
+        def __init__(self, declaration):
+            self.declaration = declaration
+
+    delegated, _ = ObjectState.resolve_saved_object(DelegatingOwner(original))
+    assert resolved.func is func
+    assert isinstance(delegated, Submitted)
+    assert delegated.func is func
+    assert provenance == {}
+    original.options.values.append("later")
+    assert resolved.options.values == ["saved"]
+    assert delegated.options.values == ["saved"]
+    resolved.options.values.append("compiled")
+    assert original.options.values == ["saved", "later"]
+
+
+def test_one_shot_saved_resolution_detaches_inherited_alias_graph():
+    @dataclass
+    class Options:
+        values: list[str] | None = None
+        mirror: list[str] | None = None
+        func: object = None
+
+    LazyOptions = LazyDataclassFactory.make_lazy_simple(Options)
+
+    @dataclass
+    class GlobalConfig:
+        options: Options
+
+    @dataclass
+    class Pipeline:
+        options: Options
+
+    @dataclass
+    class Submitted:
+        options: LazyOptions
+
+    set_base_config_type(GlobalConfig)
+    set_global_config_for_editing(GlobalConfig, GlobalConfig(Options()))
+    shared = ["saved"]
+    func = RebuiltCallable()
+    ancestor = Pipeline(Options(shared, shared, func))
+    resolved, provenance = ObjectState.resolve_saved_object(
+        Submitted(LazyOptions()),
+        scope_id="captured::step",
+        ancestor_objects_with_scopes=[("captured", ancestor)],
+    )
+    assert resolved.options.func is func
+    assert resolved.options.values is resolved.options.mirror
+    assert resolved.options.values is not shared
+    assert provenance["options.values"] == ("captured", Options)
+    shared.append("later")
+    assert resolved.options.values == ["saved"]
+    resolved.options.values.append("compiled")
+    assert resolved.options.mirror == ["saved", "compiled"]
+    assert shared == ["saved", "later"]
 
 
 def test_time_travel_preserves_clean_callable_identity_baseline():
