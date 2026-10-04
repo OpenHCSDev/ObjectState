@@ -66,10 +66,21 @@ def _merge_nested_dataclass(base, override, mask_with_none: bool = False):
     if not is_dataclass(base) or not is_dataclass(override):
         return override
 
+    from objectstate.lazy_factory import get_base_type_for_lazy, replace_raw
+
+    base_type = get_base_type_for_lazy(type(base)) or type(base)
+    override_type = get_base_type_for_lazy(type(override)) or type(override)
+    # Lazy overlays of the same owner inherit on the base instance. An authored
+    # nominal change instead owns the result, including subtype-only fields.
+    result_owner = base if base_type is override_type else override
+    base_fields = {field_info.name for field_info in fields(base)}
     merge_values = {}
     for field_info in fields(override):
         field_name = field_info.name
         override_value = object.__getattribute__(override, field_name)
+        if field_name not in base_fields:
+            # This field belongs only to the authored nominal owner.
+            continue
         base_value = object.__getattribute__(base, field_name)
 
         if override_value is None:
@@ -77,8 +88,9 @@ def _merge_nested_dataclass(base, override, mask_with_none: bool = False):
                 # None overrides base value (masking mode)
                 merge_values[field_name] = None
             else:
-                # None means "don't override" - keep base value
-                continue
+                # None means inherit, including when the result owner changes.
+                if result_owner is override:
+                    merge_values[field_name] = base_value
         elif is_dataclass(override_value):
             # Recursively merge nested dataclass
             if base_value is not None and is_dataclass(base_value):
@@ -89,13 +101,12 @@ def _merge_nested_dataclass(base, override, mask_with_none: bool = False):
             # Concrete value - use override
             merge_values[field_name] = override_value
 
-    # Merge with base using replace_raw to preserve None values
+    # Merge on the nominal owner using replace_raw to preserve None values
     # (dataclasses.replace triggers lazy resolution, baking in resolved values)
     if merge_values:
-        from objectstate.lazy_factory import replace_raw
-        return replace_raw(base, **merge_values)
+        return replace_raw(result_owner, **merge_values)
     else:
-        return base
+        return result_owner
 
 
 @contextmanager
