@@ -11,6 +11,7 @@ from objectstate import (
     clear_current_temp_global,
     merge_configs,
     extract_all_configs,
+    set_base_config_type,
 )
 
 
@@ -21,6 +22,57 @@ def test_config_context_basic(global_config):
         assert current is not None
         assert current.output_dir == "/data"
         assert current.num_workers == 8
+
+
+@pytest.mark.parametrize("mask_with_none", [False, True])
+def test_nested_context_preserves_authored_subtype_and_sibling_fields(mask_with_none):
+    @dataclass
+    class SpatialConfig:
+        width: int | None = 12
+
+    @dataclass
+    class VolumeConfig(SpatialConfig):
+        depth: int = 60
+
+    @dataclass
+    class SourceConfig:
+        names: tuple[str, ...] = ()
+        spatial: SpatialConfig = field(default_factory=SpatialConfig)
+
+    @dataclass
+    class GlobalConfig:
+        sources: SourceConfig = field(default_factory=SourceConfig)
+
+    set_base_config_type(GlobalConfig)
+    authored = GlobalConfig(SourceConfig(("DNA", "Mito"), VolumeConfig(width=None)))
+    with config_context(authored, mask_with_none=mask_with_none, use_live_global=False):
+        current = get_current_temp_global()
+        assert current.sources.names == ("DNA", "Mito")
+        assert type(current.sources.spatial) is VolumeConfig
+        assert current.sources.spatial.depth == 60
+        assert current.sources.spatial.width == (None if mask_with_none else 12)
+    assert authored.sources.spatial.width is None
+
+
+def test_nested_context_respects_explicit_subtype_downgrade():
+    @dataclass
+    class SpatialConfig:
+        width: int | None = 12
+
+    @dataclass
+    class VolumeConfig(SpatialConfig):
+        depth: int = 60
+
+    @dataclass
+    class GlobalConfig:
+        spatial: SpatialConfig = field(default_factory=SpatialConfig)
+
+    set_base_config_type(GlobalConfig)
+    with config_context(GlobalConfig(VolumeConfig(width=24)), use_live_global=False):
+        with config_context(GlobalConfig(SpatialConfig(width=None))):
+            current = get_current_temp_global()
+            assert type(current.spatial) is SpatialConfig
+            assert current.spatial.width == 24
 
 
 def test_config_context_nested(global_config, pipeline_config):
