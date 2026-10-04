@@ -70,6 +70,45 @@ class ConfigWithNestedTopology:
     nested: NestedTopology = field(default_factory=NestedTopology)
 
 
+@dataclass(frozen=True)
+class SpatialConfig:
+    width: int = 12
+
+
+@dataclass(frozen=True)
+class VolumeConfig(SpatialConfig):
+    depth: int = 60
+
+
+@dataclass
+class ConfigWithSpatialDomain:
+    spatial: SpatialConfig = field(default_factory=SpatialConfig)
+
+
+def test_nested_nominal_subtype_survives_raw_live_and_saved_reconstruction():
+    state = ObjectState(ConfigWithSpatialDomain(VolumeConfig()), scope_id="volume")
+    assert state.to_object().spatial == VolumeConfig()
+    assert state.to_saved_resolved_object().spatial == VolumeConfig()
+    assert state.to_resolved_object().spatial == VolumeConfig()
+
+    state.update_parameter("spatial.depth", 30)
+    assert state.to_object().spatial == VolumeConfig(depth=30)
+    assert state.to_resolved_object().spatial == VolumeConfig(depth=30)
+    assert state.to_saved_resolved_object().spatial == VolumeConfig(depth=60)
+
+
+def test_nested_nominal_owner_changes_rebuild_parameter_topology():
+    state = ObjectState(ConfigWithSpatialDomain(), scope_id="spatial")
+    state.update_object_instance(ConfigWithSpatialDomain(VolumeConfig(width=24)))
+    assert state.to_saved_resolved_object().spatial == VolumeConfig(width=24)
+    assert "spatial.depth" in state.parameters
+
+    state.update_object_instance(ConfigWithSpatialDomain(SpatialConfig(width=18)))
+    assert state.to_object().spatial == SpatialConfig(width=18)
+    assert state.to_saved_resolved_object().spatial == SpatialConfig(width=18)
+    assert "spatial.depth" not in state.parameters
+
+
 class DelegatedHost:
     __objectstate_delegate__ = "config"
 
