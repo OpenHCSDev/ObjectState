@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from typing import Any
 
 from objectstate.field_access import DottedFieldPath
@@ -22,6 +22,16 @@ class ParameterStructure:
     descriptions: dict[str, str | None] = field(default_factory=dict)
     exclusions: list[str] = field(default_factory=list)
     excluded_values: dict[str, Any] = field(default_factory=dict)
+
+    def is_container_parameter(
+        self, name: str, value: Any, parameters: dict[str, Any]
+    ) -> bool:
+        """Identify a nested dataclass entry from its actual extracted children."""
+
+        if value is None or not is_dataclass(type(value)):
+            return False
+        prefix = f"{name}."
+        return any(path.startswith(prefix) for path in parameters)
 
     @classmethod
     def for_target(

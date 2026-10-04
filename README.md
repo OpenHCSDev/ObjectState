@@ -132,6 +132,23 @@ state.restore_saved()
 ObjectStateRegistry.unregister(state)
 ```
 
+Headless compilation can resolve a submitted saved declaration without creating
+or registering an editing state:
+
+```python
+resolved_step, provenance = ObjectState.resolve_saved_object(
+    submitted_step,
+    scope_id="pipeline::step_0",
+    ancestor_objects_with_scopes=(("pipeline", saved_pipeline_config),),
+)
+```
+
+This uses the saved global context and the same scoped inheritance and nominal
+construction as editing states. The caller supplies saved ancestors in order
+from least to most specific. Provenance describes the same saved values; mutable
+results are detached together while callable identities and shared aliases stay
+intact. The existing live editor and saved-baseline APIs retain their lifecycle.
+
 ## Undo/Redo and Time Travel
 
 Git-like DAG history with branching timelines:
