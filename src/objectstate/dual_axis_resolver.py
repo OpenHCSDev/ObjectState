@@ -324,24 +324,23 @@ def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any,
         if _debug and field_name == 'well_filter':
             logger.debug(f"🔍   Phase 1 - Layer scope={scope_id!r}, checking same-type only (inner to outer)")
 
-        for config_instance in layer_configs.values():
-            instance_base = _normalize_to_base(type(config_instance))
-            if _debug and field_name in ('well_filter', 'enabled') and instance_base == container_base:
-                logger.debug(f"🔍     FOUND same-type config: {instance_base.__name__} @ scope={scope_id}")
-            if instance_base == container_base:  # Same-type only, no MRO
-                try:
-                    value = object.__getattribute__(config_instance, field_name)
-                    if _debug and field_name in ('well_filter', 'enabled'):
-                        logger.debug(f"🔍     {container_base.__name__}.{field_name} @ scope={scope_id} = {value!r} (from object.__getattribute__)")
-                    if value is not None:
-                        # Found concrete value in hierarchy - return immediately
-                        if _debug and field_name in ('well_filter', 'enabled'):
-                            logger.debug(f"🔍     FOUND concrete value in hierarchy at scope={scope_id!r}, returning {value!r}")
-                        return value, scope_id, container_base
-                    # Don't set fallback here - let Phase 2 walk MRO to find
-                    # the highest type that defines this field
-                except AttributeError:
-                    continue
+        # extract_all_configs admits one instance per canonical owner type.
+        config_instance = layer_configs.get(container_base)
+        if config_instance is None:
+            continue
+        try:
+            value = object.__getattribute__(config_instance, field_name)
+            if _debug and field_name in ('well_filter', 'enabled'):
+                logger.debug(f"🔍     {container_base.__name__}.{field_name} @ scope={scope_id} = {value!r} (from object.__getattribute__)")
+            if value is not None:
+                # Found concrete value in hierarchy - return immediately
+                if _debug and field_name in ('well_filter', 'enabled'):
+                    logger.debug(f"🔍     FOUND concrete value in hierarchy at scope={scope_id!r}, returning {value!r}")
+                return value, scope_id, container_base
+            # Don't set fallback here - let Phase 2 walk MRO to find
+            # the highest type that defines this field
+        except AttributeError:
+            continue
 
     # PHASE 2: MRO fallback - no concrete value in hierarchy, try MRO inheritance
     #
@@ -367,25 +366,24 @@ def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any,
 
         # Walk scopes from inner→outer for this MRO type
         for scope_id, layer_configs in reversed(all_layer_configs):
-            for config_instance in layer_configs.values():
-                instance_base = _normalize_to_base(type(config_instance))
-                if instance_base != mro_type:
-                    continue
+            config_instance = layer_configs.get(mro_type)
+            if config_instance is None:
+                continue
 
-                saw_type_anywhere = True
-                last_scope_for_type = scope_id  # update as we walk inner→outer (last = outermost)
+            saw_type_anywhere = True
+            last_scope_for_type = scope_id  # update as we walk inner→outer (last = outermost)
 
-                try:
-                    value = object.__getattribute__(config_instance, field_name)
-                except AttributeError:
-                    continue
+            try:
+                value = object.__getattribute__(config_instance, field_name)
+            except AttributeError:
+                continue
 
-                if _debug and field_name == 'well_filter':
-                    logger.debug(f"🔍     MRO: {mro_type.__name__}.{field_name} @ {scope_id!r} = {value!r}")
+            if _debug and field_name == 'well_filter':
+                logger.debug(f"🔍     MRO: {mro_type.__name__}.{field_name} @ {scope_id!r} = {value!r}")
 
-                if value is not None:
-                    # Found MRO-inherited value
-                    return value, scope_id, mro_type
+            if value is not None:
+                # Found MRO-inherited value
+                return value, scope_id, mro_type
 
         # No non-None found for this MRO type across any scope.
         # Record fallback for the FIRST MRO type that exists anywhere.

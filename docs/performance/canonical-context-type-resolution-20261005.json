@@ -1,0 +1,45 @@
+{
+  "status": "PASS_PRIVATE_SAVED_CONSUMER_ONLY",
+  "baseline": "Installed ObjectState 1.3.0 from merged 7db151907a52a95743fbeae5a64220b28bc56690, PythonIntrospect 0.2.0",
+  "change": "resolve_with_provenance queries the existing canonical type-keyed maps admitted by extract_all_configs instead of scanning every value and reconstructing each owner type.",
+  "controls": {
+    "passed": 27,
+    "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m pytest -q -o addopts= -p no:cacheprovider tests/test_context_manager.py tests/test_object_state_restore.py tests/test_callable_baseline.py tests/test_placeholder.py",
+    "laws": "Canonical map admission, duplicate/invalid declarations, MRO/None/provenance, real constructors/default factories, callable identity, detached mutable alias graphs"
+  },
+  "one_pair": [
+    {
+      "case": "Illumination Example3",
+      "first_job": true,
+      "steps": 10,
+      "baseline_seconds": 0.08565246313810349,
+      "candidate_seconds": 0.0676199309527874,
+      "saved_seconds": 0.018032532185316086
+    },
+    {
+      "case": "Original 3D monolayer",
+      "first_job": false,
+      "steps": 31,
+      "baseline_seconds": 0.2247260957956314,
+      "candidate_seconds": 0.19058690778911114,
+      "saved_seconds": 0.03413918800652027
+    }
+  ],
+  "parity": "Exact typed configuration/steps, provenance, canonical source and ancestor scopes PASS",
+  "guards": "Before/after source, actual eight installed dependency trees and wheel metadata, four native ABIs, authored input sources and helper hashes PASS; all owned processes terminal",
+  "preserved": "Context constructors/merges and extraction epochs, selected live field reads, same-type scope precedence, MRO class-first precedence, None inheritance, AttributeError behavior, fallback provenance and direct-owner default factories",
+  "limits": [
+    "ONE saved-owner pair, not a whole compiler, ordinary runtime or total speedup measurement.",
+    "Normal full Registry READY, document parsing, orchestrator initialization, graph/provider admission and execution were outside the clocks.",
+    "3D follows Illumination in each process; it is not an independent cold first-job observation.",
+    "This generalized cleanup is not the dominant performance route; the first-case 18 ms saving does not close the remaining total target gap.",
+    "Arbitrary corruption of the admitted map/type keys or in-operation instance __class__ rebinding was not established equivalent. Mutable field values remain live.",
+    "The public resolver accepting manually supplied maps is unchanged. No new cache, value snapshot or installed dependency mutation."
+  ],
+  "custody": {
+    "private_packet": "20261005/canonical-context-type-resolution-v1",
+    "baseline_resolver_sha256": "17fcda62912050bdcdd018bee2fca5f81c2f4940c5f27f2af3dc19b7691e1fb0",
+    "candidate_resolver_sha256": "e8e939bfb97ad2d07cb0f4893e43229fc30926274e7bdc7a4491264feeaeae97",
+    "version_change": "1.3.1 is a separate patch release; immutable 1.3.0 tags and installed wheel are untouched."
+  }
+}
