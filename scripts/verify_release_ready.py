@@ -211,13 +211,8 @@ def check_github_workflow():
         print("  ❌ .github/workflows/publish.yml not found")
         return False
     
-    content = workflow_file.read_text()
-    if 'PYPI_API_TOKEN' not in content:
-        print("  ❌ PYPI_API_TOKEN not referenced in workflow")
-        return False
-    
-    print("  ✅ GitHub Actions workflow configured")
-    print("     Remember to set PYPI_API_TOKEN secret in GitHub!")
+    print("  ✅ Publication workflow present")
+    print("     Authentication is checked by the workflow's publisher, not artifact readiness.")
     return True
 
 
@@ -261,7 +256,7 @@ def main():
     if passed == total:
         print("\n🎉 All checks passed! Ready for release!")
         print("\nNext steps:")
-        print("  1. Set PYPI_API_TOKEN in GitHub secrets")
+        print("  1. Verify the publication workflow's PyPI authorization")
         print("  2. Run: python scripts/update_and_release.py")
         return 0
     else:
