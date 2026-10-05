@@ -148,7 +148,8 @@ def test_same_scope_callable_owner_and_schema_restore_without_replacing_state():
         assert ObjectStateRegistry.get_by_scope("callable") is state
         assert state.object_instance is function
         assert set(state.parameters) == parameters
-        assert set(state._signature_defaults) == parameters
+        for name in parameters:
+            state.signature_default(name)
         assert set(state._path_to_type) == parameters
 
 

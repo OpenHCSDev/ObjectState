@@ -529,7 +529,7 @@ class ObjectState:
             Dictionary mapping dotted parameter paths to their descriptions (value may be None).
             E.g., {'well_filter_config.well_filter': 'Filter wells by...'}
         """
-        return dict(self._parameter_descriptions)
+        return self._parameter_structure.descriptions
 
     def type_for_path(self, field_path: str) -> ParameterOwner:
         """Return the ObjectState-recorded type for a dotted field path.
@@ -769,27 +769,13 @@ class ObjectState:
 
         Returns dict mapping param_name -> info object with .param_type, .default_value, and .description attributes.
         """
-        from types import SimpleNamespace
-
-        exclude_params = exclude_params or []
-        result = {}
-
         # NOTE: python_introspect is a required dependency; fail loud if missing.
         # UnifiedParameterAnalyzer is responsible for correctness guarantees:
         # - defaults come from type/signature (never from instance)
         # - current instance values are accessed in a lazy-safe way (if needed)
         from python_introspect import UnifiedParameterAnalyzer
 
-        ua_info = UnifiedParameterAnalyzer.analyze(obj, exclude_params=exclude_params)
-        for name, info in ua_info.items():
-            if name in exclude_params:
-                continue
-            result[name] = SimpleNamespace(
-                param_type=getattr(info, "param_type", Any),
-                default_value=getattr(info, "default_value", None),
-                description=getattr(info, "description", None),
-            )
-        return result
+        return UnifiedParameterAnalyzer.analyze(obj, exclude_params=exclude_params)
 
     @staticmethod
     def _get_nested_dataclass_type(param_type: Any) -> type | None:
@@ -1219,7 +1205,10 @@ class ObjectState:
         raw_value = self.parameters.get(path.value, MISSING)
         resolved_value = self.get_resolved_value(path.value)
         saved_resolved_value = self.get_saved_resolved_value(path.value)
-        signature_default_value = self._signature_defaults.get(path.value, MISSING)
+        declaration = self._parameter_structure.declarations.get(path.value)
+        signature_default_value = (
+            declaration.default_value if declaration is not None else MISSING
+        )
 
         return build_subfield_semantic_index(
             owner_field_path=path,
@@ -1558,22 +1547,6 @@ class ObjectState:
         self._parameter_structure.direct_paths = value
 
     @property
-    def _signature_defaults(self) -> dict[str, Any]:
-        return self._parameter_structure.defaults
-
-    @_signature_defaults.setter
-    def _signature_defaults(self, value: dict[str, Any]) -> None:
-        self._parameter_structure.defaults = value
-
-    @property
-    def _parameter_descriptions(self) -> dict[str, str | None]:
-        return self._parameter_structure.descriptions
-
-    @_parameter_descriptions.setter
-    def _parameter_descriptions(self, value: dict[str, str | None]) -> None:
-        self._parameter_structure.descriptions = value
-
-    @property
     def _exclude_param_names(self) -> list[str]:
         return self._parameter_structure.exclusions
 
@@ -1893,16 +1866,17 @@ class ObjectState:
 
         # Use signature defaults (CLASS defaults), not instance values
         # This ensures reset goes back to None for lazy fields, not saved concrete values
-        default_value = self._signature_defaults.get(param_name)
+        declaration = self._parameter_structure.declarations.get(param_name)
+        default_value = declaration.default_value if declaration is not None else None
         self.update_parameter(param_name, default_value)
 
     def signature_default(self, param_name: str) -> Any:
         """Return the signature default recorded for one flat parameter path."""
-        if param_name not in self._signature_defaults:
+        if param_name not in self._parameter_structure.declarations:
             raise KeyError(
                 f"No signature default recorded for parameter {param_name!r}."
             )
-        return self._signature_defaults[param_name]
+        return self._parameter_structure.declarations[param_name].default_value
 
     def get_current_values(self) -> dict[str, Any]:
         """
@@ -2014,14 +1988,13 @@ class ObjectState:
         """Compute signature-diff set from parameters vs defaults.
 
         Any field that differs from its signature default is included.
-        Nested dataclass container fields are implicitly excluded since
-        they don't have entries in _signature_defaults (only leaf fields do).
+        Defaults come from the same declarations used for reset, including
+        declared nested containers.
         """
         result = set()
         for k, v in self.parameters.items():
-            if k in self._signature_defaults:
-                # Direct dict key access - no special behavior to avoid
-                sig_default = self._signature_defaults[k]
+            if k in self._parameter_structure.declarations:
+                sig_default = self._parameter_structure.declarations[k].default_value
                 is_diff = v != sig_default
                 if is_diff:
                     result.add(k)
@@ -2577,10 +2550,7 @@ class ObjectState:
                 except AttributeError:
                     current_value = info.default_value
 
-            # Store description entry for the dotted path. Even if the specific
-            # parameter has no description, ensure the dotted key exists so
-            # callers can rely on presence of the full path (value may be None).
-            structure.descriptions[dotted_path] = getattr(info, 'description', None)
+            structure.declarations[dotted_path] = info
 
             # Check if this is a nested dataclass
             # First try from type annotation, then fall back to checking actual value
@@ -2599,13 +2569,6 @@ class ObjectState:
                 # Store the nested dataclass instance in parameters (needed for UI rendering)
                 parameters[dotted_path] = current_value
 
-                # Container resets follow the same declared-default authority as
-                # leaf resets. Lazy dataclass fields retain their intentional
-                # ``None`` default, while callable parameters with concrete
-                # dataclass defaults can be restored after an authored override
-                # is removed.
-                structure.defaults[dotted_path] = info.default_value
-
                 # Recurse into nested dataclass for child fields
                 cls._extract_all_parameters_flat(
                     current_value, parameters, structure, prefix=dotted_path, exclude_params=[]
@@ -2615,9 +2578,6 @@ class ObjectState:
                 parameters[dotted_path] = current_value
                 # Store the owner target that has this field.
                 structure.owner_paths[dotted_path] = owner_target
-                # Store signature default for reset functionality (flattened)
-                # info.default_value is now guaranteed to be the CLASS signature default
-                structure.defaults[dotted_path] = info.default_value
 
     def _replace_parameter_structure(
         self,

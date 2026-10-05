@@ -6,6 +6,8 @@ import copy
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from typing import Any
 
+from python_introspect import ParameterInfo
+
 from objectstate.field_access import DottedFieldPath
 from objectstate.parameter_owner import ParameterOwner
 
@@ -18,10 +20,21 @@ class ParameterStructure:
     direct_paths: dict[DottedFieldPath, tuple[DottedFieldPath, ...]] = field(
         default_factory=dict
     )
-    defaults: dict[str, Any] = field(default_factory=dict)
-    descriptions: dict[str, str | None] = field(default_factory=dict)
+    declarations: dict[str, ParameterInfo] = field(default_factory=dict)
     exclusions: list[str] = field(default_factory=list)
     excluded_values: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def defaults(self) -> dict[str, Any]:
+        """Derive editor reset values from admitted parameter declarations."""
+
+        return {path: info.default_value for path, info in self.declarations.items()}
+
+    @property
+    def descriptions(self) -> dict[str, str | None]:
+        """Request presentation help only when a consumer reads it."""
+
+        return {path: info.description for path, info in self.declarations.items()}
 
     def is_container_parameter(
         self, name: str, value: Any, parameters: dict[str, Any]
