@@ -40,7 +40,8 @@ def test_field_inspection_reports_value_edit_state_and_types():
     label = FieldInspection.of(state, "label")
     count = FieldInspection.of(state, "count")
 
-    assert (label.raw_value, label.resolved_value, label.resolved_value_available) == ("y", "y", True)
+    assert (label.raw_value, label.resolved_value) == ("y", "y")
+    assert label.resolved_value_available
     assert label.dirty and label.last_changed and label.semantic_markers[0] == DIRTY_MARKER
     assert count.signature_diff and not count.dirty
     assert count.semantic_markers == (SIGNATURE_DIFF_MARKER,)

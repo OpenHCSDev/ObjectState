@@ -348,7 +348,7 @@ class ObjectStateRegistry:
         cls._snapshot_dirty_scopes.add(cls._normalize_scope_id(scope_id))
 
     @classmethod
-    def _normalize_scope_id(cls, scope_id: Optional[str]) -> ScopeKey:
+    def _normalize_scope_id(cls, scope_id: str | None) -> ScopeKey:
         """Return the registry key: None and "" both represent the global scope."""
         return ScopeKey(scope_id)
 
@@ -2287,7 +2287,7 @@ class ObjectStateRegistry:
         }
 
     @classmethod
-    def import_history_from_dict(cls, data: Dict[str, Any]) -> None:
+    def import_history_from_dict(cls, data: dict[str, Any]) -> None:
         """Import a complete typed history document payload.
 
         Version 2 includes exact construction declarations. Older documents
