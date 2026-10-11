@@ -69,13 +69,13 @@ Get the source scope_id and type for an inherited field value:
     state = ObjectStateRegistry.get_by_scope("plate_123::step_0")
 
     # Get provenance for a field
-    provenance = state.get_provenance("well_filter")
+    provenance = state.get_provenance("partition_filter")
     if provenance:
         source_scope, source_type = provenance
-        print(f"well_filter comes from scope: {source_scope}")
-        print(f"well_filter comes from type: {source_type.__name__}")
+        print(f"partition_filter comes from scope: {source_scope}")
+        print(f"partition_filter comes from type: {source_type.__name__}")
     else:
-        print("well_filter is explicitly set on this object")
+        print("partition_filter is explicitly set on this object")
 
 **Returns:**
 * ``Tuple[str, type]`` if the value is inherited
@@ -95,7 +95,7 @@ Resolve a field value AND find its provenance source in ONE walk:
     # Resolve value and get provenance simultaneously
     value, source_scope, source_type = resolve_with_provenance(
         container_type=PathPlanningConfig,
-        field_name="well_filter"
+        field_name="partition_filter"
     )
 
     print(f"Value: {value}")
@@ -105,7 +105,7 @@ Resolve a field value AND find its provenance source in ONE walk:
 **Parameters:**
 
 * ``container_type``: The type containing the field (e.g., ``LazyPathPlanningConfig``)
-* ``field_name``: Name of the field to find provenance for (e.g., ``"well_filter"``)
+* ``field_name``: Name of the field to find provenance for (e.g., ``"partition_filter"``)
 
 **Returns:**
 
@@ -126,7 +126,7 @@ Convenience wrapper that returns only the scope and type (not the value):
 
     source_scope, source_type = get_field_provenance(
         container_type=PathPlanningConfig,
-        field_name="well_filter"
+        field_name="partition_filter"
     )
 
     print(f"Field comes from: {source_scope} ({source_type.__name__})")
@@ -165,7 +165,7 @@ Use provenance to understand where a value comes from:
     state = ObjectStateRegistry.get_by_scope("plate_123::step_0")
 
     # Check where various fields come from
-    for field_name in ["well_filter", "output_dir", "num_workers"]:
+    for field_name in ["partition_filter", "output_dir", "num_workers"]:
         provenance = state.get_provenance(field_name)
         if provenance:
             source_scope, source_type = provenance
@@ -177,7 +177,7 @@ Example output:
 
 .. code-block:: text
 
-    well_filter: inherited from  (GlobalPipelineConfig)
+    partition_filter: inherited from  (GlobalPipelineConfig)
     output_dir: inherited from plate_123 (PlateConfig)
     num_workers: explicitly set on this object
 
@@ -209,7 +209,7 @@ Trace the full inheritance chain for a field:
             print("  → Value is a class default (no override)")
 
     # Use it
-    trace_field_origin(PathPlanningConfig, "well_filter")
+    trace_field_origin(PathPlanningConfig, "partition_filter")
     trace_field_origin(PathPlanningConfig, "output_dir_suffix")
 
 UI Integration
@@ -242,8 +242,8 @@ Provenance information can be displayed in UI elements to help users understand 
         }
 
     # Display in UI
-    info = get_field_display_info("well_filter")
-    print(f"well_filter: {info['value']} [{info['origin']}]")
+    info = get_field_display_info("partition_filter")
+    print(f"partition_filter: {info['value']} [{info['origin']}]")
 
 Provenance in Snapshots
 -------------------------

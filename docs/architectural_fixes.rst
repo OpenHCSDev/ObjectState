@@ -65,8 +65,8 @@ Fix 2: Enable Real-Time MRO Inheritance
 
 **Problem:** During ``_recompute_invalid_fields()``, the code was using
 ``self.object_instance`` (original saved state) instead of reconstructing from current
-parameters. This broke real-time MRO inheritance—editing ``WellFilterConfig.well_filter``
-wouldn't update placeholders for inheriting fields like ``PathPlanningConfig.well_filter``.
+parameters. This broke real-time MRO inheritance—editing ``PartitionFilterConfig.partition_filter``
+wouldn't update placeholders for inheriting fields like ``PathPlanningConfig.partition_filter``.
 
 **Solution:** Reconstruct current object from parameters without delegate sync:
 
@@ -233,7 +233,7 @@ Testing & Validation
 These fixes were validated through:
 
 1. **Manual testing**: Save GlobalPipelineConfig → no crash, descendants clear dirty markers
-2. **Real-time inheritance**: Edit WellFilterConfig → inheriting fields update immediately
+2. **Real-time inheritance**: Edit PartitionFilterConfig → inheriting fields update immediately
 3. **Legacy compatibility**: Old snapshots with ``saved_parameters=None`` load correctly
 4. **Multi-level inheritance**: Global → Pipeline → Step inheritance works correctly
 

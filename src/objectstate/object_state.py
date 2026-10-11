@@ -50,8 +50,8 @@ class FieldProxy:
     """Type-safe proxy for accessing ObjectState fields via dotted attribute syntax.
 
     Provides IDE autocomplete while using flat internal storage:
-    - External API: state.fields.well_filter_config.well_filter (type-safe)
-    - Internal: state.parameters['well_filter_config.well_filter'] (flat dict)
+    - External API: state.fields.partition_filter_config.partition_filter (type-safe)
+    - Internal: state.parameters['partition_filter_config.partition_filter'] (flat dict)
     """
 
     def __init__(self, state: 'ObjectState', path: str, field_type: type):
@@ -460,7 +460,7 @@ class ObjectState:
 
         Returns:
             FieldProxy for accessing fields with IDE autocomplete:
-            state.fields.well_filter_config.well_filter → resolved value
+            state.fields.partition_filter_config.partition_filter → resolved value
         """
         return FieldProxy(self, '', type(self.object_instance))
 
@@ -528,7 +528,7 @@ class ObjectState:
 
         Returns:
             Dictionary mapping dotted parameter paths to their descriptions (value may be None).
-            E.g., {'well_filter_config.well_filter': 'Filter wells by...'}
+            E.g., {'partition_filter_config.partition_filter': 'Filter partitions by...'}
         """
         return self._parameter_structure.descriptions
 
@@ -576,7 +576,7 @@ class ObjectState:
 
         Args:
             callback: Function that takes a Set[str] of changed dotted paths.
-                      E.g., {'processing_config.group_by', 'well_filter_config.well_filter'}
+                      E.g., {'processing_config.group_by', 'partition_filter_config.partition_filter'}
         """
         if callback not in self._on_resolved_changed_callbacks:
             self._on_resolved_changed_callbacks.append(callback)
@@ -1020,7 +1020,7 @@ class ObjectState:
                 if current_live is not None:
                     # Do a quick partial update to set the new value in LIVE thread-local
                     if '.' in param_name:
-                        # Nested field like 'well_filter_config.well_filter'
+                        # Nested field like 'partition_filter_config.partition_filter'
                         parts = param_name.split('.')
                         nested_config_name = parts[0]
                         nested_field_name = '.'.join(parts[1:])
@@ -1045,14 +1045,6 @@ class ObjectState:
                 # Clear cached context so resolution uses updated LIVE thread-local
                 clear_current_temp_global()
 
-                # DEBUG: Log well_filter value
-                if 'well_filter' in param_name:
-                    verify_live = get_live_global_config(obj_type)
-                    try:
-                        wf_value = object.__getattribute__(verify_live.well_filter_config, 'well_filter')
-                        logger.debug(f"🔍 LIVE thread-local updated BEFORE invalidation: {obj_type.__name__}.{param_name} = {value}, well_filter={wf_value}")
-                    except:
-                        pass
             except Exception as e:
                 logger.warning(f"Failed to update LIVE thread-local: {e}")
 
@@ -1061,17 +1053,14 @@ class ObjectState:
         changed_paths = self._ensure_live_resolved(notify_flash=False)
         for changed_param in changed_semantic_params:
             # SCOPE + TYPE + FIELD AWARE INVALIDATION:
-            # Get the CONTAINER type for this field (e.g., WellFilterConfig for 'well_filter_config.well_filter')
-            # This is critical for sibling inheritance: when WellFilterConfig.well_filter changes,
-            # we need to invalidate PathPlanningConfig.well_filter (which inherits from WellFilterConfig)
+            # Get the CONTAINER type for this field (e.g., PartitionFilterConfig for 'partition_filter_config.partition_filter')
+            # This is critical for sibling inheritance: when PartitionFilterConfig.partition_filter changes,
+            # we need to invalidate PathPlanningConfig.partition_filter (which inherits from PartitionFilterConfig)
             container_type = self._path_to_type.get(changed_param, type(self.object_instance))
 
             # Extract leaf field name for invalidation matching
             leaf_field_name = changed_param.split('.')[-1] if '.' in changed_param else changed_param
 
-            # DEBUG: Log invalidation for well_filter
-            if 'well_filter' in changed_param:
-                logger.debug(f"🔍 Invalidating descendants: scope={self.scope_id}, type={container_type.__name__}, field={leaf_field_name}")
 
             ObjectStateRegistry.invalidate_by_type_and_scope(
                 scope_id=self.scope_id,
@@ -1114,7 +1103,7 @@ class ObjectState:
         """Get resolved value for a field from the bulk snapshot.
 
         Args:
-            param_name: Field name to resolve (can be dotted path like 'path_planning_config.well_filter')
+            param_name: Field name to resolve (can be dotted path like 'path_planning_config.partition_filter')
 
         Returns:
             Resolved value from _live_resolved snapshot.
@@ -1140,9 +1129,6 @@ class ObjectState:
 
         result = self._live_resolved.get(param_name)
 
-        # DEBUG: Log well_filter resolution
-        if 'well_filter' in param_name:
-            logger.debug(f"🔍 get_resolved_value: scope={self.scope_id!r}, obj_type={type(self.object_instance).__name__}, param={param_name}, value={result}")
 
         return result
 
@@ -1157,7 +1143,7 @@ class ObjectState:
         dataclass with all sub-fields populated from saved resolved values.
 
         Args:
-            param_name: Field name to resolve (can be dotted path like 'path_planning_config.well_filter')
+            param_name: Field name to resolve (can be dotted path like 'path_planning_config.partition_filter')
 
         Returns:
             Saved resolved value from _saved_resolved snapshot.
@@ -1296,13 +1282,13 @@ class ObjectState:
         Used for click-to-source navigation in the UI.
 
         The source_type may differ from the local container type due to MRO inheritance.
-        For example, WellFilterConfig.well_filter might inherit from PathPlanningConfig.
+        For example, PartitionFilterConfig.partition_filter might inherit from PathPlanningConfig.
 
         NOTE: Returns provenance even when the resolved value is None (signature default).
         A "concrete None" just means the class default is None and nothing overrode it.
 
         Args:
-            param_name: Field name (can be dotted path like 'path_planning_config.well_filter')
+            param_name: Field name (can be dotted path like 'path_planning_config.partition_filter')
 
         Returns:
             (source_scope_id, source_type): The scope and type that provided the value,
@@ -1412,7 +1398,7 @@ class ObjectState:
 
         Args:
             container_type: Type of the containing config (e.g., PathPlanningConfig)
-            field_name: Field name within that config (e.g., 'well_filter')
+            field_name: Field name within that config (e.g., 'partition_filter')
 
         Returns:
             Resolved value, or None if not found
@@ -2507,7 +2493,7 @@ class ObjectState:
 
         Args:
             obj: Object to extract from (dataclass instance, callable, or regular object)
-            prefix: Current path prefix (e.g., 'well_filter_config')
+            prefix: Current path prefix (e.g., 'partition_filter_config')
             exclude_params: List of top-level parameter names to exclude
         """
         exclude_params = exclude_params or []
@@ -2669,8 +2655,8 @@ class ObjectState:
             if '.' not in field_name:
                 # Check if this field's TYPE is a dataclass (not the instance value)
                 # We need to check the TYPE because the instance value might be stale
-                # (e.g., self.parameters['well_filter_config'] might have well_filter=2
-                # even though self.parameters['well_filter_config.well_filter'] = None)
+                # (e.g., self.parameters['partition_filter_config'] might have partition_filter=2
+                # even though self.parameters['partition_filter_config.partition_filter'] = None)
                 field_type = self._path_to_type.get(field_name)
                 # CRITICAL FIX: _path_to_type stores CONTAINER type for leaf fields,
                 # but FIELD type for nested dataclass fields. We must distinguish:
@@ -2683,7 +2669,7 @@ class ObjectState:
                 )
                 if is_nested_dataclass:
                     # Nested dataclass: ALWAYS recursively reconstruct from flat storage
-                    # This ensures we pick up changes to nested fields like 'well_filter_config.well_filter'
+                    # This ensures we pick up changes to nested fields like 'partition_filter_config.partition_filter'
                     logger.debug(f"🔧 to_object: Reconstructing nested dataclass '{field_name}' from flat storage")
                     reconstructed = self._reconstruct_from_prefix(field_name)
                     logger.debug(f"🔧 to_object: Reconstructed '{field_name}' type={type(reconstructed).__name__}")
@@ -2752,7 +2738,7 @@ class ObjectState:
         """Recursively reconstruct dataclass from flat parameters.
 
         Args:
-            prefix: Current path prefix (e.g., 'well_filter_config')
+            prefix: Current path prefix (e.g., 'partition_filter_config')
 
         Returns:
             Reconstructed dataclass instance
@@ -2794,9 +2780,6 @@ class ObjectState:
             else:
                 # Direct field of this object
                 direct_fields[remainder] = value
-                # DEBUG
-                if prefix == 'well_filter_config' and remainder == 'well_filter':
-                    logger.debug(f"🔍 _reconstruct: Found direct field {prefix}.{remainder} = {value}")
 
         # Reconstruct nested dataclasses first
         for nested_name in nested_prefixes:
@@ -2818,17 +2801,10 @@ class ObjectState:
         if not prefix:
             direct_fields.update(self._excluded_params)
 
-        # DEBUG: Log what we're reconstructing
-        if prefix == 'well_filter_config':
-            logger.debug(f"🔍 _reconstruct_from_prefix: prefix={prefix}, direct_fields={direct_fields}")
 
         # Instantiate the dataclass with ALL fields including None values
         result = obj_type(**direct_fields)
 
-        # DEBUG: Log the result
-        if prefix == 'well_filter_config':
-            raw_well_filter = object.__getattribute__(result, 'well_filter')
-            logger.debug(f"🔍 _reconstruct_from_prefix: Reconstructed {prefix} with well_filter={raw_well_filter}")
 
         return result
 

@@ -423,7 +423,7 @@ class LazyDataclass(LazyResolutionDataclass):
     All lazy dataclasses inherit from this, regardless of naming convention:
     - PipelineConfig (lazy version of GlobalPipelineConfig)
     - LazyPathPlanningConfig
-    - LazyWellFilterConfig
+    - LazyPartitionFilterConfig
     - etc.
 
     ANTI-DUCK-TYPING: Use isinstance(obj, LazyDataclass) instead of hasattr() checks.
@@ -585,7 +585,7 @@ def bind_lazy_resolution_to_class(cls: Type) -> None:
     """
     Add lazy __getattribute__ to an existing class.
 
-    This enables concrete classes (like WellFilterConfig stored in
+    This enables concrete classes (like PartitionFilterConfig stored in
     GlobalPipelineConfig) to resolve None values via MRO without
     changing their static defaults.
 
@@ -1382,15 +1382,15 @@ class abbreviation:
 
     Can be used as:
     1. Class decorator: @abbreviation('wfc') to set class abbreviation
-    2. In Annotated types: Annotated[Type, abbreviation('wf')] for field abbreviation
+    2. In Annotated types: Annotated[Type, abbreviation('pf')] for field abbreviation
 
     Examples:
         @abbreviation('wfc')
         @global_pipeline_config
         @dataclass
-        class WellFilterConfig:
-            well_filter: Annotated[Optional[int], abbreviation('wf')] = None
-            well_filter_mode: Annotated[WellFilterMode, abbreviation('wfm')] = WellFilterMode.INCLUDE
+        class PartitionFilterConfig:
+            partition_filter: Annotated[Optional[int], abbreviation('pf')] = None
+            partition_filter_mode: Annotated[PartitionFilterMode, abbreviation('pfm')] = PartitionFilterMode.INCLUDE
 
     Args:
         name: The abbreviation string
@@ -1539,7 +1539,7 @@ def create_global_default_decorator(target_config_class: Type):
             abbreviation: Short abbreviation for config class name used in grouped previews (e.g., "pp" for PathPlanningConfig).
                          Registered in GROUP_ABBREVIATIONS_REGISTRY.
             field_abbreviations: Dict mapping field names to abbreviations for compact display.
-                          E.g., {'well_filter': 'wf', 'num_workers': 'W'}. Registered in FIELD_ABBREVIATIONS_REGISTRY.
+                          E.g., {'partition_filter': 'pf', 'num_workers': 'W'}. Registered in FIELD_ABBREVIATIONS_REGISTRY.
             always_viewable_fields: List of field names that should always be shown in list item previews
                           for this config type. E.g., ['enabled', 'persistent']. Registered in ALWAYS_VIEWABLE_FIELDS_REGISTRY.
         """

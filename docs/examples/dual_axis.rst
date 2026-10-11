@@ -197,9 +197,9 @@ The ``inherit_as_none`` parameter enables proper dual-axis inheritance when usin
 
    # Base class with some fields
    @dataclass
-   class StepWellFilterConfig:
+   class StepPartitionFilterConfig:
        persistent: bool = True
-       well_filter: str = None
+       partition_filter: str = None
        timeout: int = 30
 
    # Another base class with different fields
@@ -212,11 +212,11 @@ The ``inherit_as_none`` parameter enables proper dual-axis inheritance when usin
    # Use inherit_as_none for multiple inheritance
    @global_pipeline_config(inherit_as_none=True)  # Default behavior
    @dataclass
-   class StreamingConfig(StepWellFilterConfig, StreamingDefaults):
+   class StreamingConfig(StepPartitionFilterConfig, StreamingDefaults):
        """Config using multiple inheritance.
 
        With inherit_as_none=True, all inherited fields
-       (persistent, well_filter, timeout, host, port, transport_mode)
+       (persistent, partition_filter, timeout, host, port, transport_mode)
        are automatically set to None for proper lazy resolution.
        """
        stream_type: str = "napari"
@@ -227,7 +227,7 @@ The ``inherit_as_none`` parameter enables proper dual-axis inheritance when usin
    print(f"stream_type: {config.stream_type}")        # "napari" (explicit)
    print(f"buffer_size: {config.buffer_size}")        # 1024 (explicit)
    print(f"persistent: {config.persistent}")          # None (inherited, set to None)
-   print(f"well_filter: {config.well_filter}")        # None (was already None)
+   print(f"partition_filter: {config.partition_filter}")        # None (was already None)
    print(f"timeout: {config.timeout}")                # None (inherited, set to None)
    print(f"host: {config.host}")                      # None (inherited, set to None)
    print(f"port: {config.port}")                      # None (inherited, set to None)
@@ -242,9 +242,9 @@ This enables polymorphic access to inherited fields without type-specific attrib
    from objectstate import config_context
 
    # Create a base config with values
-   base_config = StepWellFilterConfig(
+   base_config = StepPartitionFilterConfig(
        persistent=False,
-       well_filter="A01",
+       partition_filter="A01",
        timeout=60
    )
 
@@ -261,7 +261,7 @@ This enables polymorphic access to inherited fields without type-specific attrib
            # - stream_type from streaming_config ("custom")
            # - buffer_size from streaming_config (2048)
            # - persistent from base_config (False)
-           # - well_filter from base_config ("A01")
+           # - partition_filter from base_config ("A01")
            # - timeout from base_config (60)
            # - host, port, transport_mode from StreamingDefaults
            pass
@@ -275,7 +275,7 @@ You can disable this behavior if you want inherited fields to keep their default
 
    @global_pipeline_config(inherit_as_none=False)
    @dataclass
-   class ConcreteStreamingConfig(StepWellFilterConfig, StreamingDefaults):
+   class ConcreteStreamingConfig(StepPartitionFilterConfig, StreamingDefaults):
        """Config with concrete inherited defaults.
 
        Inherited fields keep their default values from parent classes.
@@ -283,8 +283,8 @@ You can disable this behavior if you want inherited fields to keep their default
        stream_type: str = "napari"
 
    config = ConcreteStreamingConfig()
-   print(f"persistent: {config.persistent}")          # True (from StepWellFilterConfig)
-   print(f"timeout: {config.timeout}")                # 30 (from StepWellFilterConfig)
+   print(f"persistent: {config.persistent}")          # True (from StepPartitionFilterConfig)
+   print(f"timeout: {config.timeout}")                # 30 (from StepPartitionFilterConfig)
    print(f"host: {config.host}")                      # "localhost" (from StreamingDefaults)
    print(f"port: {config.port}")                      # 5000 (from StreamingDefaults)
 

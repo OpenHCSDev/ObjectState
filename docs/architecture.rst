@@ -348,20 +348,20 @@ When you use the generated decorator, the decorated class is automatically injec
 
    @global_pipeline_config
    @dataclass
-   class WellFilterConfig:
-       well_filter: str = None
+   class PartitionFilterConfig:
+       partition_filter: str = None
        mode: str = "include"
 
    # After module loading, GlobalPipelineConfig has:
-   # - well_filter_config: WellFilterConfig = WellFilterConfig()
-   # And LazyWellFilterConfig is auto-created
+   # - partition_filter_config: PartitionFilterConfig = PartitionFilterConfig()
+   # And LazyPartitionFilterConfig is auto-created
 
 **Injection process:**
 
 1. Decorated classes are registered for injection
 2. At module load completion, ``_inject_all_pending_fields()`` is called
-3. Field name is snake_case of class name (``WellFilterConfig`` → ``well_filter_config``)
-4. Lazy version is created (``LazyWellFilterConfig``)
+3. Field name is snake_case of class name (``PartitionFilterConfig`` → ``partition_filter_config``)
+4. Lazy version is created (``LazyPartitionFilterConfig``)
 5. Both the field and lazy class are added to the global config
 
 **Benefits:**
@@ -384,9 +384,9 @@ Sets all inherited fields from parent classes to ``None`` by default:
 .. code-block:: python
 
    @dataclass
-   class StepWellFilterConfig:
+   class StepPartitionFilterConfig:
        persistent: bool = True
-       well_filter: str = None
+       partition_filter: str = None
 
    @dataclass
    class StreamingDefaults:
@@ -395,10 +395,10 @@ Sets all inherited fields from parent classes to ``None`` by default:
 
    @global_pipeline_config(inherit_as_none=True)  # Default
    @dataclass
-   class StreamingConfig(StepWellFilterConfig, StreamingDefaults):
+   class StreamingConfig(StepPartitionFilterConfig, StreamingDefaults):
        """Uses multiple inheritance.
 
-       All inherited fields (persistent, well_filter, host, port)
+       All inherited fields (persistent, partition_filter, host, port)
        are automatically set to None for proper lazy resolution.
        """
        stream_type: str = "napari"

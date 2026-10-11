@@ -132,8 +132,8 @@ class LiveContextResolver:
         base object. This allows the lazy resolution system to walk up the MRO to find the
         inherited value from parent context.
 
-        Example: PipelineConfig form resets well_filter_config.enabled to None
-        → dataclasses.replace(saved_pipeline_config, well_filter_config=LazyWellFilterConfig(enabled=None))
+        Example: PipelineConfig form resets partition_filter_config.enabled to None
+        → dataclasses.replace(saved_pipeline_config, partition_filter_config=LazyPartitionFilterConfig(enabled=None))
         → When resolving enabled, the None triggers MRO walk to GlobalPipelineConfig
         """
         if live_values is None or not is_dataclass(base_obj):
