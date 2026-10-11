@@ -812,7 +812,8 @@ class ObjectStateRegistry:
         2. Its container type inherits from target_base_type (has target_base_type in MRO)
 
         This handles sibling inheritance: when PartitionFilterConfig.partition_filter changes,
-        both 'partition_filter_config.partition_filter' and 'step_partition_filter_config.partition_filter'
+        both 'partition_filter_config.partition_filter' and
+            'step_partition_filter_config.partition_filter'
         are invalidated (since StepPartitionFilterConfig inherits from PartitionFilterConfig).
 
         Args:

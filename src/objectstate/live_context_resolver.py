@@ -133,7 +133,8 @@ class LiveContextResolver:
         inherited value from parent context.
 
         Example: PipelineConfig form resets partition_filter_config.enabled to None
-        → dataclasses.replace(saved_pipeline_config, partition_filter_config=LazyPartitionFilterConfig(enabled=None))
+        → dataclasses.replace(saved_pipeline_config,
+            partition_filter_config=LazyPartitionFilterConfig(enabled=None))
         → When resolving enabled, the None triggers MRO walk to GlobalPipelineConfig
         """
         if live_values is None or not is_dataclass(base_obj):

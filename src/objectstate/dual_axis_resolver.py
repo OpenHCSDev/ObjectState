@@ -186,7 +186,8 @@ def resolve_field_inheritance(
             continue
 
         # Look for a config instance of this MRO class type in the available configs
-        # Normalize both sides: LazyPartitionFilterConfig instance matches PartitionFilterConfig in MRO
+        # Normalize both sides: a LazyPartitionFilterConfig instance matches
+        # PartitionFilterConfig in the MRO
         mro_base = _normalize_to_base(mro_class)
         for config_instance in available_configs.values():
             instance_base = _normalize_to_base(type(config_instance))

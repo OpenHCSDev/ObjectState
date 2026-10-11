@@ -187,8 +187,9 @@ def config_context(obj, mask_with_none: bool = False, use_live_global: bool = Tr
                                 # to_base_config() passes None values to base class constructor,
                                 # but frozen dataclasses with non-Optional defaults substitute the
                                 # default value for None. This breaks cross-hierarchy inheritance.
-                                # Example: LazyPartitionFilterConfig(partition_filter_mode=None) becomes
-                                # PartitionFilterConfig(partition_filter_mode=INCLUDE) instead of keeping None.
+                                # Example: LazyPartitionFilterConfig(partition_filter_mode=None)
+                                # becomes PartitionFilterConfig(partition_filter_mode=INCLUDE)
+                                # instead of keeping None.
                                 #
                                 # Instead, pass lazy dataclass directly to _merge_nested_dataclass,
                                 # which uses object.__getattribute__ to get raw values and correctly

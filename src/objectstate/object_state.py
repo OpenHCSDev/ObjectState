@@ -576,7 +576,8 @@ class ObjectState:
 
         Args:
             callback: Function that takes a Set[str] of changed dotted paths.
-                      E.g., {'processing_config.group_by', 'partition_filter_config.partition_filter'}
+                      E.g., {'processing_config.group_by',
+                          'partition_filter_config.partition_filter'}
         """
         if callback not in self._on_resolved_changed_callbacks:
             self._on_resolved_changed_callbacks.append(callback)
@@ -1053,9 +1054,11 @@ class ObjectState:
         changed_paths = self._ensure_live_resolved(notify_flash=False)
         for changed_param in changed_semantic_params:
             # SCOPE + TYPE + FIELD AWARE INVALIDATION:
-            # Get the CONTAINER type for this field (e.g., PartitionFilterConfig for 'partition_filter_config.partition_filter')
-            # This is critical for sibling inheritance: when PartitionFilterConfig.partition_filter changes,
-            # we need to invalidate PathPlanningConfig.partition_filter (which inherits from PartitionFilterConfig)
+            # Get the CONTAINER type for this field (e.g., PartitionFilterConfig for
+            # 'partition_filter_config.partition_filter')
+            # This is critical for sibling inheritance: when
+            # PartitionFilterConfig.partition_filter changes, we need to invalidate
+            # PathPlanningConfig.partition_filter (which inherits from PartitionFilterConfig)
             container_type = self._path_to_type.get(changed_param, type(self.object_instance))
 
             # Extract leaf field name for invalidation matching
@@ -1103,7 +1106,8 @@ class ObjectState:
         """Get resolved value for a field from the bulk snapshot.
 
         Args:
-            param_name: Field name to resolve (can be dotted path like 'path_planning_config.partition_filter')
+            param_name: Field name to resolve (can be dotted path like
+                'path_planning_config.partition_filter')
 
         Returns:
             Resolved value from _live_resolved snapshot.
@@ -1143,7 +1147,8 @@ class ObjectState:
         dataclass with all sub-fields populated from saved resolved values.
 
         Args:
-            param_name: Field name to resolve (can be dotted path like 'path_planning_config.partition_filter')
+            param_name: Field name to resolve (can be dotted path like
+                'path_planning_config.partition_filter')
 
         Returns:
             Saved resolved value from _saved_resolved snapshot.
@@ -2669,7 +2674,8 @@ class ObjectState:
                 )
                 if is_nested_dataclass:
                     # Nested dataclass: ALWAYS recursively reconstruct from flat storage
-                    # This ensures we pick up changes to nested fields like 'partition_filter_config.partition_filter'
+                    # This ensures we pick up changes to nested fields like
+                    # 'partition_filter_config.partition_filter'
                     logger.debug(f"🔧 to_object: Reconstructing nested dataclass '{field_name}' from flat storage")
                     reconstructed = self._reconstruct_from_prefix(field_name)
                     logger.debug(f"🔧 to_object: Reconstructed '{field_name}' type={type(reconstructed).__name__}")

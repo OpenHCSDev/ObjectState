@@ -7,9 +7,9 @@ import pytest
 from pycodify import Assignment, FormatContext, generate_python_source
 
 from objectstate import LazyDataclassFactory
-from objectstate.lazy_factory import LazyResolutionDataclass
 from objectstate.codegen import field_needs_source
 from objectstate.field_access import DataclassFieldAccess
+from objectstate.lazy_factory import LazyResolutionDataclass
 
 
 class Speed:

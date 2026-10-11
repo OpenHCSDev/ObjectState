@@ -1390,7 +1390,9 @@ class abbreviation:
         @dataclass
         class PartitionFilterConfig:
             partition_filter: Annotated[Optional[int], abbreviation('pf')] = None
-            partition_filter_mode: Annotated[PartitionFilterMode, abbreviation('pfm')] = PartitionFilterMode.INCLUDE
+            partition_filter_mode: Annotated[
+                type[PartitionFilterMode], abbreviation('pfm')
+            ] = IncludePartitions
 
     Args:
         name: The abbreviation string
@@ -1539,7 +1541,8 @@ def create_global_default_decorator(target_config_class: Type):
             abbreviation: Short abbreviation for config class name used in grouped previews (e.g., "pp" for PathPlanningConfig).
                          Registered in GROUP_ABBREVIATIONS_REGISTRY.
             field_abbreviations: Dict mapping field names to abbreviations for compact display.
-                          E.g., {'partition_filter': 'pf', 'num_workers': 'W'}. Registered in FIELD_ABBREVIATIONS_REGISTRY.
+                          E.g., {'partition_filter': 'pf', 'num_workers': 'W'}. Registered in
+                              FIELD_ABBREVIATIONS_REGISTRY.
             always_viewable_fields: List of field names that should always be shown in list item previews
                           for this config type. E.g., ['enabled', 'persistent']. Registered in ALWAYS_VIEWABLE_FIELDS_REGISTRY.
         """
