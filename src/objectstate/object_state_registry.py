@@ -22,7 +22,6 @@ import copy
 
 from objectstate.object_state_metadata import ObjectStateMetadataStore
 from objectstate.construction_binding import StateConstructionBinding
-from objectstate.history_migration import HistoryMigration
 from objectstate.scope_key import ScopeKey
 from objectstate.global_config import GlobalContextValues
 from objectstate.context_manager import clear_current_temp_global
@@ -2282,9 +2281,7 @@ class ObjectStateRegistry:
         }
 
     @classmethod
-    def import_history_from_dict(
-        cls, data: Dict[str, Any], *, migration: HistoryMigration | None = None
-    ) -> None:
+    def import_history_from_dict(cls, data: Dict[str, Any]) -> None:
         """Import a complete typed history document payload.
 
         Version 2 includes exact construction declarations. Older documents
@@ -2293,11 +2290,7 @@ class ObjectStateRegistry:
         Args:
             data: Dict with 'snapshots', 'timelines', 'current_head', 'current_timeline'.
         """
-        document, constructions = copy.deepcopy(
-            (data, {scope: state.construction_binding() for scope, state in cls._states.items()})
-        )
-        if document.get("format_version") != 2 and migration is not None:
-            document = migration.migrate(document, constructions)
+        document = copy.deepcopy(data)
         if document.get("format_version") != 2:
             raise ValueError(
                 "Unsupported ObjectState history version; construction ownership is required."
@@ -2352,9 +2345,7 @@ class ObjectStateRegistry:
         logger.info(f"⏱️ Saved {len(cls._snapshots)} snapshots to {filepath}")
 
     @classmethod
-    def load_history_from_file(
-        cls, filepath: str, *, migration: HistoryMigration | None = None
-    ) -> None:
+    def load_history_from_file(cls, filepath: str) -> None:
         """Load and materialize a trusted ObjectState history document.
 
         Args:
@@ -2370,7 +2361,7 @@ class ObjectStateRegistry:
         )
         try:
             with open(filepath, "rb") as history_file:
-                cls.import_history_from_dict(dill.load(history_file), migration=migration)
+                cls.import_history_from_dict(dill.load(history_file))
             restored_at_head = cls._current_head is None
             snapshot_id = cls._current_snapshot_id()
             if snapshot_id is not None:
