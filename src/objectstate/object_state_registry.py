@@ -23,6 +23,7 @@ import copy
 from objectstate.object_state_metadata import ObjectStateMetadataStore
 from objectstate.construction_binding import StateConstructionBinding
 from objectstate.history_migration import HistoryMigration
+from objectstate.scope_key import ScopeKey
 from objectstate.global_config import GlobalContextValues
 from objectstate.context_manager import clear_current_temp_global
 from objectstate.dual_axis_resolver import clear_mro_resolution_cache
@@ -348,9 +349,9 @@ class ObjectStateRegistry:
         cls._snapshot_dirty_scopes.add(cls._normalize_scope_id(scope_id))
 
     @classmethod
-    def _normalize_scope_id(cls, scope_id: Optional[str]) -> str:
-        """Normalize scope_id: None and "" both represent global scope."""
-        return scope_id if scope_id is not None else ""
+    def _normalize_scope_id(cls, scope_id: Optional[str]) -> ScopeKey:
+        """Return the registry key: None and "" both represent the global scope."""
+        return ScopeKey(scope_id)
 
     @classmethod
     def register(cls, state: 'ObjectState', _skip_snapshot: bool = False) -> None:
@@ -426,14 +427,11 @@ class ObjectStateRegistry:
         scope_key = cls._normalize_scope_id(scope_id)
 
         # Find all scopes to delete: exact match + descendants
-        scopes_to_delete = []
-        for key in cls._states.keys():
-            # Exact match
-            if key == scope_key:
-                scopes_to_delete.append(key)
-            # Descendant (starts with scope_key::)
-            elif scope_key and key.startswith(scope_key + "::"):
-                scopes_to_delete.append(key)
+        scopes_to_delete = [
+            key
+            for key in cls._states.keys()
+            if key == scope_key or (scope_key and scope_key.contains(key))
+        ]
 
         # Delete all matching scopes and fire callbacks
         # NOTE: Unlike plain unregister(), this is often used for hierarchical deletes.
@@ -640,17 +638,9 @@ class ObjectStateRegistry:
         """
         scope_key = cls._normalize_scope_id(scope_id)
 
-        # Build list of ancestor scope keys (least-specific to most-specific)
-        # e.g., "/plate::step_0" -> ["", "/plate", "/plate::step_0"]
-        ancestors = [""]  # Global scope always included
-        if scope_key:
-            parts = scope_key.split("::")
-            for i in range(len(parts)):
-                ancestors.append("::".join(parts[:i+1]))
-
-        # Get objects from ancestor scopes
+        # Get objects from ancestor scopes, least-specific to most-specific
         objects = []
-        for ancestor_key in ancestors:
+        for ancestor_key in scope_key.ancestors():
             state = cls._states.get(ancestor_key)
             if state:
                 if use_saved:
@@ -693,16 +683,9 @@ class ObjectStateRegistry:
         """
         scope_key = cls._normalize_scope_id(scope_id)
 
-        # Build list of ancestor scope keys (least-specific to most-specific)
-        ancestors = [""]  # Global scope always included
-        if scope_key:
-            parts = scope_key.split("::")
-            for i in range(len(parts)):
-                ancestors.append("::".join(parts[:i+1]))
-
         # Get (scope_id, object) tuples from ancestor scopes
         results: List[Tuple[str, Any]] = []
-        for ancestor_key in ancestors:
+        for ancestor_key in scope_key.ancestors():
             state = cls._states.get(ancestor_key)
             if state:
                 # Get object - either with or without delegate sync
@@ -809,20 +792,8 @@ class ObjectStateRegistry:
                 continue
 
             # SCOPE CHECK: must be at or below changed scope
-            # Global scope (empty string) affects ALL states
-            if changed_scope == "":
-                # Global scope - always a descendant (or self if also global)
-                if field_name == 'well_filter':
-                    logger.debug(f"🔍   Checking state: scope={state_scope!r}, obj_type={type(state.object_instance).__name__}")
-                logger.debug(f"[SCOPE] Global change affects state scope={state_scope!r}")
-            else:
-                # Non-global: check exact match or descendant
-                prefix = changed_scope + "::"
-                is_descendant = state_scope.startswith(prefix)
-                if not (is_self or is_descendant):
-                    logger.debug(f"[SCOPE] SKIP: changed_scope={changed_scope!r} does not affect state_scope={state_scope!r}")
-                    continue
-                logger.debug(f"[SCOPE] MATCH: changed_scope={changed_scope!r} affects state_scope={state_scope!r}")
+            if not changed_scope.contains(state_scope):
+                continue
 
             # TYPE + FIELD CHECK: find matching nested state and invalidate field
             cls._invalidate_field_in_matching_states(state, base_changed_type, field_name, invalidate_saved)
@@ -1353,17 +1324,9 @@ class ObjectStateRegistry:
         return tuple(
             sorted(
                 cls._states.items(),
-                key=lambda item: (cls._scope_depth(item[0]), item[0]),
+                key=lambda item: (item[0].depth, item[0]),
             )
         )
-
-    @staticmethod
-    def _scope_depth(scope_id: str) -> int:
-        """Return hierarchy depth for ObjectState scope identifiers."""
-
-        if not scope_id:
-            return 0
-        return scope_id.count("::") + 1
 
     @classmethod
     def _prune_unreachable_snapshots(cls) -> None:
