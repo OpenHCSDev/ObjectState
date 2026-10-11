@@ -503,7 +503,7 @@ class ObjectStateRegistry:
         cls._snapshots.clear()
         cls._timelines.clear()
         cls._current_head = None
-        cls._current_timeline = "main"
+        cls._current_timeline = cls.MAIN_BRANCH
         cls._atomic_depth = 0
         cls._atomic_label = None
         cls._atomic_triggering_scope = None
@@ -896,11 +896,12 @@ class ObjectStateRegistry:
     # This allows time travel to snapshots that reference deleted objects.
     _graveyard: Dict[str, 'ObjectState'] = {}
 
-    # Timelines (branches): Named branches that point to a head snapshot
-    # "main" is always created automatically on first snapshot
+    # Timelines (branches): Named branches that point to a head snapshot.
+    # MAIN_BRANCH is created automatically on the first snapshot.
     # head_id always points to a valid key in _snapshots (guaranteed by construction)
+    MAIN_BRANCH = "main"
     _timelines: Dict[str, Timeline] = {}
-    _current_timeline: str = "main"
+    _current_timeline: str = MAIN_BRANCH
 
     @classmethod
     @contextmanager
@@ -1003,7 +1004,7 @@ class ObjectStateRegistry:
                         del cls._snapshots[snapshot_id]
                     cls._timelines = timelines_before
                     cls._current_head = current_head_before
-                    cls._current_timeline = current_timeline_before or "main"
+                    cls._current_timeline = current_timeline_before or cls.MAIN_BRANCH
                     cls._in_time_travel = bool(in_time_travel_before)
                     if snapshot_dirty_scopes_before is not None:
                         cls._snapshot_dirty_scopes = snapshot_dirty_scopes_before
@@ -1276,7 +1277,7 @@ class ObjectStateRegistry:
                 name=cls._current_timeline,
                 head_id=snapshot.id,
                 base_id=snapshot.id,
-                description="Main timeline" if cls._current_timeline == "main" else "",
+                description="Main timeline" if cls._current_timeline == cls.MAIN_BRANCH else "",
             )
             logger.info(f"⏱️ BRANCH: Created '{cls._current_timeline}' timeline")
         else:
@@ -2154,6 +2155,11 @@ class ObjectStateRegistry:
     def is_time_traveling(cls) -> bool:
         """Check if currently viewing historical state (not at head)."""
         return cls._current_head is not None
+
+    @classmethod
+    def is_restoring_snapshot(cls) -> bool:
+        """Whether a snapshot restore is in progress, so views refresh restored values."""
+        return cls._in_time_travel
 
     # ========== BRANCH OPERATIONS ==========
 
