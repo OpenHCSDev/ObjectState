@@ -1,17 +1,22 @@
-"""Python source for lazy dataclasses, through pycodify.
+"""Python source for lazily resolved dataclasses, through pycodify.
 
-Importing this module registers :class:`LazyDataclassFormatter`. A lazy
-dataclass is written from its raw field values, never its resolved ones: a
-``None`` field inherits from context and stays ``None`` in the source.
+Importing this module registers two formatters. Both write raw field values,
+never resolved ones: a ``None`` field inherits from context and stays ``None``
+in the source.
 
-Clean mode writes a field when it was passed to the constructor or holds a
-concrete value; an inherited ``None`` is omitted, and so is a nested lazy
-dataclass that carries nothing. Full mode writes every field.
+- :class:`LazyResolutionFormatter` (any :class:`LazyResolutionDataclass`):
+  clean mode writes the fields whose raw value differs from the field default.
+- :class:`LazyDataclassFormatter` (factory-made :class:`LazyDataclass`): clean
+  mode writes a field when it was passed to the constructor or holds a concrete
+  value; an inherited ``None`` is omitted, and so is a nested lazy dataclass
+  that carries nothing.
+
+Full mode writes every field.
 """
 
 from __future__ import annotations
 
-from dataclasses import fields
+from dataclasses import MISSING, Field, fields, is_dataclass
 
 from pycodify import (
     FormatContext,
@@ -22,7 +27,7 @@ from pycodify import (
 )
 
 from objectstate.field_access import DataclassFieldAccess
-from objectstate.lazy_factory import LazyDataclass
+from objectstate.lazy_factory import LazyDataclass, LazyResolutionDataclass
 
 
 def _set_field_names(value: LazyDataclass) -> frozenset[str]:
@@ -38,20 +43,25 @@ def lazy_dataclass_carries_values(value: LazyDataclass) -> bool:
     )
 
 
-def lazy_raw_values_equal(left: LazyDataclass, right: LazyDataclass) -> bool:
-    """Whether two lazy dataclasses have the same type and raw field values."""
+def _is_instance_of_dataclass(value: object) -> bool:
+    return is_dataclass(value) and not isinstance(value, type)
 
-    if type(left) is not type(right):
-        return False
-    for field in fields(left):
-        left_value = DataclassFieldAccess.raw_value(left, field.name)
-        right_value = DataclassFieldAccess.raw_value(right, field.name)
-        if isinstance(left_value, LazyDataclass) and isinstance(right_value, LazyDataclass):
-            if not lazy_raw_values_equal(left_value, right_value):
-                return False
-        elif left_value != right_value:
+
+def raw_values_equal(left: object, right: object) -> bool:
+    """Whether two values are equal, comparing dataclasses by raw field values."""
+
+    if _is_instance_of_dataclass(left) and _is_instance_of_dataclass(right):
+        if type(left) is not type(right):
             return False
-    return True
+        return all(
+            raw_values_equal(
+                DataclassFieldAccess.raw_value(left, field.name),
+                DataclassFieldAccess.raw_value(right, field.name),
+            )
+            for field in fields(left)
+            if field.init
+        )
+    return left == right
 
 
 def field_needs_source(current: object, default: object, context: FormatContext) -> bool:
@@ -68,29 +78,29 @@ def field_needs_source(current: object, default: object, context: FormatContext)
     if isinstance(current, LazyDataclass):
         if not lazy_dataclass_carries_values(current):
             return False
-        return not (
-            isinstance(default, LazyDataclass) and lazy_raw_values_equal(current, default)
-        )
+        return not raw_values_equal(current, default)
     return current != default
 
 
-def _clean_field_needs_source(value: LazyDataclass, name: str, current: object) -> bool:
-    if current is None:
-        return False
-    if name in _set_field_names(value):
-        return True
-    if isinstance(current, LazyDataclass):
-        return lazy_dataclass_carries_values(current)
-    return True
+def _field_default(field: Field) -> object:
+    if field.default is not MISSING:
+        return field.default
+    if field.default_factory is not MISSING:
+        return field.default_factory()
+    return MISSING
 
 
-class LazyDataclassFormatter(SourceFormatter):
+class LazyResolutionFormatter(SourceFormatter):
     priority = 36
+    formats: type = LazyResolutionDataclass
 
     def can_format(self, value: object) -> bool:
-        return isinstance(value, LazyDataclass)
+        return isinstance(value, self.formats)
 
-    def format(self, value: LazyDataclass, context: FormatContext) -> SourceFragment:
+    def clean_field_needs_source(self, value: object, field: Field, current: object) -> bool:
+        return not raw_values_equal(current, _field_default(field))
+
+    def format(self, value: object, context: FormatContext) -> SourceFragment:
         lazy_type = type(value)
         class_ref = imported_name(lazy_type.__module__, lazy_type.__qualname__, context)
         imports = set(class_ref.imports)
@@ -100,9 +110,7 @@ class LazyDataclassFormatter(SourceFormatter):
             if not field.init:
                 continue
             current = DataclassFieldAccess.raw_value(value, field.name)
-            if context.clean_mode and not _clean_field_needs_source(
-                value, field.name, current
-            ):
+            if context.clean_mode and not self.clean_field_needs_source(value, field, current):
                 continue
             fragment = to_source(current, field_ctx)
             imports |= fragment.imports
@@ -113,3 +121,17 @@ class LazyDataclassFormatter(SourceFormatter):
         inner = f",\n{field_ctx.indent_str}".join(lines)
         code = f"{class_ref.code}(\n{field_ctx.indent_str}{inner}\n{context.indent_str})"
         return SourceFragment(code, frozenset(imports))
+
+
+class LazyDataclassFormatter(LazyResolutionFormatter):
+    priority = 37
+    formats = LazyDataclass
+
+    def clean_field_needs_source(self, value: object, field: Field, current: object) -> bool:
+        if current is None:
+            return False
+        if field.name in _set_field_names(value):
+            return True
+        if isinstance(current, LazyDataclass):
+            return lazy_dataclass_carries_values(current)
+        return True

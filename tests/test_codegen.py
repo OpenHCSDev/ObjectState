@@ -7,6 +7,7 @@ import pytest
 from pycodify import Assignment, FormatContext, generate_python_source
 
 from objectstate import LazyDataclassFactory
+from objectstate.lazy_factory import LazyResolutionDataclass
 from objectstate.codegen import field_needs_source
 from objectstate.field_access import DataclassFieldAccess
 
@@ -90,3 +91,23 @@ def test_field_needs_source_compares_lazy_raw_values():
     assert field_needs_source(3, 1, clean)
     assert not field_needs_source(1, 1, clean)
     assert field_needs_source(LazyInner(), LazyInner(), FormatContext())
+
+
+@dataclass
+class Inheriting(LazyResolutionDataclass):
+    """A base config whose None fields resolve elsewhere."""
+
+    mode: str | None = None
+    size: int = 4
+
+    def __getattribute__(self, name):
+        value = object.__getattribute__(self, name)
+        return "resolved" if name == "mode" and value is None else value
+
+
+@pytest.mark.parametrize("clean_mode", (True, False))
+def test_inheriting_base_config_keeps_its_raw_none(clean_mode):
+    source, loaded = _load(Inheriting(size=5), clean_mode)
+    assert "resolved" not in source
+    assert DataclassFieldAccess.raw_value(loaded, "mode") is None
+    assert DataclassFieldAccess.raw_value(loaded, "size") == 5
