@@ -250,6 +250,49 @@ def replace_raw(instance, **changes):
     return type(instance)(**field_values)
 
 
+
+def retain_only_authored_paths(value, authored_field_paths) -> Any:
+    """Copy a lazy dataclass, marking only ``authored_field_paths`` as explicitly set.
+
+    An ObjectState rebuild constructs every nested lazy dataclass from all its
+    flattened fields, so every constructor keyword reads as explicit. Clean
+    source generation needs the authored paths ObjectState already tracks
+    (its signature-diff fields); this applies them to the lazy metadata without
+    changing any field value.
+    """
+
+    from objectstate.field_access import DottedFieldPath
+
+    paths = tuple(DottedFieldPath(path) for path in authored_field_paths)
+    return _copy_with_only_authored_paths(value, DottedFieldPath(""), paths)
+
+
+def _copy_with_only_authored_paths(value, prefix, authored_field_paths):
+    from objectstate.field_access import DataclassFieldAccess
+
+    field_values = {}
+    for field_definition in fields(value):
+        field_value = DataclassFieldAccess.raw_value(value, field_definition.name)
+        if isinstance(field_value, LazyDataclass):
+            field_value = _copy_with_only_authored_paths(
+                field_value,
+                prefix.child(field_definition.name),
+                authored_field_paths,
+            )
+        field_values[field_definition.name] = field_value
+
+    projected = type(value)(**field_values)
+    object.__setattr__(
+        projected,
+        "_explicitly_set_fields",
+        {
+            field_definition.name
+            for field_definition in fields(projected)
+            if prefix.child(field_definition.name).contains_any(authored_field_paths)
+        },
+    )
+    return projected
+
 # ContextEventCoordinator removed - replaced with contextvars-based context system
 
 

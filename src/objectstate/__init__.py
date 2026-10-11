@@ -73,6 +73,7 @@ from objectstate.lazy_factory import (
     is_global_config_instance,
     # Raw-value-preserving utilities
     replace_raw,
+    retain_only_authored_paths,
 )
 
 # Resolver
@@ -256,6 +257,7 @@ __all__ += [
     'ObjectState',
     'ObjectStateRegistry',
     'ScopeKey',
+    'retain_only_authored_paths',
     'ObjectStateMetadataContract',
     'ObjectStateMetadataContractRegistry',
     'ObjectStateMetadataStore',
