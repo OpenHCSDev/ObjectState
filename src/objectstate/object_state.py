@@ -30,6 +30,7 @@ from objectstate.object_state_metadata import (
     ObjectStateMetadataStore,
 )
 from objectstate.object_state_registry import ObjectStateRegistry
+from objectstate.scope_key import ScopeKey
 from objectstate.parameter_owner import ParameterOwner
 from objectstate.parameter_structure import ParameterStructure
 from objectstate.global_config import GlobalContextValues
@@ -695,9 +696,9 @@ class ObjectState:
             parent_field = field_path or self._parent_field_name
             if parent_field is None:
                 # Auto-detect from a numeric scope suffix.
-                parts = self.scope_id.split('::')
-                if len(parts) >= 2:
-                    last = parts[-1]
+                scope = ScopeKey(self.scope_id)
+                if scope.depth >= 2:
+                    last = scope.last
                     import re
                     m = re.match(r'^(.+?)_\d+$', last)
                     parent_field = m.group(1) if m else last
@@ -2304,23 +2305,11 @@ class ObjectState:
         logger.debug(f"🔧 mark_saved: Total states in registry: {len(ObjectStateRegistry._states)}")
 
         # Collect descendant scopes first to avoid modifying registry during iteration.
-        #
-        # IMPORTANT: Global scope is represented by "" (empty string).
-        # In that case, *every* non-global scope is a descendant, but the naive
-        # prefix check ("" + "::" == "::") matches nothing.
         changed_scope = ObjectStateRegistry._normalize_scope_id(self.scope_id)
-        if changed_scope == "":
-            # Global baseline change affects ALL other states.
-            descendant_scopes = [
-                s.scope_id for s in ObjectStateRegistry._states.values()
-                if ObjectStateRegistry._normalize_scope_id(s.scope_id) != ""
-            ]
-        else:
-            prefix = changed_scope + "::"
-            descendant_scopes = [
-                s.scope_id for s in ObjectStateRegistry._states.values()
-                if s.scope_id is not None and ObjectStateRegistry._normalize_scope_id(s.scope_id).startswith(prefix)
-            ]
+        descendant_scopes = [
+            s.scope_id for s in ObjectStateRegistry._states.values()
+            if changed_scope.strictly_contains(s.scope_id)
+        ]
         logger.debug(f"🔧 mark_saved: Found {len(descendant_scopes)} descendant scopes: {descendant_scopes}")
 
         for descendant_scope in descendant_scopes:
@@ -2456,11 +2445,14 @@ class ObjectState:
         # However, for delegation-based parents that act as context providers (e.g. orchestrator -> pipeline_config),
         # restoring the parent should generally *not* restore descendant raw parameters (steps). Descendants should
         # only have their resolved caches invalidated so they re-resolve against the restored context.
-        if propagate_descendants:
+        # The global scope only provides context to every other scope; it owns none of
+        # their parameters, so restoring it never restores them.
+        own_scope = ScopeKey(self.scope_id)
+        if propagate_descendants and not own_scope.is_global:
             descendant_scopes = [
                 scope
                 for scope in ObjectStateRegistry._states.keys()
-                if scope.startswith(f"{self.scope_id}::")
+                if own_scope.strictly_contains(scope)
             ]
             for descendant_scope in descendant_scopes:
                 state = ObjectStateRegistry._states.get(descendant_scope)

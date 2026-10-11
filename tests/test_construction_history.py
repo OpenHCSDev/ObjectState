@@ -15,7 +15,6 @@ from objectstate import (
     set_base_config_type,
     set_global_config_for_editing,
 )
-from objectstate.history_migration import HistoryMigration
 
 
 @dataclass
@@ -480,22 +479,3 @@ def test_failed_attachment_rolls_back_complete_graph_and_loaded_history(tmp_path
     assert path.read_bytes() == file_bytes
 
 
-def test_explicit_migration_receives_one_detached_alias_graph_and_must_return_v2():
-    shared = [1]
-    state = register(Config(items=shared), "direct")
-    record("migration input")
-    document = ObjectStateRegistry.export_history_to_dict()
-    document["format_version"] = 1
-    document["source_alias"] = shared
-
-    class FixtureMigration(HistoryMigration):
-        def migrate(self, document, constructions):
-            assert document["source_alias"] is constructions["direct"].target.items
-            document["source_alias"].append(7)
-            document["format_version"] = 2
-            return document
-
-    ObjectStateRegistry.import_history_from_dict(document, migration=FixtureMigration())
-    assert document["format_version"] == 1
-    assert document["source_alias"] == shared == [1]
-    assert state.object_instance.items is shared

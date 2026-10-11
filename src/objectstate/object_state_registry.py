@@ -22,7 +22,7 @@ import copy
 
 from objectstate.object_state_metadata import ObjectStateMetadataStore
 from objectstate.construction_binding import StateConstructionBinding
-from objectstate.history_migration import HistoryMigration
+from objectstate.scope_key import ScopeKey
 from objectstate.global_config import GlobalContextValues
 from objectstate.context_manager import clear_current_temp_global
 from objectstate.dual_axis_resolver import clear_mro_resolution_cache
@@ -348,9 +348,9 @@ class ObjectStateRegistry:
         cls._snapshot_dirty_scopes.add(cls._normalize_scope_id(scope_id))
 
     @classmethod
-    def _normalize_scope_id(cls, scope_id: Optional[str]) -> str:
-        """Normalize scope_id: None and "" both represent global scope."""
-        return scope_id if scope_id is not None else ""
+    def _normalize_scope_id(cls, scope_id: str | None) -> ScopeKey:
+        """Return the registry key: None and "" both represent the global scope."""
+        return ScopeKey(scope_id)
 
     @classmethod
     def register(cls, state: 'ObjectState', _skip_snapshot: bool = False) -> None:
@@ -426,14 +426,11 @@ class ObjectStateRegistry:
         scope_key = cls._normalize_scope_id(scope_id)
 
         # Find all scopes to delete: exact match + descendants
-        scopes_to_delete = []
-        for key in cls._states.keys():
-            # Exact match
-            if key == scope_key:
-                scopes_to_delete.append(key)
-            # Descendant (starts with scope_key::)
-            elif scope_key and key.startswith(scope_key + "::"):
-                scopes_to_delete.append(key)
+        scopes_to_delete = [
+            key
+            for key in cls._states.keys()
+            if key == scope_key or (scope_key and scope_key.contains(key))
+        ]
 
         # Delete all matching scopes and fire callbacks
         # NOTE: Unlike plain unregister(), this is often used for hierarchical deletes.
@@ -506,7 +503,7 @@ class ObjectStateRegistry:
         cls._snapshots.clear()
         cls._timelines.clear()
         cls._current_head = None
-        cls._current_timeline = "main"
+        cls._current_timeline = cls.MAIN_BRANCH
         cls._atomic_depth = 0
         cls._atomic_label = None
         cls._atomic_triggering_scope = None
@@ -640,17 +637,9 @@ class ObjectStateRegistry:
         """
         scope_key = cls._normalize_scope_id(scope_id)
 
-        # Build list of ancestor scope keys (least-specific to most-specific)
-        # e.g., "/plate::step_0" -> ["", "/plate", "/plate::step_0"]
-        ancestors = [""]  # Global scope always included
-        if scope_key:
-            parts = scope_key.split("::")
-            for i in range(len(parts)):
-                ancestors.append("::".join(parts[:i+1]))
-
-        # Get objects from ancestor scopes
+        # Get objects from ancestor scopes, least-specific to most-specific
         objects = []
-        for ancestor_key in ancestors:
+        for ancestor_key in scope_key.ancestors():
             state = cls._states.get(ancestor_key)
             if state:
                 if use_saved:
@@ -693,16 +682,9 @@ class ObjectStateRegistry:
         """
         scope_key = cls._normalize_scope_id(scope_id)
 
-        # Build list of ancestor scope keys (least-specific to most-specific)
-        ancestors = [""]  # Global scope always included
-        if scope_key:
-            parts = scope_key.split("::")
-            for i in range(len(parts)):
-                ancestors.append("::".join(parts[:i+1]))
-
         # Get (scope_id, object) tuples from ancestor scopes
         results: List[Tuple[str, Any]] = []
-        for ancestor_key in ancestors:
+        for ancestor_key in scope_key.ancestors():
             state = cls._states.get(ancestor_key)
             if state:
                 # Get object - either with or without delegate sync
@@ -809,20 +791,8 @@ class ObjectStateRegistry:
                 continue
 
             # SCOPE CHECK: must be at or below changed scope
-            # Global scope (empty string) affects ALL states
-            if changed_scope == "":
-                # Global scope - always a descendant (or self if also global)
-                if field_name == 'well_filter':
-                    logger.debug(f"🔍   Checking state: scope={state_scope!r}, obj_type={type(state.object_instance).__name__}")
-                logger.debug(f"[SCOPE] Global change affects state scope={state_scope!r}")
-            else:
-                # Non-global: check exact match or descendant
-                prefix = changed_scope + "::"
-                is_descendant = state_scope.startswith(prefix)
-                if not (is_self or is_descendant):
-                    logger.debug(f"[SCOPE] SKIP: changed_scope={changed_scope!r} does not affect state_scope={state_scope!r}")
-                    continue
-                logger.debug(f"[SCOPE] MATCH: changed_scope={changed_scope!r} affects state_scope={state_scope!r}")
+            if not changed_scope.contains(state_scope):
+                continue
 
             # TYPE + FIELD CHECK: find matching nested state and invalidate field
             cls._invalidate_field_in_matching_states(state, base_changed_type, field_name, invalidate_saved)
@@ -926,11 +896,12 @@ class ObjectStateRegistry:
     # This allows time travel to snapshots that reference deleted objects.
     _graveyard: Dict[str, 'ObjectState'] = {}
 
-    # Timelines (branches): Named branches that point to a head snapshot
-    # "main" is always created automatically on first snapshot
+    # Timelines (branches): Named branches that point to a head snapshot.
+    # MAIN_BRANCH is created automatically on the first snapshot.
     # head_id always points to a valid key in _snapshots (guaranteed by construction)
+    MAIN_BRANCH = "main"
     _timelines: Dict[str, Timeline] = {}
-    _current_timeline: str = "main"
+    _current_timeline: str = MAIN_BRANCH
 
     @classmethod
     @contextmanager
@@ -1033,7 +1004,7 @@ class ObjectStateRegistry:
                         del cls._snapshots[snapshot_id]
                     cls._timelines = timelines_before
                     cls._current_head = current_head_before
-                    cls._current_timeline = current_timeline_before or "main"
+                    cls._current_timeline = current_timeline_before or cls.MAIN_BRANCH
                     cls._in_time_travel = bool(in_time_travel_before)
                     if snapshot_dirty_scopes_before is not None:
                         cls._snapshot_dirty_scopes = snapshot_dirty_scopes_before
@@ -1306,7 +1277,7 @@ class ObjectStateRegistry:
                 name=cls._current_timeline,
                 head_id=snapshot.id,
                 base_id=snapshot.id,
-                description="Main timeline" if cls._current_timeline == "main" else "",
+                description="Main timeline" if cls._current_timeline == cls.MAIN_BRANCH else "",
             )
             logger.info(f"⏱️ BRANCH: Created '{cls._current_timeline}' timeline")
         else:
@@ -1353,17 +1324,9 @@ class ObjectStateRegistry:
         return tuple(
             sorted(
                 cls._states.items(),
-                key=lambda item: (cls._scope_depth(item[0]), item[0]),
+                key=lambda item: (item[0].depth, item[0]),
             )
         )
-
-    @staticmethod
-    def _scope_depth(scope_id: str) -> int:
-        """Return hierarchy depth for ObjectState scope identifiers."""
-
-        if not scope_id:
-            return 0
-        return scope_id.count("::") + 1
 
     @classmethod
     def _prune_unreachable_snapshots(cls) -> None:
@@ -2193,6 +2156,11 @@ class ObjectStateRegistry:
         """Check if currently viewing historical state (not at head)."""
         return cls._current_head is not None
 
+    @classmethod
+    def is_restoring_snapshot(cls) -> bool:
+        """Whether a snapshot restore is in progress, so views refresh restored values."""
+        return cls._in_time_travel
+
     # ========== BRANCH OPERATIONS ==========
 
     @classmethod
@@ -2319,9 +2287,7 @@ class ObjectStateRegistry:
         }
 
     @classmethod
-    def import_history_from_dict(
-        cls, data: Dict[str, Any], *, migration: HistoryMigration | None = None
-    ) -> None:
+    def import_history_from_dict(cls, data: dict[str, Any]) -> None:
         """Import a complete typed history document payload.
 
         Version 2 includes exact construction declarations. Older documents
@@ -2330,11 +2296,7 @@ class ObjectStateRegistry:
         Args:
             data: Dict with 'snapshots', 'timelines', 'current_head', 'current_timeline'.
         """
-        document, constructions = copy.deepcopy(
-            (data, {scope: state.construction_binding() for scope, state in cls._states.items()})
-        )
-        if document.get("format_version") != 2 and migration is not None:
-            document = migration.migrate(document, constructions)
+        document = copy.deepcopy(data)
         if document.get("format_version") != 2:
             raise ValueError(
                 "Unsupported ObjectState history version; construction ownership is required."
@@ -2389,9 +2351,7 @@ class ObjectStateRegistry:
         logger.info(f"⏱️ Saved {len(cls._snapshots)} snapshots to {filepath}")
 
     @classmethod
-    def load_history_from_file(
-        cls, filepath: str, *, migration: HistoryMigration | None = None
-    ) -> None:
+    def load_history_from_file(cls, filepath: str) -> None:
         """Load and materialize a trusted ObjectState history document.
 
         Args:
@@ -2407,7 +2367,7 @@ class ObjectStateRegistry:
         )
         try:
             with open(filepath, "rb") as history_file:
-                cls.import_history_from_dict(dill.load(history_file), migration=migration)
+                cls.import_history_from_dict(dill.load(history_file))
             restored_at_head = cls._current_head is None
             snapshot_id = cls._current_snapshot_id()
             if snapshot_id is not None:

@@ -73,6 +73,7 @@ from objectstate.lazy_factory import (
     is_global_config_instance,
     # Raw-value-preserving utilities
     replace_raw,
+    retain_only_authored_paths,
 )
 
 # Resolver
@@ -100,9 +101,6 @@ from objectstate.context_manager import (
     register_hierarchy_relationship,
     unregister_hierarchy_relationship,
     get_ancestors_from_hierarchy,
-    # Scope key utilities
-    get_root_from_scope_key,
-    is_scope_affected,
     # Context stack building (framework-agnostic)
     build_context_stack,
     # Threading utility for context propagation
@@ -181,8 +179,6 @@ __all__ = [
     'extract_all_configs',
     'get_base_global_config',
     'get_context_type_stack',
-    'get_root_from_scope_key',
-    'is_scope_affected',
     'build_context_stack',
     'spawn_thread_with_context',
     # Placeholder
@@ -216,13 +212,14 @@ __all__ = [
     'ObjectStateEditSession',
 ]
 
-__version__ = "1.3.1"
+__version__ = "2.0.0"
 __author__ = 'OpenHCS Team'
 __description__ = 'Generic configuration framework for lazy dataclass resolution'
 
 
 # Object state management
 from objectstate.object_state_registry import ObjectStateRegistry
+from objectstate.scope_key import ScopeKey
 from objectstate.object_state import ObjectState
 from objectstate.object_state_metadata import (
     ObjectStateMetadataContract,
@@ -259,6 +256,8 @@ __all__ += [
     # Object state
     'ObjectState',
     'ObjectStateRegistry',
+    'ScopeKey',
+    'retain_only_authored_paths',
     'ObjectStateMetadataContract',
     'ObjectStateMetadataContractRegistry',
     'ObjectStateMetadataStore',
