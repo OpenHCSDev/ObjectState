@@ -100,6 +100,22 @@ ensure_global_config_context(GlobalPipelineConfig, global_config)
 pip install objectstate
 ```
 
+## Saving Configs as Python Source
+
+`objectstate.codegen` registers a [pycodify](https://github.com/OpenHCSDev/pycodify)
+formatter for lazy dataclasses. Source is written from raw field values, so an
+inherited `None` stays inherited when the file is loaded back:
+
+```python
+import objectstate.codegen  # registers the formatter
+from pycodify import Assignment, generate_python_source
+
+source = generate_python_source(Assignment("config", lazy_config), clean_mode=True)
+```
+
+Clean mode writes only constructor-set fields and concrete values; full mode
+writes every field.
+
 ## ObjectState Registry
 
 ObjectState separates mutable working state from saved baseline, enabling dirty tracking and undo/redo:
@@ -254,19 +270,19 @@ class GlobalPipelineConfig:
 # Use the decorator on a new config class
 @global_pipeline_config
 @dataclass
-class WellFilterConfig:
-    well_filter: str = None
+class PartitionFilterConfig:
+    partition_filter: str = None
     mode: str = "include"
 
 # After module loading, GlobalPipelineConfig automatically has:
-# - well_filter_config: WellFilterConfig = WellFilterConfig()
-# And LazyWellFilterConfig is auto-created
+# - partition_filter_config: PartitionFilterConfig = PartitionFilterConfig()
+# And LazyPartitionFilterConfig is auto-created
 ```
 
 **How it works:**
 - Decorated classes are injected as fields into `GlobalPipelineConfig`
-- Field name is snake_case of class name (e.g., `WellFilterConfig` → `well_filter_config`)
-- Lazy version is automatically created (e.g., `LazyWellFilterConfig`)
+- Field name is snake_case of class name (e.g., `PartitionFilterConfig` → `partition_filter_config`)
+- Lazy version is automatically created (e.g., `LazyPartitionFilterConfig`)
 - Injection happens at end of module loading via `_inject_all_pending_fields()`
 
 This enables a clean, modular configuration structure where each component's config is automatically part of the global configuration.

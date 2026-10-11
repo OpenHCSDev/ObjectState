@@ -63,7 +63,7 @@ Nested configurations use the ``@global_config`` decorator to inject fields into
 
    @global_config
    @dataclass(frozen=True)
-   class PathPlanningConfig(WellFilterConfig):
+   class PathPlanningConfig(PartitionFilterConfig):
        output_dir_suffix: str = ""
        sub_dir: str = ""
 

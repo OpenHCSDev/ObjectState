@@ -780,9 +780,6 @@ class ObjectStateRegistry:
         else:
             base_changed_type = changed_type
 
-        # DEBUG: Log invalidation for well_filter
-        if field_name == 'well_filter':
-            logger.debug(f"🔍 invalidate_by_type_and_scope: scope={changed_scope!r}, type={base_changed_type.__name__}, field={field_name}, total_states={len(cls._states)}")
 
         for state in cls._states.values():
             state_scope = cls._normalize_scope_id(state.scope_id)
@@ -814,9 +811,10 @@ class ObjectStateRegistry:
         1. Its container type matches target_base_type exactly, OR
         2. Its container type inherits from target_base_type (has target_base_type in MRO)
 
-        This handles sibling inheritance: when WellFilterConfig.well_filter changes,
-        both 'well_filter_config.well_filter' and 'step_well_filter_config.well_filter'
-        are invalidated (since StepWellFilterConfig inherits from WellFilterConfig).
+        This handles sibling inheritance: when PartitionFilterConfig.partition_filter changes,
+        both 'partition_filter_config.partition_filter' and
+            'step_partition_filter_config.partition_filter'
+        are invalidated (since StepPartitionFilterConfig inherits from PartitionFilterConfig).
 
         Args:
             state: ObjectState to check

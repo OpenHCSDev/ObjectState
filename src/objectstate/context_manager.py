@@ -187,8 +187,9 @@ def config_context(obj, mask_with_none: bool = False, use_live_global: bool = Tr
                                 # to_base_config() passes None values to base class constructor,
                                 # but frozen dataclasses with non-Optional defaults substitute the
                                 # default value for None. This breaks cross-hierarchy inheritance.
-                                # Example: LazyWellFilterConfig(well_filter_mode=None) becomes
-                                # WellFilterConfig(well_filter_mode=INCLUDE) instead of keeping None.
+                                # Example: LazyPartitionFilterConfig(partition_filter_mode=None)
+                                # becomes PartitionFilterConfig(partition_filter_mode=INCLUDE)
+                                # instead of keeping None.
                                 #
                                 # Instead, pass lazy dataclass directly to _merge_nested_dataclass,
                                 # which uses object.__getattribute__ to get raw values and correctly
@@ -730,12 +731,12 @@ def _find_live_values_for_type(target_type: type, live_context: dict) -> dict | 
     Find live values for a target type in live_context.
 
     Handles type normalization (lazy vs base types) AND inheritance.
-    For sibling inheritance, a StepWellFilterConfig's values should be
-    usable when resolving WellFilterConfig's placeholders.
+    For sibling inheritance, a StepPartitionFilterConfig's values should be
+    usable when resolving PartitionFilterConfig's placeholders.
 
     IMPORTANT: Prefers subclass matches over exact matches.
-    This ensures StepWellFilterConfig values (with concrete value) are used
-    for WellFilterConfig resolution, not WellFilterConfig values (with None).
+    This ensures StepPartitionFilterConfig values (with concrete value) are used
+    for PartitionFilterConfig resolution, not PartitionFilterConfig values (with None).
 
     Args:
         target_type: The type to find values for
@@ -755,7 +756,7 @@ def _find_live_values_for_type(target_type: type, live_context: dict) -> dict | 
             return config_values
 
     # First pass: look for subclass match (more specific wins) after normalization
-    # e.g., StepWellFilterConfig values for WellFilterConfig resolution
+    # e.g., StepPartitionFilterConfig values for PartitionFilterConfig resolution
     for config_type, config_values in live_context.items():
         config_base = _normalize_type(config_type)
         try:
@@ -899,12 +900,6 @@ def get_base_global_config(use_live: bool = True):
         # Get the appropriate global config (live or saved)
         current_global = get_current_global_config(base_config_type, use_live=use_live)
         if current_global is not None:
-            # DEBUG: Log well_filter value
-            try:
-                wf_value = object.__getattribute__(current_global.well_filter_config, 'well_filter')
-                logger.debug(f"🔍 get_base_global_config: use_live={use_live}, well_filter={wf_value}")
-            except:
-                pass
             return current_global
 
         # Fallback to default if none was set

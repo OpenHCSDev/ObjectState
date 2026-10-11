@@ -63,8 +63,8 @@ def invalidate_mro_cache_for_field(changed_type: type, field_name: str) -> None:
 def _normalize_to_base(t: type) -> type:
     """Normalize lazy type to its base type for comparison.
 
-    LazyWellFilterConfig -> WellFilterConfig
-    WellFilterConfig -> WellFilterConfig
+    LazyPartitionFilterConfig -> PartitionFilterConfig
+    PartitionFilterConfig -> PartitionFilterConfig
 
     PERFORMANCE: Results are cached with lru_cache since type->base_type
     mappings are immutable after class creation. Import is hoisted to
@@ -164,21 +164,14 @@ def resolve_field_inheritance(
     if _cached is not _CACHE_SENTINEL:
         return _cached
 
-    _debug = logger.isEnabledFor(logging.DEBUG)
-
     if needs_resolution:
         for config_type, config_instance in available_configs.items():
-            # Normalize both sides: LazyWellFilterConfig matches WellFilterConfig
+            # Normalize both sides: LazyPartitionFilterConfig matches PartitionFilterConfig
             instance_base = _normalize_to_base(type(config_instance))
             if instance_base == obj_base:
                 try:
                     field_value = object.__getattribute__(config_instance, field_name)
                     if field_value is not None:
-                        if _debug:
-                            if field_name == 'well_filter':
-                                logger.debug(f"🔍 CONCRETE VALUE: {obj_type.__name__}.{field_name} = {field_value}")
-                            if field_name == 'num_workers':
-                                logger.debug(f"🔍 SAME-TYPE MATCH: {obj_type.__name__}.{field_name} = {field_value!r} (type={type(field_value).__name__}) FROM config_type={config_type.__name__}")
                         _mro_resolution_cache[_cache_key] = field_value
                         return field_value
                 except AttributeError:
@@ -187,33 +180,21 @@ def resolve_field_inheritance(
     # Step 2: MRO-based inheritance - traverse MRO from most to least specific
     # Skip the first entry (self type) since we already checked it above (for lazy) or want to skip it (for concrete)
     # This finds PARENT class configs with concrete values (sibling inheritance)
-    if _debug and field_name in ('output_dir_suffix', 'sub_dir', 'well_filter', 'well_filter_mode'):
-        logger.debug(f"🔍 MRO-INHERITANCE: Resolving {obj_type.__name__}.{field_name}")
-        logger.debug(f"🔍 MRO-INHERITANCE: MRO = {[cls.__name__ for cls in obj_type.__mro__]}")
 
     for mro_class in obj_type.__mro__[1:]:  # Skip first (self type)
         if not is_dataclass(mro_class):
             continue
 
         # Look for a config instance of this MRO class type in the available configs
-        # Normalize both sides: LazyWellFilterConfig instance matches WellFilterConfig in MRO
+        # Normalize both sides: a LazyPartitionFilterConfig instance matches
+        # PartitionFilterConfig in the MRO
         mro_base = _normalize_to_base(mro_class)
         for config_instance in available_configs.values():
             instance_base = _normalize_to_base(type(config_instance))
             if instance_base == mro_base:
                 try:
                     value = object.__getattribute__(config_instance, field_name)
-                    if _debug:
-                        if field_name in ('output_dir_suffix', 'sub_dir', 'well_filter', 'well_filter_mode'):
-                            logger.debug(f"🔍 MRO-INHERITANCE: {mro_class.__name__}.{field_name} = {value}")
-                        if field_name == 'num_workers':
-                            logger.debug(f"🔍 MRO-INHERITANCE: {mro_class.__name__}.{field_name} = {value!r} (type={type(value).__name__})")
                     if value is not None:
-                        if _debug:
-                            if field_name in ('output_dir_suffix', 'sub_dir', 'well_filter', 'well_filter_mode'):
-                                logger.debug(f"🔍 MRO-INHERITANCE: FOUND {mro_class.__name__}.{field_name}: {value} (returning)")
-                            if field_name == 'num_workers':
-                                logger.debug(f"🔍 MRO-INHERITANCE: RETURNING {mro_class.__name__}.{field_name} = {value!r}")
                         _mro_resolution_cache[_cache_key] = value
                         return value
                 except AttributeError:
@@ -227,8 +208,6 @@ def resolve_field_inheritance(
     # If MRO walk finds nothing and the field is not directly owned by this
     # config class, return None so inherited fields continue to resolve through
     # their owning MRO/default config.
-    if _debug and field_name in ('output_dir_suffix', 'sub_dir', 'well_filter'):
-        logger.debug(f"🔍 NO-RESOLUTION: {obj_type.__name__}.{field_name} = None")
     _mro_resolution_cache[_cache_key] = None
     return None
 
@@ -249,7 +228,7 @@ def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any,
       This allows sibling inheritance when no concrete value exists in the hierarchy.
 
     This ensures:
-    - GlobalPipelineConfig.well_filter_config.well_filter overrides the same field
+    - GlobalPipelineConfig.partition_filter_config.partition_filter overrides the same field
       at PipelineConfig level (hierarchy precedence for same-type)
     - MRO inheritance only applies when NO concrete value exists in the hierarchy
       for the specific config type being resolved
@@ -261,12 +240,12 @@ def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any,
 
     Args:
         container_type: The type containing the field (e.g., LazyPathPlanningConfig)
-        field_name: Name of the field to find provenance for (e.g., "well_filter")
+        field_name: Name of the field to find provenance for (e.g., "partition_filter")
 
     Returns:
         (resolved_value, source_scope_id, source_type): The resolved value, scope that
         provided it, and the TYPE that has the concrete value (may differ from container_type
-        due to MRO inheritance, e.g., PathPlanningConfig instead of WellFilterConfig).
+        due to MRO inheritance, e.g., PathPlanningConfig instead of PartitionFilterConfig).
         If no concrete value found, returns (None, None, None).
     """
     from objectstate.context_manager import get_context_layer_stack, extract_all_configs
@@ -291,16 +270,10 @@ def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any,
     # Phase 2: MRO fallback (only if no concrete value in hierarchy)
     #
     # This ensures:
-    # - A concrete value at GlobalPipelineConfig.well_filter_config.well_filter overrides
+    # - A concrete value at GlobalPipelineConfig.partition_filter_config.partition_filter overrides
     #   the same field at PipelineConfig level (hierarchy precedence)
     # - MRO inheritance only applies when NO concrete value exists in the hierarchy
     #   for the specific config type being resolved
-
-    _debug = logger.isEnabledFor(logging.DEBUG)
-
-    if _debug and field_name == 'well_filter':
-        logger.debug(f"🔍 resolve_with_provenance: container={container_base.__name__}, field={field_name}, layers={len(layers)}")
-        logger.debug(f"🔍 resolve_with_provenance: mro_types={[t.__name__ for t in mro_types]}")
 
     # Track fallback provenance - where we find the field (even if None)
     fallback_scope: Optional[str] = None
@@ -321,8 +294,6 @@ def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any,
     # This gives hierarchy precedence: inner/child scopes override outer/parent scopes
     # REVERSED ORDER: Walk from inner to outer so more specific scopes override general scopes
     for scope_id, layer_configs in reversed(all_layer_configs):
-        if _debug and field_name == 'well_filter':
-            logger.debug(f"🔍   Phase 1 - Layer scope={scope_id!r}, checking same-type only (inner to outer)")
 
         # extract_all_configs admits one instance per canonical owner type.
         config_instance = layer_configs.get(container_base)
@@ -330,12 +301,8 @@ def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any,
             continue
         try:
             value = object.__getattribute__(config_instance, field_name)
-            if _debug and field_name in ('well_filter', 'enabled'):
-                logger.debug(f"🔍     {container_base.__name__}.{field_name} @ scope={scope_id} = {value!r} (from object.__getattribute__)")
             if value is not None:
                 # Found concrete value in hierarchy - return immediately
-                if _debug and field_name in ('well_filter', 'enabled'):
-                    logger.debug(f"🔍     FOUND concrete value in hierarchy at scope={scope_id!r}, returning {value!r}")
                 return value, scope_id, container_base
             # Don't set fallback here - let Phase 2 walk MRO to find
             # the highest type that defines this field
@@ -353,8 +320,6 @@ def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any,
     #
     # Therefore: for each MRO type (most→least specific), scan scopes (inner→outer)
     # looking for the first non-None value.
-    if _debug and field_name == 'well_filter':
-        logger.debug("🔍   Phase 2 - MRO fallback, walking layers inner to outer")
 
     # Track where the "highest-precedence" field exists even if None, so callers
     # can still navigate to a sensible provenance target when everything is None.
@@ -378,8 +343,6 @@ def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any,
             except AttributeError:
                 continue
 
-            if _debug and field_name == 'well_filter':
-                logger.debug(f"🔍     MRO: {mro_type.__name__}.{field_name} @ {scope_id!r} = {value!r}")
 
             if value is not None:
                 # Found MRO-inherited value
@@ -409,7 +372,7 @@ def get_field_provenance(container_type: type, field_name: str) -> Tuple[Optiona
 
     Args:
         container_type: The type containing the field (e.g., LazyPathPlanningConfig)
-        field_name: Name of the field to find provenance for (e.g., "well_filter")
+        field_name: Name of the field to find provenance for (e.g., "partition_filter")
 
     Returns:
         (source_scope_id, source_type): The scope_id and type that provided the value.
