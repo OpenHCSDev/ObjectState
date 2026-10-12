@@ -618,7 +618,8 @@ class LazyMethodBindings:
             current_context = get_current_temp_global()
             if current_context is None:
                 raise NoActiveContextError(
-                    f"Cannot resolve {type(self).__name__}.{field_name}: no config context is active."
+                    f"Cannot resolve {type(self).__name__}.{field_name}: "
+                    "no config context is active."
                 )
             available_configs = extract_all_configs(current_context)
             return resolve_field_inheritance(self, field_name, available_configs)

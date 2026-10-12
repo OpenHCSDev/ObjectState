@@ -20,8 +20,9 @@ import contextvars
 import functools
 import logging
 import threading
+from collections.abc import Sequence
 from contextlib import ExitStack, contextmanager
-from typing import Any, Dict, Sequence, get_type_hints
+from typing import Any, Dict, get_type_hints
 from dataclasses import fields, is_dataclass
 from python_introspect import resolve_annotated, resolve_optional
 
