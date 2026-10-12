@@ -18,153 +18,135 @@ affiliations:
    index: 1
 date: 13 January 2026
 bibliography: paper.bib
-repository-code: https://github.com/trissim/objectstate
+repository-code: https://github.com/OpenHCSDev/ObjectState
 url: https://objectstate.readthedocs.io
 ---
 
 # Summary
 
-`ObjectState` provides hierarchical configuration management with dual-axis inheritance: values resolve through both context hierarchy (step → pipeline → global) and class inheritance (specialized → base config). Built on Python's standard library with zero dependencies, it combines lazy dataclass resolution with integrated state tracking, dirty detection, and git-style undo/redo.
+`ObjectState` manages hierarchical configuration held in Python dataclasses. A field left as `None` is inherited, and its value is resolved along two axes: the scope hierarchy (step, plate, global) and the class hierarchy of the config type (specialized to base). One resolver computes every inherited value and returns it together with its source, the scope and the class that supplied it. On top of that the library keeps an editable state per object with a saved baseline, dirty fields, and an undo/redo history with branches. It needs Python 3.11 or later and three packages (`dill`, `pycodify`, `python-introspect`).
 
 # Statement of Need
 
 Scientific workflows often require hundreds of parameters shared across nested execution contexts [@Wilson2014]. Traditional approaches either thread parameters explicitly through every call (brittle) or use global state (untestable) [@Martin2008].
 
-Existing solutions address parts of this: Hydra [@Yadan2019] provides hierarchical composition but not runtime resolution. Sacred [@Greff2017] tracks experiments post-hoc but doesn't determine values at runtime. MobX [@MobX2023] offers reactive state but no inheritance semantics.
+An interactive editor of such configuration must answer two questions for every field: what value applies here, and which object supplied it. If several code paths answer them (attribute access, a preview, a dirty check, a compiler), the answers can drift apart. ObjectState gives each fact one owner and derives the rest:
 
-ObjectState uniquely combines:
-
-1. **Dual-axis inheritance**: Values resolve through context stack *and* class MRO simultaneously
-2. **Integrated state management**: Saved/live state separation with automatic dirty tracking [@Fowler2002]
-3. **Git-like history**: Undo/redo with branching timelines
-4. **Type-safe lazy evaluation**: Standard dataclasses with deferred resolution [@Claessen2000]
+1. **Dual-axis inheritance in one stated order**: class first, then scope
+2. **A source for every resolved value**: the resolver returns the value with the scope and class that supplied it
+3. **One holder of the global config**: the state registered at the global scope
+4. **Saved and live state**: a saved baseline per state, with dirty fields derived from it [@Fowler2002]
+5. **History**: undo/redo over snapshots of all registered states, with branches
+6. **Lazy dataclasses**: generated dataclasses whose `None` fields resolve on attribute access [@Claessen2000]
 
 # State of the Field
 
-| Feature | ObjectState | Hydra | pydantic-settings | MobX | Sacred |
-|---------|:-----------:|:-----:|:-----------------:|:----:|:------:|
-| Dual-axis inheritance | ✓ | — | — | — | — |
-| Context hierarchy | ✓ | ✓ | — | — | — |
-| Class MRO resolution | ✓ | — | — | — | — |
-| Lazy resolution (None sentinel) | ✓ | — | — | — | — |
-| Callable parameter inheritance | ✓ | — | — | — | — |
-| Provenance tracking | ✓ | — | — | — | — |
-| Dirty tracking | ✓ | — | — | ✓ | — |
-| Undo/redo with branching | ✓ | — | — | — | — |
-| Native dataclass support | ✓ | ¹ | ✓ | — | — |
-| Zero dependencies | ✓ | — | — | — | — |
+Hydra [@Yadan2019] composes a hierarchical configuration from files and command-line overrides. pydantic-settings [@Colvin2023] loads and validates settings. Sacred [@Greff2017] configures an experiment, injects parameters into its functions, and records the configuration of each run. MobX [@MobX2023] derives values from observable application state in JavaScript.
 
-¹ Uses OmegaConf DictConfig, not native dataclasses.
-
-Hydra [@Yadan2019] provides hierarchical *composition* but not runtime *resolution*—once composed, values are static. MobX [@MobX2023] offers reactive state without inheritance semantics. Sacred [@Greff2017] captures configuration post-hoc; ObjectState determines values at runtime based on execution context.
+ObjectState addresses a different part of the problem: configuration that a user edits while the application runs, where a field of one object inherits from objects in enclosing scopes and from fields of base classes, and where the user interface has to show the inherited value, where it comes from, and whether it differs from what was last saved.
 
 # Software Design
 
-**Lazy Dataclass Factory**: Generates lazy versions of dataclasses using `__getattribute__` interception for deferred resolution.
+**Lazy dataclass factory**: `LazyDataclassFactory.make_lazy_simple` generates a dataclass whose `__getattribute__` resolves a `None` field in the active context.
 
-**Dual-Axis Resolver**: For each field access, traverses the object's MRO checking available contexts for concrete (non-None) values. Uses `contextvars` [@Selivanov2017] for thread-safe context management.
+**One resolver**: `resolve_with_provenance(type, field)` is the one resolution of a field; a single function behind it walks scopes and classes. It returns `ResolvedField(value, source_scope, source_type)`. Attribute access on a lazy dataclass takes `.value` from this result, and `ObjectState` stores the value and the source from the same call. The active context is a stack of layers held in a `contextvars` variable [@Selivanov2017]; each layer is one object and the scope id it was entered under.
 
-**Provenance Tracking**: Resolution returns not just the value but its source—which scope and type provided it. This enables UI features like placeholder text showing where inherited values originate.
+**Class-first precedence**: for each class in the MRO of the type being read, most specific first, every layer is asked from the innermost scope to the outermost, and the first value that is not `None` wins. A value on a more specific class in an outer scope therefore beats a value on a base class in an inner scope. The repository's tests check this order for every subset of nine (class, scope) sites.
 
-**Object State Registry**: Maintains saved/live state separation with automatic dirty tracking and DAG-based undo/redo history.
+**State and registry**: an `ObjectState` holds the flat, editable parameters of one object (nested dataclass fields use dotted paths), a saved baseline, and resolved snapshots of both. `ObjectStateRegistry` maps scope ids such as `"plate::step"` to states and records history.
+
+**Resolved values depend on the registry only**: a state resolves against a layer stack built from the global config and the objects of the states registered at the scopes above it. A `config_context` the caller has entered is set aside for that resolution. Each resolved snapshot keeps the objects it was computed from (`ResolutionSources`); every resolved read compares them, by identity, with the objects the state would be given now, and, while the same scopes are registered, resolves again only the unset fields that can inherit a field stored differently. No caller announces a change. A lazy object that no state owns is the other route: plain attribute access on it reads the entered `config_context`.
+
+**One holder of the global config**: while a state whose object is of the global config type is registered at scope `""`, that state holds the global config. The live global config is the object its parameters describe, and the saved one is the object it last saved; editing, saving, restoring, or undoing that state is that change of the global config. Without such a state, the object given to `set_global_config` is both. `set_global_config` is the one call that replaces it from outside; while a state holds it, the call replaces that state's object. There is one global config per config type per process, and the library does no locking.
 
 ## Beyond Dataclasses: Callable Support
 
-ObjectState handles callables (functions, methods) the same way as dataclasses. When given a callable, it extracts parameters from the function signature using Python's `inspect` module:
+An `ObjectState` can also wrap a function. Its parameters and defaults are read from the signature by `python-introspect`:
 
 ```python
-def gaussian_filter(image, sigma=None, preserve_range=None):
-    ...
+def threshold_image(image=None, threshold: float = 1.0):
+    return image
 
-# ObjectState extracts {sigma: None, preserve_range: None} from signature
-state = ObjectState(gaussian_filter, scope_id="/plate::step_0::func_0")
-state.update_parameter("sigma", 2.0)
+state = ObjectState(threshold_image, scope_id="plate::step::function_0")
+state.get_resolved_value("threshold")  # 1.0
+state.type_for_path("threshold")       # threshold_image
 ```
 
-The `None` sentinel works identically for function kwargs—unset parameters inherit from the context hierarchy. This enables pipeline steps where function parameters participate in the same dual-axis inheritance as dataclass fields.
-
-**Practical Impact**: In OpenHCS, users can register arbitrary Python functions (from scikit-image, CuPy, PyTorch, etc.) as pipeline steps. ObjectState automatically extracts their parameters and makes them configurable through the same hierarchical inheritance system as dataclass fields. A user can set a global default for `sigma`, override it per-pipeline, and override it again per-step—all without modifying the function itself.
+A function's parameters are held in the same flat store and saved baseline as dataclass fields. They do not inherit: a function parameter left as `None` stays `None`. Inheritance applies to fields of lazy dataclasses.
 
 ## Provenance Tracking
 
-Every parameter value is tagged with its source:
+For a field the state does not set itself, `get_provenance` returns the source the resolver reported:
 
 ```python
-state.get_parameter_with_provenance("sigma")
-# Returns: (2.0, "step_config")
+step.get_provenance("settings.value")
+# ("plate", Settings): the state at scope "plate", read from class Settings
 ```
 
-This enables:
-- **UI Feedback**: Show users where a value came from (e.g., "inherited from pipeline config")
-- **Debugging**: Trace why a parameter has a particular value
-- **Dirty Tracking**: Distinguish between user-set and inherited values
-
-The provenance system is the foundation for the GUI's visual feedback—empty fields show inherited values in gray, while user-set values appear in bold.
-
-**Implementation Details**: Provenance is tracked via a parallel dictionary structure that mirrors the parameter structure. When a parameter is resolved through the inheritance chain, the resolution function records which scope level provided the final value. This allows the UI to display not just the value, but also its source, enabling users to understand the configuration hierarchy at a glance.
-
-**Example**: A user sees `sigma = 2.0 (from pipeline config)` in the UI. They can click to see that the step config has no override, the plate config has no override, but the pipeline config sets it to 2.0. This transparency is critical for debugging configuration issues in complex pipelines.
+It returns `None` when the state sets the field itself. The scope is `""` for the global config. The sources are stored in a dictionary beside the resolved values and written in the same pass, so a user interface can display an inherited value with its origin and navigate to it.
 
 ## Example
 
 ```python
+from dataclasses import dataclass, field
+from objectstate import (
+    LazyDataclassFactory, ObjectState, ObjectStateRegistry,
+    mark_global_config_type, set_base_config_type, set_global_config,
+)
+
 @dataclass
-class StepConfig(PipelineConfig):
-    batch_size: int = None  # None = inherit from context
+class Settings:
+    value: str | None = None  # None = inherit
 
-LazyStepConfig = LazyDataclassFactory.make_lazy_simple(StepConfig)
+@dataclass
+class GlobalConfig:
+    settings: Settings = field(default_factory=Settings)
 
-with config_context(global_cfg):
-    with config_context(pipeline_cfg):
-        step = LazyStepConfig()
-        print(step.batch_size)  # 64 (from PipelineConfig in context)
+mark_global_config_type(GlobalConfig)
+set_base_config_type(GlobalConfig)
+LazySettings = LazyDataclassFactory.make_lazy_simple(Settings)
 
-        # Provenance: where did this value come from?
-        from objectstate.dual_axis_resolver import resolve_with_provenance
-        value, scope, source_type = resolve_with_provenance(
-            StepConfig, "batch_size"
-        )
-        # scope="/pipeline", source_type=PipelineConfig
+@dataclass
+class Holder:  # a plate or a step
+    settings: LazySettings = field(default_factory=LazySettings)
 
-        state = ObjectState(step, scope_id="/step_0")
-        ObjectStateRegistry.register(state)
-        state.update_parameter("batch_size", 128)
-        print(state.dirty_fields)  # {'batch_size'}
-        ObjectStateRegistry.time_travel_back()
-        print(step.batch_size)  # 64 (restored)
+set_global_config(GlobalConfig, GlobalConfig(settings=Settings(value="global")))
+plate = ObjectState(Holder(settings=LazySettings(value="plate")), scope_id="plate")
+ObjectStateRegistry.register(plate)
+step = ObjectState(Holder(), scope_id="plate::step")
+
+step.get_resolved_value("settings.value")  # "plate"
+step.get_provenance("settings.value")      # ("plate", Settings)
+
+for value in ("first", "second"):
+    with ObjectStateRegistry.atomic("edit plate", scope_id="plate"):
+        plate.update_parameter("settings.value", value)
+step.get_resolved_value("settings.value")  # "second"
+step.dirty_fields                          # {"settings.value"}
+
+ObjectStateRegistry.time_travel_back()
+step.get_resolved_value("settings.value")  # "first"
 ```
+
+The step state is never told that the plate changed. It finds out on its next read.
 
 ## Design Principle: None as Sentinel
 
-`None` means "resolve from context." This unifies data model and UI behavior:
+`None` means "inherit":
 
-- **Data**: `None` triggers dual-axis resolution through context stack and class MRO
-- **UI**: Empty fields display placeholder text showing the live-resolved inherited value (via provenance)
-- **User**: Clear a field to inherit; enter a value to override
-
-The user's mental model ("empty = inherit") maps directly to resolution semantics.
+- **Data**: a `None` field of a lazy dataclass is resolved through the scopes and the class MRO
+- **UI**: `LazyDefaultPlaceholderService` formats the inherited value as placeholder text for an empty field
+- **User**: clear a field to inherit; enter a value to override
 
 # Research Application
 
-ObjectState was developed for OpenHCS (Open High-Content Screening), an open-source platform for automated microscopy image analysis. OpenHCS pipelines process thousands of images per experiment, each requiring configuration across multiple scopes:
+ObjectState was developed for OpenHCS (Open High-Content Screening), an open-source platform for automated microscopy image analysis. OpenHCS registers one state for its global pipeline configuration at scope `""`, and states for each plate, pipeline, step, and step function at scopes below it. A step that leaves a field unset inherits it from the states registered above it and then from the global configuration, without the value being passed through the calls in between.
 
-**Global Scope**: Default parameters for all plates (e.g., `num_workers=8`, `output_dir="/results"`)
+**Interactive parameter tuning**: when a user clears a field, the form shows the inherited value as a placeholder, and the help control of the field reads `get_provenance` to find the source.
 
-**Plate Scope**: Per-plate overrides (e.g., `num_workers=4` for a specific plate with memory constraints)
+**Undo and branches**: undo and redo call the registry's `time_travel_back` and `time_travel_forward`. An edit made after travelling back keeps the abandoned future as an automatically named branch, so an earlier configuration can be revisited.
 
-**Pipeline Scope**: Per-pipeline overrides (e.g., `compression="gzip"` for Zarr output on this pipeline only)
-
-**Step Scope**: Per-processing-step overrides (e.g., `sigma=2.0` for Gaussian filtering in this step)
-
-Without ObjectState, each scope level would require explicit parameter passing through 20+ function calls. With ObjectState, configuration resolves automatically: a step's `sigma` parameter first checks the step config, then the pipeline config, then the plate config, then global defaults—all transparently.
-
-**Interactive Parameter Tuning**: The GUI allows users to edit parameters in real-time. When a user clears a field (sets it to `None`), the UI immediately shows the inherited value via provenance tracking. When they type a value, it overrides the inheritance chain. This unifies the user's mental model ("empty = inherit") with the data model.
-
-**Experiment Branching**: ObjectState's git-like undo/redo with branching timelines enables users to compare configuration strategies. A user can configure a pipeline, save it, then time-travel back and try a different configuration, creating a branching history. This is more powerful than traditional undo/redo for exploratory parameter tuning.
-
-**Dirty Tracking**: The framework maintains both saved and live state. When a user edits a parameter, it's marked dirty. The UI shows visual feedback (flash animations) for modified fields. Users can save changes (updating the baseline) or restore to the last saved state without losing the history.
-
-The zero-dependency design ensures easy integration into scientific software stacks without adding heavyweight dependencies.
+**Dirty tracking**: a field is dirty when its live and saved resolved values differ, so a step is also marked when an unsaved edit of its plate changes what the step inherits.
 
 # Acknowledgments
 
@@ -172,6 +154,6 @@ This work was supported in part by the Fournier lab at the Montreal Neurological
 
 # AI Usage Disclosure
 
-This paper was drafted with assistance from Claude (Anthropic, claude-sonnet-4-5), which was used to structure the manuscript, synthesize information from the codebase and documentation, generate citations, and format content according to JOSS guidelines. All technical content, architectural decisions, research contributions, and the complete ObjectState software implementation are the original intellectual work of the human author(s) developed without AI assistance.
+This paper was drafted with assistance from Claude (Anthropic, claude-sonnet-4-5), which was used to structure the manuscript, synthesize information from the codebase and documentation, generate citations, and format content according to JOSS guidelines. The manuscript was revised for release 4.0.0 with Claude (claude-opus-5-5), which checked each statement against the source. Commits in the repository carry `Co-Authored-By: Claude` trailers where a Claude model assisted with the code, including the commits that introduced the resolution and global-config design described here. Technical content, architectural decisions, and research contributions are the work of the human author.
 
 # References
