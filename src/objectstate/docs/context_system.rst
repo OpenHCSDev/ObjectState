@@ -187,26 +187,18 @@ This hybrid approach uses thread-local for the global base and contextvars for d
 Resolution Integration
 ---------------------
 
-The dual-axis resolver receives the merged context:
+The dual-axis resolver reads the layer stack of the active context:
 
 .. code-block:: python
 
-   def resolve_field_inheritance(obj, field_name, available_configs):
-       """Resolve field through dual-axis algorithm.
-       
-       available_configs: Merged context from config_context() stack
-       """
-       # Walk MRO
-       for mro_class in type(obj).__mro__:
-           # Check if this MRO class has a config instance in context
-           for config_type, config_instance in available_configs.items():
-               if type(config_instance) == mro_class:
-                   value = object.__getattribute__(config_instance, field_name)
-                   if value is not None:
-                       return value
-       return None
+   from objectstate.dual_axis_resolver import resolve_with_provenance
 
-The ``available_configs`` dict contains all configs from the context stack, flattened and ready for MRO traversal.
+   value, source_scope, source_type = resolve_with_provenance(LazyDatabaseConfig, "port")
+
+For each type in the container type's MRO, most specific first, it asks every layer from
+innermost to outermost for a config of that type and returns the first value that is not
+``None``, together with the layer's scope id and the type it was read from. Attribute access
+on a lazy config returns the ``value`` of this same result.
 
 Usage Pattern
 ------------
@@ -272,5 +264,6 @@ Layers are entered outermost first:
 3. **Current object** - under ``current_scope_id``
 
 Every layer carries a scope id, so ``resolve_with_provenance()`` can name the scope
-that supplied a value. Nothing is set until the ``with`` block is entered. A layer
+that supplied a value. The global layer is the one ``config_context()`` puts below the
+first layer entered while no context is active. Nothing is set until the ``with`` block is entered. A layer
 that cannot be built raises; the block never runs with a layer missing.

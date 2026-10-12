@@ -174,7 +174,8 @@ def config_context(obj, mask_with_none: bool = False, use_live_global: bool = Tr
 
     Args:
         obj: Object with config fields (pipeline_config, step, etc.)
-        mask_with_none: If True, None values override/mask base config values.
+        mask_with_none: If True, None values override/mask base config values, and
+                       field resolution does not look at any layer outside this one.
                        If False (default), None values are ignored (normal inheritance).
                        Use True when editing GlobalPipelineConfig to mask thread-local
                        loaded instance with static class defaults.
