@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import ClassVar
 
 
@@ -69,10 +70,7 @@ class ScopeKey(str):
     def ancestors(self) -> tuple[ScopeKey, ...]:
         """The global scope, then each prefix of this key, ending with the key itself."""
 
-        parts = self.parts
-        return (ScopeKey(),) + tuple(
-            ScopeKey(self.SEPARATOR.join(parts[: index + 1])) for index in range(len(parts))
-        )
+        return _ancestors(self)
 
     def contains(self, other: str | None) -> bool:
         """Whether ``other`` is this scope or below it."""
@@ -86,3 +84,13 @@ class ScopeKey(str):
         """Whether ``other`` is below this scope and not the scope itself."""
 
         return ScopeKey(other) != self and self.contains(other)
+
+
+@lru_cache(maxsize=4096)
+def _ancestors(scope: ScopeKey) -> tuple[ScopeKey, ...]:
+    """``ScopeKey.ancestors``, kept per key: every resolved read of a state asks for it."""
+
+    parts = scope.parts
+    return (ScopeKey(),) + tuple(
+        ScopeKey(scope.SEPARATOR.join(parts[: index + 1])) for index in range(len(parts))
+    )

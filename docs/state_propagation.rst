@@ -94,3 +94,42 @@ Use parent forwarding when all of the following are true:
 
 For a nested dataclass field in the same state, call ``update_parameter()`` on
 the dotted path instead.
+
+What a resolved value is computed from
+--------------------------------------
+
+A resolved value of a state is computed from three things: which states are
+registered at the scopes above it, what each of them stores for the field's config
+type and field name, and what the global config stores. Each resolved snapshot (live
+and saved) keeps the objects it was computed from (``ResolutionSources``): the global
+config instance of the thread that resolved it and the object of every state
+registered above. Every resolved read (``get_resolved_value``,
+``get_saved_resolved_value``, ``get_provenance``, ``to_resolved_object``,
+``state.fields``) first compares those objects with the ones the state would be given
+now. When they are the same objects the read answers from the snapshot. When one is
+another object, the two are compared field by field, the way field resolution reads a
+context layer, and only the fields of the state that are unset and can inherit a
+differing ``(config type, field)`` are resolved again. When other scopes have a
+registered state than before, every field is.
+
+So no caller announces a change. Registering, unregistering or replacing an ancestor,
+editing, saving, restoring, undoing or redoing an ancestor's value, and replacing the
+global config with ``set_live_global_config`` / ``set_saved_global_config`` all reach
+a state on its next read, whether the state is registered or not. A registered state
+is also told at once, so its subscribers hear of the change without a read; a state
+that is not registered is referenced by nothing and tells its subscribers on its next
+read.
+
+Limits:
+
+- Objects are compared by identity. A source that is changed in place is not seen.
+  ``ObjectState.to_object`` returns the same function object for a state that wraps a
+  plain function, so states registered below a function-backed state follow its edits
+  only through the registry (that is, when they are registered themselves).
+- The global config is stored per thread. A snapshot follows the global config of the
+  thread that resolved it; a read from another thread answers from the snapshot and
+  does not resolve it again for that thread's global config.
+- A state built or resolved inside a ``config_context`` the caller entered takes that
+  context's layers into its snapshot and keeps them after the block
+  (`issue #53 <https://github.com/OpenHCSDev/ObjectState/issues/53>`_).
+
