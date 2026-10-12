@@ -28,9 +28,6 @@ def _reset_registry() -> None:
     ObjectStateRegistry._current_timeline = "main"
     ObjectStateRegistry._current_head = None
     ObjectStateRegistry._in_time_travel = False
-    ObjectStateRegistry._atomic_depth = 0
-    ObjectStateRegistry._atomic_label = None
-    ObjectStateRegistry._atomic_triggering_scope = None
     ObjectStateRegistry._token = 0
     ObjectStateRegistry._resolved_changed_callbacks.clear()
 

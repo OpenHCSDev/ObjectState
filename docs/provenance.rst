@@ -77,6 +77,11 @@ Get the source scope_id and type for an inherited field value:
     else:
         print("partition_filter is explicitly set on this object")
 
+When another config of the same object supplies the value, the source scope is the
+state's own ``scope_id``. For a state created without a scope id that is ``None``, so
+``(None, source_type)`` means "this object, through ``source_type``". ``None`` alone
+still means the value is set on the field itself.
+
 **Returns:**
 * ``Tuple[str, type]`` if the value is inherited
 * ``None`` if the value is explicitly set on the current object
@@ -86,7 +91,8 @@ Get the source scope_id and type for an inherited field value:
 resolve_with_provenance()
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Resolve a field value AND find its provenance source in ONE walk:
+Resolve a field in the active context. This is the one resolution: attribute access on a
+lazy config returns its ``value``, and ``ObjectState`` stores all three parts.
 
 .. code-block:: python
 
@@ -109,11 +115,21 @@ Resolve a field value AND find its provenance source in ONE walk:
 
 **Returns:**
 
-* ``value``: The resolved field value (may be ``None``)
-* ``source_scope``: The scope_id where the value was found (or ``None``)
-* ``source_type``: The type that provided the value (or ``None``)
+A ``ResolvedField`` named tuple:
 
-**Performance:** Single walk instead of separate resolve + provenance calls.
+* ``value``: The resolved field value (may be ``None``)
+* ``source_scope``: The scope id of the layer that supplied the value. ``None`` for a layer
+  entered with ``config_context(obj)`` without a ``scope_id``.
+* ``source_type``: The type the value was read from: the container type or one of its bases.
+
+When no layer holds a value, ``value`` is the declared default and the source names the
+outermost layer holding the nearest type in the MRO (``None`` when no layer holds one).
+
+Raises ``NoActiveContextError`` when no context is active.
+
+**Caching:** the answer is kept on the layer stack it was computed from
+(``ContextLayerStack.resolved_fields``) and is dropped with that stack. Entering or leaving a
+context, in this thread or another, never clears another context's answers.
 
 get_field_provenance()
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -142,13 +158,14 @@ The provenance system uses the context layer stack for tracking:
 
     from objectstate.context_manager import get_context_layer_stack
 
-    # Get the current layer stack for provenance tracking
-    layers = get_context_layer_stack()
-    # Returns: [(scope_id, obj), ...] tuples
+    stack = get_context_layer_stack()
+    for layer in stack.layers:          # outermost first
+        print(layer.scope_id, layer.obj)
 
-    # Used by get_field_provenance() to determine which scope provided a resolved value
-
-The context layer stack tracks ``(scope_id, obj)`` tuples for provenance tracking, parallel to the merged config. It preserves hierarchy for inheritance source lookup.
+The stack holds one ``ContextLayer`` for every object entered with ``config_context()``, with or
+without a scope id, above the global config the context started from (scope ``""``). It is the
+value ``resolve_with_provenance()`` reads. A layer entered with ``mask_with_none=True`` hides the
+layers outside it.
 
 Usage Examples
 --------------
@@ -285,7 +302,7 @@ How Provenance Works
 
 The provenance system works through these mechanisms:
 
-1. **Context Layer Stack**: The ``config_context()`` manager tracks ``(scope_id, obj)`` tuples as contexts are pushed.
+1. **Context Layer Stack**: The ``config_context()`` manager adds a ``ContextLayer`` for every object entered.
 
 2. **Dual-Axis Resolution with Provenance**: When resolving inherited fields, ``resolve_with_provenance()`` walks both the MRO and context hierarchy, returning the first concrete value found along with its source information.
 
