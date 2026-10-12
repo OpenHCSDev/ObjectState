@@ -1,62 +1,35 @@
 """
 Generic dual-axis resolver for lazy configuration inheritance.
 
-This module provides the core inheritance resolution logic as a pure function,
-supporting both context hierarchy (X-axis) and sibling inheritance (Y-axis).
+``resolve_with_provenance`` is the one resolution of a field in the active context,
+over both the context hierarchy (X-axis) and sibling inheritance (Y-axis). It returns
+the value together with the scope and type that supplied it.
 
 The resolver is completely generic and has no application-specific dependencies.
 """
 
-import logging
 import functools
-from typing import Any, Dict, Optional, Tuple
-from dataclasses import MISSING, is_dataclass
+import logging
+from dataclasses import MISSING, fields, is_dataclass
+from typing import Any, NamedTuple
 
 logger = logging.getLogger(__name__)
 
-# PERFORMANCE: Cache MRO resolution results
-# Key: (obj_type, field_name, context_signature) -> resolved value
-# context_signature = tuple of (config_type, id(config_instance)) for stable identity
-_mro_resolution_cache: Dict[Tuple, Any] = {}
-_CACHE_SENTINEL = object()  # Distinguishes "cached None" from "not cached"
 
+class ResolvedField(NamedTuple):
+    """What a field resolves to in one context, with the layer that supplied it.
 
-def clear_mro_resolution_cache() -> None:
-    """Clear the MRO resolution cache. Call when context fundamentally changes."""
-    _mro_resolution_cache.clear()
+    ``source_scope`` is the scope id of the supplying layer and ``source_type`` the
+    config type it was read from, which is the container type or one of its bases.
 
-
-def invalidate_mro_cache_for_field(changed_type: type, field_name: str) -> None:
-    """Invalidate cache entries for a specific field that could be affected by a type change.
-
-    PERFORMANCE: Only clears cache entries where:
-    1. The field_name matches
-    2. The obj_type has changed_type in its MRO (could inherit from it)
-
-    This is much more targeted than clear_mro_resolution_cache().
+    When no layer holds a value, ``value`` is the declared default (or ``None``) and
+    the source names where the field lives in the context: the outermost layer holding
+    the nearest type in the MRO. Both are ``None`` when no layer holds such a type.
     """
-    if not _mro_resolution_cache:
-        return
-    if not isinstance(changed_type, type):
-        return
 
-    from objectstate.lazy_factory import get_base_type_for_lazy
-    base_changed = get_base_type_for_lazy(changed_type) or changed_type
-
-    keys_to_remove = []
-    for key in _mro_resolution_cache:
-        obj_type, cached_field, _ = key
-        if cached_field != field_name:
-            continue
-        # Check if obj_type could inherit from changed_type
-        obj_base = get_base_type_for_lazy(obj_type) or obj_type
-        if not isinstance(obj_base, type):
-            continue
-        if base_changed in obj_base.__mro__:
-            keys_to_remove.append(key)
-
-    for key in keys_to_remove:
-        del _mro_resolution_cache[key]
+    value: Any
+    source_scope: str | None
+    source_type: type | None
 
 
 @functools.lru_cache(maxsize=None)
@@ -74,19 +47,7 @@ def _normalize_to_base(t: type) -> type:
     return get_base_type_for_lazy(t) or t
 
 
-def _has_concrete_field_override(config_class, field_name: str) -> bool:
-    """
-    Check if a class has a concrete field override (not None).
-
-    Used by lazy_factory to find MRO concrete values.
-    """
-    if hasattr(config_class, field_name):
-        class_attr_value = getattr(config_class, field_name)
-        return class_attr_value is not None
-    return False
-
-
-def _direct_owner_field_default(config_type: type, field_name: str) -> Tuple[bool, Any]:
+def _direct_owner_field_default(config_type: type, field_name: str) -> tuple[bool, Any]:
     """Return the default owned by config_type for field_name.
 
     Lazy config resolution intentionally forces inherited dataclass fields to
@@ -115,260 +76,137 @@ def _direct_owner_field_default(config_type: type, field_name: str) -> Tuple[boo
     return False, None
 
 
-def resolve_field_inheritance(
-    obj,
-    field_name: str,
-    available_configs: Dict[type, Any]
-) -> Any:
+def declared_default(container_type: type, field_name: str) -> tuple[Any, type | None]:
+    """The value a field has when no context layer supplies one.
+
+    In order: the default the base type declares for the field itself, the first
+    concrete class attribute along the base type's MRO, then the default the field
+    had before it was rebuilt to inherit (kept in the field's metadata).
+
+    Returns the value and, when the base type declares a default for the field
+    itself, that base type; otherwise ``None`` in its place.
     """
-    MRO-based inheritance resolution.
+    container_base = _normalize_to_base(container_type)
+    has_own_default, own_default = _direct_owner_field_default(container_base, field_name)
+    own_default_type = container_base if has_own_default else None
+    if own_default is not None:
+        return own_default, own_default_type
 
-    ALGORITHM:
-    For LazyDataclass types:
-      1. Check if same-type config exists in context with concrete value
-      2. Walk MRO to find parent class configs with concrete value
-      3. Fall back to static class defaults if nothing found
+    for mro_class in container_base.__mro__:
+        class_value = getattr(mro_class, field_name, None)
+        if class_value is not None:
+            return class_value, own_default_type
 
-    For concrete classes with lazy resolution:
-      1. SKIP same-type lookup (if you created ProcessingConfig(group_by=None), you want None)
-      2. Walk MRO to find PARENT class configs with concrete value (sibling inheritance)
-      3. Return None if nothing found (no static default fallback)
+    if is_dataclass(container_type):
+        for field_definition in fields(container_type):
+            if field_definition.name != field_name:
+                continue
+            metadata = field_definition.metadata
+            inherited = metadata.get("_inherited_default", MISSING)
+            if inherited is not MISSING:
+                return inherited, own_default_type
+            factory = metadata.get("_inherited_default_factory", MISSING)
+            if factory is not MISSING:
+                return factory(), own_default_type
+    return None, own_default_type
 
-    Args:
-        obj: The object requesting field resolution
-        field_name: Name of the field to resolve
-        available_configs: Dict mapping config types to config instances
 
-    Returns:
-        Resolved field value or None if not found
+def resolve_with_provenance(container_type: type, field_name: str) -> ResolvedField:
     """
-    obj_type = type(obj)
+    Resolve a field in the active context: its value and the layer that supplied it.
 
-    # Check if this field needs resolution (instance value is None)
-    try:
-        instance_value = object.__getattribute__(obj, field_name)
-        needs_resolution = instance_value is None
-    except AttributeError:
-        needs_resolution = True
+    This is the one resolution. Attribute access on a lazy config takes ``.value``
+    from it; ``ObjectState`` takes the value and the source together.
 
-    # Step 1: Check if exact same type has concrete value in context
-    # Do same-type lookup if the field value is None (needs lazy resolution).
-    # This works for both LazyDataclass types AND concrete dataclasses with None fields.
-    obj_base = _normalize_to_base(obj_type)
-
-    # PERFORMANCE: Check MRO resolution cache before doing the full walk.
-    # Cache key uses (obj_type, field_name, config_identity) where config_identity
-    # captures which config instances are active. Cache is cleared on context push/pop.
-    _cache_key = (obj_type, field_name, tuple((k, id(v)) for k, v in available_configs.items()))
-    _cached = _mro_resolution_cache.get(_cache_key, _CACHE_SENTINEL)
-    if _cached is not _CACHE_SENTINEL:
-        return _cached
-
-    if needs_resolution:
-        for config_type, config_instance in available_configs.items():
-            # Normalize both sides: LazyPartitionFilterConfig matches PartitionFilterConfig
-            instance_base = _normalize_to_base(type(config_instance))
-            if instance_base == obj_base:
-                try:
-                    field_value = object.__getattribute__(config_instance, field_name)
-                    if field_value is not None:
-                        _mro_resolution_cache[_cache_key] = field_value
-                        return field_value
-                except AttributeError:
-                    continue
-
-    # Step 2: MRO-based inheritance - traverse MRO from most to least specific
-    # Skip the first entry (self type) since we already checked it above (for lazy) or want to skip it (for concrete)
-    # This finds PARENT class configs with concrete values (sibling inheritance)
-
-    for mro_class in obj_type.__mro__[1:]:  # Skip first (self type)
-        if not is_dataclass(mro_class):
-            continue
-
-        # Look for a config instance of this MRO class type in the available configs
-        # Normalize both sides: a LazyPartitionFilterConfig instance matches
-        # PartitionFilterConfig in the MRO
-        mro_base = _normalize_to_base(mro_class)
-        for config_instance in available_configs.values():
-            instance_base = _normalize_to_base(type(config_instance))
-            if instance_base == mro_base:
-                try:
-                    value = object.__getattribute__(config_instance, field_name)
-                    if value is not None:
-                        _mro_resolution_cache[_cache_key] = value
-                        return value
-                except AttributeError:
-                    continue
-
-    has_default, default_value = _direct_owner_field_default(obj_base, field_name)
-    if has_default:
-        _mro_resolution_cache[_cache_key] = default_value
-        return default_value
-
-    # If MRO walk finds nothing and the field is not directly owned by this
-    # config class, return None so inherited fields continue to resolve through
-    # their owning MRO/default config.
-    _mro_resolution_cache[_cache_key] = None
-    return None
-
-
-def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any, Optional[str], Optional[type]]:
-    """
-    Resolve a field value AND find its provenance source in ONE walk.
-
-    TWO-PHASE DUAL-AXIS RESOLUTION:
-
-    Phase 1 - Hierarchy (same-type only, outer to inner):
-      Walk scopes from global → pipeline → step, checking ONLY the same-type config.
-      If a concrete value is found, return it immediately.
-      This gives hierarchy precedence for directly-set values.
-
-    Phase 2 - MRO fallback (only if Phase 1 found nothing):
-      Walk scopes from inner to outer (step → pipeline → global), doing MRO walk.
-      This allows sibling inheritance when no concrete value exists in the hierarchy.
-
-    This ensures:
-    - GlobalPipelineConfig.partition_filter_config.partition_filter overrides the same field
-      at PipelineConfig level (hierarchy precedence for same-type)
-    - MRO inheritance only applies when NO concrete value exists in the hierarchy
-      for the specific config type being resolved
-
-    PERFORMANCE: Single walk instead of separate resolve + provenance calls.
-
-    IMPORTANT: Must be called within a config_context() that has scope_ids set up.
-    The layer stack is built by build_context_stack() with ancestor_objects_with_scopes.
+    The answer is kept on the active layer stack, so it lives exactly as long as the
+    context it was computed from.
 
     Args:
         container_type: The type containing the field (e.g., LazyPathPlanningConfig)
-        field_name: Name of the field to find provenance for (e.g., "partition_filter")
+        field_name: Name of the field to resolve (e.g., "partition_filter")
 
-    Returns:
-        (resolved_value, source_scope_id, source_type): The resolved value, scope that
-        provided it, and the TYPE that has the concrete value (may differ from container_type
-        due to MRO inheritance, e.g., PathPlanningConfig instead of PartitionFilterConfig).
-        If no concrete value found, returns (None, None, None).
+    Raises:
+        NoActiveContextError: no ``config_context`` is active.
     """
-    from objectstate.context_manager import get_context_layer_stack, extract_all_configs
+    from objectstate.context_manager import NoActiveContextError, context_layer_stack
 
-    layers = get_context_layer_stack()
-    if not layers:
-        return None, None, None
+    stack = context_layer_stack.get()
+    if not stack.layers:
+        raise NoActiveContextError(
+            f"Cannot resolve {container_type.__name__}.{field_name}: "
+            "no config context is active."
+        )
+    return resolve_in_stack(stack, container_type, field_name)
 
-    # Normalize the container type for comparison
+
+def resolve_in_stack(stack, container_type: type, field_name: str) -> ResolvedField:
+    """``resolve_with_provenance`` for a layer stack the caller already holds."""
+    key = (container_type, field_name)
+    resolved = stack.resolved_fields.get(key)
+    if resolved is None:
+        resolved = stack.resolved_fields[key] = _resolve_in_layers(
+            stack.layers, container_type, field_name
+        )
+    return resolved
+
+
+def _resolve_in_layers(layers: tuple, container_type: type, field_name: str) -> ResolvedField:
+    """Walk the container type's MRO and, for each type, the layers from inner to outer.
+
+    MRO order dominates layer order: ``None`` in an inner layer means "inherit", so
+    every outer layer is asked for the same type before a less specific type is
+    tried. A layer that masks the layers outside it ends the walk outward.
+    """
     container_base = _normalize_to_base(container_type)
 
-    # Build MRO list for container_type (normalized) - includes self type first
-    mro_types = []
+    visible_layers = []
+    for layer in reversed(layers):
+        visible_layers.append(layer)
+        if layer.masks_outer_layers:
+            break
+
+    # Where the field lives when every layer leaves it None: the outermost layer
+    # holding the first MRO type that any layer holds.
+    unset_scope: str | None = None
+    unset_type: type | None = None
+    unset_found = False
+
     for mro_class in container_base.__mro__:
         if not is_dataclass(mro_class):
             continue
-        mro_base = _normalize_to_base(mro_class)
-        mro_types.append(mro_base)
+        mro_type = _normalize_to_base(mro_class)
+        outermost_scope: str | None = None
+        held_by_a_layer = False
 
-    # TWO-PHASE RESOLUTION:
-    # Phase 1: Hierarchy walk (same-type only) - outer to inner
-    # Phase 2: MRO fallback (only if no concrete value in hierarchy)
-    #
-    # This ensures:
-    # - A concrete value at GlobalPipelineConfig.partition_filter_config.partition_filter overrides
-    #   the same field at PipelineConfig level (hierarchy precedence)
-    # - MRO inheritance only applies when NO concrete value exists in the hierarchy
-    #   for the specific config type being resolved
-
-    # Track fallback provenance - where we find the field (even if None)
-    fallback_scope: Optional[str] = None
-    fallback_type: Optional[type] = None
-
-    # Collect layer configs once for both phases
-    all_layer_configs: list[tuple[str, dict]] = []
-    for scope_id, layer_obj in layers:
-        if layer_obj is None:
-            continue
-        try:
-            layer_configs = extract_all_configs(layer_obj)
-            all_layer_configs.append((scope_id, layer_configs))
-        except Exception:
-            continue
-
-    # PHASE 1: Hierarchy walk - check ONLY same-type config at each scope (inner to outer)
-    # This gives hierarchy precedence: inner/child scopes override outer/parent scopes
-    # REVERSED ORDER: Walk from inner to outer so more specific scopes override general scopes
-    for scope_id, layer_configs in reversed(all_layer_configs):
-
-        # extract_all_configs admits one instance per canonical owner type.
-        config_instance = layer_configs.get(container_base)
-        if config_instance is None:
-            continue
-        try:
-            value = object.__getattribute__(config_instance, field_name)
-            if value is not None:
-                # Found concrete value in hierarchy - return immediately
-                return value, scope_id, container_base
-            # Don't set fallback here - let Phase 2 walk MRO to find
-            # the highest type that defines this field
-        except AttributeError:
-            continue
-
-    # PHASE 2: MRO fallback - no concrete value in hierarchy, try MRO inheritance
-    #
-    # IMPORTANT SEMANTICS:
-    # MRO order must dominate scope order.
-    #
-    # If a more-specific MRO class has a field set to None at an inner scope, that
-    # means "inherit". We must first check outer scopes for that SAME MRO class
-    # before falling back to later (less-specific) MRO classes at the inner scope.
-    #
-    # Therefore: for each MRO type (most→least specific), scan scopes (inner→outer)
-    # looking for the first non-None value.
-
-    # Track where the "highest-precedence" field exists even if None, so callers
-    # can still navigate to a sensible provenance target when everything is None.
-    best_fallback_set = False
-
-    for mro_type in mro_types:
-        last_scope_for_type: Optional[str] = None
-        saw_type_anywhere = False
-
-        # Walk scopes from inner→outer for this MRO type
-        for scope_id, layer_configs in reversed(all_layer_configs):
-            config_instance = layer_configs.get(mro_type)
+        for layer in visible_layers:
+            config_instance = layer.configs.get(mro_type)
             if config_instance is None:
                 continue
-
-            saw_type_anywhere = True
-            last_scope_for_type = scope_id  # update as we walk inner→outer (last = outermost)
-
+            held_by_a_layer = True
+            outermost_scope = layer.scope_id
             try:
                 value = object.__getattribute__(config_instance, field_name)
             except AttributeError:
                 continue
-
-
             if value is not None:
-                # Found MRO-inherited value
-                return value, scope_id, mro_type
+                return ResolvedField(value, layer.scope_id, mro_type)
 
-        # No non-None found for this MRO type across any scope.
-        # Record fallback for the FIRST MRO type that exists anywhere.
-        if (not best_fallback_set) and saw_type_anywhere:
-            best_fallback_set = True
-            fallback_scope = last_scope_for_type
-            fallback_type = mro_type
+        if held_by_a_layer and not unset_found:
+            unset_found = True
+            unset_scope = outermost_scope
+            unset_type = mro_type
 
-    has_default, default_value = _direct_owner_field_default(container_base, field_name)
-    if has_default:
-        return default_value, fallback_scope, container_base
-
-    # No non-None found - return None with fallback provenance (outermost/highest MRO type)
-    return None, fallback_scope, fallback_type
+    default_value, own_default_type = declared_default(container_type, field_name)
+    return ResolvedField(default_value, unset_scope, own_default_type or unset_type)
 
 
-def get_field_provenance(container_type: type, field_name: str) -> Tuple[Optional[str], Optional[type]]:
+def get_field_provenance(
+    container_type: type, field_name: str
+) -> tuple[str | None, type | None]:
     """
     Find which scope AND type provided the concrete value for a field.
 
-    CONVENIENCE WRAPPER: Calls resolve_with_provenance() and returns scope + type.
-    Use resolve_with_provenance() directly when you also need the value.
+    The scope and type of ``resolve_with_provenance()``, without the value.
 
     Args:
         container_type: The type containing the field (e.g., LazyPathPlanningConfig)
@@ -377,7 +215,7 @@ def get_field_provenance(container_type: type, field_name: str) -> Tuple[Optiona
     Returns:
         (source_scope_id, source_type): The scope_id and type that provided the value.
         source_type may differ from container_type due to MRO inheritance.
-        Returns (None, None) if no layer has a concrete value.
+        See ``ResolvedField`` for what they name when no layer has a concrete value.
     """
     _, source_scope, source_type = resolve_with_provenance(container_type, field_name)
     return source_scope, source_type

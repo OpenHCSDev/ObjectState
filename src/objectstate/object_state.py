@@ -1279,7 +1279,7 @@ class ObjectState:
 
         return result
 
-    def get_provenance(self, param_name: str) -> tuple[str, type] | None:
+    def get_provenance(self, param_name: str) -> tuple[str | None, type] | None:
         """Get the source scope_id and type for an inherited field value.
 
         For fields where the local value is None (inherited), returns the scope_id
@@ -1297,16 +1297,32 @@ class ObjectState:
 
         Returns:
             (source_scope_id, source_type): The scope and type that provided the value,
-            or None if the value is local (not inherited).
+            or None if the value is set on this field itself (not inherited).
+
+            When another config of this same object provides the value, the scope
+            is this state's own ``scope_id``. For a state without a scope id that
+            is ``None``, so ``(None, source_type)`` means "this object, through
+            ``source_type``".
         """
         self._ensure_live_resolved()
         result = self._live_provenance.get(param_name)
         if result is None:
-            return None  # Field is local, not inherited
+            return None  # Field is set on this object, not inherited
         scope_id, source_type = result
-        if scope_id is None or source_type is None:
-            return None  # Field not found in hierarchy (shouldn't happen)
+        if source_type is None:
+            return None  # No layer and no declared default supplied the field
+        if scope_id is None and not self._holds_config_type_without_scope(source_type):
+            return None  # No layer held the field; the value is a declared default
         return (scope_id, source_type)
+
+    def _holds_config_type_without_scope(self, source_type: type) -> bool:
+        """True when this state has no scope id and its own object holds ``source_type``.
+
+        A layer without a scope id supplies values under source scope ``None``. The
+        only such layer in this state's context stack is its own object, because the
+        global config and every ancestor are entered under a scope id.
+        """
+        return self.scope_id is None and self.find_path_for_type(source_type) is not None
 
     def find_path_for_type(self, container_type: type) -> str | None:
         """Find the path prefix for a container type in this ObjectState.
@@ -1783,13 +1799,11 @@ class ObjectState:
             # without triggering delegate sync that would invalidate our cache mid-computation.
             current_obj = self.to_object(update_delegate=False, sync_delegate=False)
 
-            stack = build_context_stack(
+            with build_context_stack(
                 object_instance=current_obj,
                 ancestor_objects_with_scopes=ancestor_objects_with_scopes,
                 current_scope_id=self.scope_id,
-            )
-
-            with stack:
+            ):
                 # For each inherited field, resolve using dual-axis resolution with provenance
                 for dotted_path in inherited_fields:
                     container_type = self._path_to_type.get(dotted_path)
@@ -2115,19 +2129,17 @@ class ObjectState:
         from objectstate.dual_axis_resolver import resolve_with_provenance
         from objectstate.lazy_factory import has_lazy_resolution
 
-        stack = build_context_stack(
-            object_instance=current_obj,
-            ancestor_objects_with_scopes=ancestor_objects_with_scopes,
-            current_scope_id=scope_id,
-            use_live=not use_saved,
-        )
-
         snapshot: dict[str, Any] = {}
         provenance: dict[str, tuple[str | None, type | None]] = {}
 
         # UNIFIED: Resolve ALL fields in single context stack
         # For each path, check if it has a lazy dataclass container type
-        with stack:
+        with build_context_stack(
+            object_instance=current_obj,
+            ancestor_objects_with_scopes=ancestor_objects_with_scopes,
+            current_scope_id=scope_id,
+            use_live=not use_saved,
+        ):
             for dotted_path in parameters.keys():
                 raw_value = values.get(dotted_path)
                 container_type = structure.owner_paths.get(dotted_path)

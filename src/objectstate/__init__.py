@@ -78,15 +78,14 @@ from objectstate.lazy_factory import (
 
 # Resolver
 from objectstate.dual_axis_resolver import (
-    resolve_field_inheritance,
-    _has_concrete_field_override,
+    ResolvedField,
+    resolve_with_provenance,
 )
 
 # Context
 from objectstate.context_manager import (
     config_context,
     get_current_temp_global,
-    set_current_temp_global,
     clear_current_temp_global,
     merge_configs,
     extract_all_configs,
@@ -168,12 +167,11 @@ __all__ = [
     'is_global_config_type',
     'is_global_config_instance',
     # Resolver
-    'resolve_field_inheritance',
-    '_has_concrete_field_override',
+    'ResolvedField',
+    'resolve_with_provenance',
     # Context
     'config_context',
     'get_current_temp_global',
-    'set_current_temp_global',
     'clear_current_temp_global',
     'merge_configs',
     'extract_all_configs',
@@ -212,7 +210,7 @@ __all__ = [
     'ObjectStateEditSession',
 ]
 
-__version__ = "2.1.1"
+__version__ = "3.0.0"
 __author__ = 'OpenHCS Team'
 __description__ = 'Generic configuration framework for lazy dataclass resolution'
 
