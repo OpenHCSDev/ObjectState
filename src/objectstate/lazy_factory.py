@@ -46,9 +46,17 @@ def _recreated_dataclass_namespace(
     declared_type: type,
     recreated_name: str,
 ) -> dict[str, object]:
-    """Return declaration-owned metadata for a recreated dataclass."""
+    """Return declaration-owned metadata for a recreated dataclass.
 
-    namespace: dict[str, object] = {"__doc__": declared_type.__doc__}
+    The module and qualified name are in the namespace so the class has them
+    while it is being created: a metaclass that registers classes then sees the
+    declaration the class was rebuilt from, not ``abc`` or this module.
+    """
+
+    namespace: dict[str, object] = {
+        "__doc__": declared_type.__doc__,
+        "__module__": declared_type.__module__,
+    }
     if recreated_name == declared_type.__name__:
         namespace["__qualname__"] = declared_type.__qualname__
     return namespace
@@ -203,16 +211,15 @@ def rebuild_with_none_defaults(
         frozen=is_frozen,
     )
 
-    # Preserve original metaclass if it's not just type
-    # This is critical for AutoRegisterMeta and other custom metaclasses
-    if orig_metaclass is not type:
-        # Re-create the class with the original metaclass
-        # We need to do this because make_dataclass doesn't accept metaclass parameter
-        # But we must NOT re-apply @dataclass since make_dataclass already did that
+    # make_dataclass takes no metaclass parameter: it derives one from the
+    # bases. When the declared class names a metaclass its bases do not carry,
+    # create the class once more with that metaclass. @dataclass is NOT
+    # re-applied, since make_dataclass already did that.
+    if type(new_cls) is not orig_metaclass:
         new_cls = orig_metaclass(
             new_cls.__name__,
             new_cls.__bases__,
-            dict(new_cls.__dict__),
+            {**new_cls.__dict__, **_recreated_dataclass_namespace(cls, recreated_name)},
         )
 
     return _restore_recreated_dataclass_metadata(new_cls, cls)
