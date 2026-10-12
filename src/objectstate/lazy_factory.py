@@ -3,6 +3,7 @@
 # Standard library imports
 import copy
 import dataclasses
+import inspect
 import logging
 import re
 import sys
@@ -91,10 +92,9 @@ def get_inherited_field_names(cls: Type) -> set:
         if dataclasses.is_dataclass(base):
             parent_fields.update(base.__dataclass_fields__.keys())
 
-    # Get cls's OWN annotations (not inherited) - check __dict__ not getattr
-    own_defined = set()
-    if '__annotations__' in cls.__dict__:
-        own_defined = set(cls.__dict__['__annotations__'].keys())
+    # cls's OWN annotations (not inherited). Python 3.14 (PEP 649) no longer
+    # stores them in cls.__dict__['__annotations__'].
+    own_defined = set(inspect.get_annotations(cls, eval_str=False))
 
     return parent_fields - own_defined
 
@@ -1455,7 +1455,7 @@ def _extract_abbreviations_from_annotations(cls: Type) -> Dict[str, str]:
             continue
             
         # Get this class's own annotations (not inherited)
-        annotations = klass.__dict__.get('__annotations__', {})
+        annotations = inspect.get_annotations(klass, eval_str=False)
         
         for field_name, field_type in annotations.items():
             # Check if this is an Annotated type
