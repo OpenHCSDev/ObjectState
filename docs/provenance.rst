@@ -77,6 +77,11 @@ Get the source scope_id and type for an inherited field value:
     else:
         print("partition_filter is explicitly set on this object")
 
+When another config of the same object supplies the value, the source scope is the
+state's own ``scope_id``. For a state created without a scope id that is ``None``, so
+``(None, source_type)`` means "this object, through ``source_type``". ``None`` alone
+still means the value is set on the field itself.
+
 **Returns:**
 * ``Tuple[str, type]`` if the value is inherited
 * ``None`` if the value is explicitly set on the current object

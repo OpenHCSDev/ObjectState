@@ -11,22 +11,47 @@ This service is completely generic and UI-agnostic:
 - Caller is responsible for providing live context data
 """
 
-from typing import Any, Dict, Type, Optional, Tuple
-from dataclasses import is_dataclass
-
-from objectstate.lazy_factory import replace_raw
-from objectstate.context_manager import config_context
 import logging
+from dataclasses import is_dataclass
+from typing import Any
+
+from objectstate.context_manager import config_context
+from objectstate.lazy_factory import replace_raw
 
 logger = logging.getLogger(__name__)
+
+
+class _ResolvedAttr:
+    """One answer, held together with the objects it was computed from.
+
+    Holding the objects keeps them alive for as long as the answer is kept, and
+    the answer is found again by comparing those objects with ``is``.
+    """
+
+    __slots__ = ("config_obj", "context_stack", "value")
+
+    def __init__(self, config_obj: object, context_stack: tuple[object, ...], value: Any):
+        self.config_obj = config_obj
+        self.context_stack = context_stack
+        self.value = value
+
+    def computed_from(self, config_obj: object, context_stack: list) -> bool:
+        return (
+            self.config_obj is config_obj
+            and len(self.context_stack) == len(context_stack)
+            and all(kept is given for kept, given in zip(self.context_stack, context_stack))
+        )
 
 
 class LiveContextResolver:
     """
     Pure service for resolving config attributes with live values.
 
-    Caches resolved config values to avoid expensive context stack building + resolution.
-    Token-based invalidation ensures cache coherency.
+    Keeps resolved values to avoid expensive context stack building + resolution.
+    The answers kept are those of one cache token. Each is stored with the config
+    object and the context objects it was computed from, so it is returned only
+    for those same objects. Answers of an earlier token are dropped when a new
+    token arrives.
 
     Completely generic - works with any dataclasses and any context hierarchy.
     UI layer is responsible for:
@@ -36,15 +61,16 @@ class LiveContextResolver:
     """
 
     def __init__(self):
-        self._resolved_value_cache: Dict[Tuple, Any] = {}
+        self._answers_token: int | None = None
+        self._answers_by_attr: dict[str, list[_ResolvedAttr]] = {}
 
     def resolve_config_attr(
         self,
         config_obj: object,
         attr_name: str,
         context_stack: list,
-        live_context: Dict[Type, Dict[str, Any]],
-        cache_token: int
+        live_context: dict[type, dict[str, Any]],
+        cache_token: int,
     ) -> Any:
         """
         Resolve config attribute through context hierarchy with caching.
@@ -61,29 +87,27 @@ class LiveContextResolver:
         Returns:
             Resolved attribute value
         """
-        # Build cache key using object identities
-        context_ids = tuple(id(ctx) for ctx in context_stack)
-        cache_key = (id(config_obj), attr_name, context_ids, cache_token)
+        if cache_token != self._answers_token:
+            self._answers_by_attr = {}
+            self._answers_token = cache_token
 
-        # Check resolved value cache
-        if cache_key in self._resolved_value_cache:
-            return self._resolved_value_cache[cache_key]
+        answers = self._answers_by_attr.setdefault(attr_name, [])
+        for answer in answers:
+            if answer.computed_from(config_obj, context_stack):
+                return answer.value
 
-        # Cache miss - resolve
         resolved_value = self._resolve_uncached(
             config_obj, attr_name, context_stack, live_context
         )
-
-        # Store in cache
-        self._resolved_value_cache[cache_key] = resolved_value
-
+        answers.append(_ResolvedAttr(config_obj, tuple(context_stack), resolved_value))
         return resolved_value
 
     def invalidate(self) -> None:
-        """Invalidate all caches."""
-        self._resolved_value_cache.clear()
+        """Drop every kept answer."""
+        self._answers_token = None
+        self._answers_by_attr = {}
 
-    def reconstruct_live_values(self, live_values: Dict[str, Any]) -> Dict[str, Any]:
+    def reconstruct_live_values(self, live_values: dict[str, Any]) -> dict[str, Any]:
         """Return live values unchanged."""
         return live_values if live_values else {}
 
@@ -92,7 +116,7 @@ class LiveContextResolver:
         config_obj: object,
         attr_name: str,
         context_stack: list,
-        live_context: Dict[Type, Dict[str, Any]]
+        live_context: dict[type, dict[str, Any]]
     ) -> Any:
         """Resolve config attribute through context hierarchy (uncached)."""
         # Merge live values into each context object
@@ -124,7 +148,7 @@ class LiveContextResolver:
 
         return resolve_in_context(merged_contexts)
 
-    def _merge_live_values(self, base_obj: object, live_values: Optional[Dict[str, Any]]) -> object:
+    def _merge_live_values(self, base_obj: object, live_values: dict[str, Any] | None) -> object:
         """Merge live values into base object.
 
         CRITICAL: Passes None values through to dataclasses.replace(). When a field is reset

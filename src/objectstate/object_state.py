@@ -1279,7 +1279,7 @@ class ObjectState:
 
         return result
 
-    def get_provenance(self, param_name: str) -> tuple[str, type] | None:
+    def get_provenance(self, param_name: str) -> tuple[str | None, type] | None:
         """Get the source scope_id and type for an inherited field value.
 
         For fields where the local value is None (inherited), returns the scope_id
@@ -1297,16 +1297,32 @@ class ObjectState:
 
         Returns:
             (source_scope_id, source_type): The scope and type that provided the value,
-            or None if the value is local (not inherited).
+            or None if the value is set on this field itself (not inherited).
+
+            When another config of this same object provides the value, the scope
+            is this state's own ``scope_id``. For a state without a scope id that
+            is ``None``, so ``(None, source_type)`` means "this object, through
+            ``source_type``".
         """
         self._ensure_live_resolved()
         result = self._live_provenance.get(param_name)
         if result is None:
-            return None  # Field is local, not inherited
+            return None  # Field is set on this object, not inherited
         scope_id, source_type = result
-        if scope_id is None or source_type is None:
-            return None  # Field not found in hierarchy (shouldn't happen)
+        if source_type is None:
+            return None  # No layer and no declared default supplied the field
+        if scope_id is None and not self._holds_config_type_without_scope(source_type):
+            return None  # No layer held the field; the value is a declared default
         return (scope_id, source_type)
+
+    def _holds_config_type_without_scope(self, source_type: type) -> bool:
+        """True when this state has no scope id and its own object holds ``source_type``.
+
+        A layer without a scope id supplies values under source scope ``None``. The
+        only such layer in this state's context stack is its own object, because the
+        global config and every ancestor are entered under a scope id.
+        """
+        return self.scope_id is None and self.find_path_for_type(source_type) is not None
 
     def find_path_for_type(self, container_type: type) -> str | None:
         """Find the path prefix for a container type in this ObjectState.
