@@ -13,7 +13,7 @@ from objectstate import (
     get_saved_global_config,
     mark_global_config_type,
     set_base_config_type,
-    set_global_config_for_editing,
+    set_global_config,
 )
 
 
@@ -384,7 +384,7 @@ def test_history_restores_saved_live_global_context_after_real_invalidation(
     mark_global_config_type(ContextConfig)
     set_base_config_type(ContextConfig)
     target = ContextConfig(threshold=3)
-    set_global_config_for_editing(ContextConfig, target)
+    set_global_config(ContextConfig, target)
     parent = ObjectState(target, scope_id=None)
     ObjectStateRegistry.register(parent, _skip_snapshot=True)
     child = register(LazyContextConfig(), "child", parent_state=parent)
@@ -395,7 +395,7 @@ def test_history_restores_saved_live_global_context_after_real_invalidation(
     path = tmp_path / "contexts.objectstate"
     ObjectStateRegistry.save_history_to_file(str(path))
     ObjectStateRegistry.clear()
-    set_global_config_for_editing(ContextConfig, ContextConfig(threshold=77))
+    set_global_config(ContextConfig, ContextConfig(threshold=77))
     ObjectStateRegistry.load_history_from_file(str(path))
     for snapshot, live in ((initial, 3), (edited, 9), (initial, 3)):
         assert ObjectStateRegistry.time_travel_to_snapshot(snapshot)

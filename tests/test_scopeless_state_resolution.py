@@ -15,7 +15,7 @@ from objectstate import (
     config_context,
     mark_global_config_type,
     set_base_config_type,
-    set_global_config_for_editing,
+    set_global_config,
 )
 from objectstate.inspection import FieldInspection
 
@@ -54,7 +54,7 @@ class Pipeline:
 @pytest.fixture(params=[None, "plate"], ids=["no scope id", "scope id"])
 def state(request) -> ObjectState:
     set_base_config_type(GlobalConfig)
-    set_global_config_for_editing(
+    set_global_config(
         GlobalConfig, GlobalConfig(WellFilterConfig(well_filter=1, mode="global"))
     )
     return ObjectState(Pipeline(), scope_id=request.param)

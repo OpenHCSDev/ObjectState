@@ -47,9 +47,7 @@ from objectstate import (
     mark_global_config_type,
     resolve_with_provenance,
     set_base_config_type,
-    set_global_config_for_editing,
-    set_live_global_config,
-    set_saved_global_config,
+    set_global_config,
     spawn_thread_with_context,
 )
 
@@ -148,7 +146,7 @@ def _step_state() -> ObjectState:
 def _global_config_and_empty_registry():
     ObjectStateRegistry.clear()
     set_base_config_type(GlobalConfig)
-    set_global_config_for_editing(GlobalConfig, GlobalConfig(settings=Settings(value="global")))
+    set_global_config(GlobalConfig, GlobalConfig(settings=Settings(value="global")))
     yield
     ObjectStateRegistry.clear()
 
@@ -486,12 +484,15 @@ def test_edit_two_levels_up(registered):
     assert _reads(inner) == _inherited("edited", PLATE)
 
 
-def _replace_global(value: str, *, live: bool = True, saved: bool = False) -> None:
-    config = GlobalConfig(settings=Settings(value=value))
-    if live:
-        set_live_global_config(GlobalConfig, config)
-    if saved:
-        set_saved_global_config(GlobalConfig, config)
+def _replace_global(value: str) -> None:
+    set_global_config(GlobalConfig, GlobalConfig(settings=Settings(value=value)))
+
+
+def _register_global_state() -> ObjectState:
+    """From here on the global config is this state's: an edit is live, a save is saved."""
+    global_state = ObjectState(get_live_global_config(GlobalConfig), scope_id=GLOBAL)
+    ObjectStateRegistry.register(global_state)
+    return global_state
 
 
 @pytest.mark.parametrize("registered", [True, False], ids=["registered", "not registered"])
@@ -503,17 +504,17 @@ def test_global_config_replaced_after_the_build(registered):
     step.on_resolved_changed(changes.append)
 
     _replace_global("replaced")
-    assert _reads(step) == _inherited("replaced", GLOBAL, saved="global")
+    assert _reads(step) == _inherited("replaced", GLOBAL)
     assert changes == [{PATH}]
 
-    _replace_global("saved too", saved=True)
-    assert _reads(step) == _inherited("saved too", GLOBAL)
+    global_state = _register_global_state()
+    assert _reads(step) == _inherited("replaced", GLOBAL)
+    global_state.update_parameter(PATH, "edited")
+    assert _reads(step) == _inherited("edited", GLOBAL, saved="replaced")
 
-    _replace_global("only saved", live=False, saved=True)
-    assert _reads(step) == _inherited("saved too", GLOBAL, saved="only saved")
-
-    set_global_config_for_editing(GlobalConfig, GlobalConfig(settings=Settings(value="both")))
-    assert _reads(step) == _inherited("both", GLOBAL)
+    _replace_global("replaced again")  # replaces the object of the state
+    assert _reads(step) == _inherited("replaced again", GLOBAL)
+    assert global_state.parameters[PATH] == "replaced again"
     assert changes == [{PATH}, {PATH}, {PATH}]
 
 
@@ -522,7 +523,7 @@ def test_global_config_replaced_with_equal_values_resolves_nothing(resolved_fiel
     live_snapshot = step._live_resolved
     resolved_fields.clear()
 
-    set_global_config_for_editing(GlobalConfig, GlobalConfig(settings=Settings(value="global")))
+    set_global_config(GlobalConfig, GlobalConfig(settings=Settings(value="global")))
 
     assert step.get_resolved_value(PATH) == "global"
     assert step.get_saved_resolved_value(PATH) == "global"
@@ -545,10 +546,10 @@ def test_global_config_replaced_then_an_ancestor_edited(step_under_plate, resolv
     assert step.get_resolved_value("settings.other") == "edited other"
     assert step.get_provenance(PATH) == (GLOBAL, Settings)
     assert step.get_provenance("settings.other") == (PLATE, Settings)
-    assert step.dirty_fields == {PATH, "settings.other"}
+    assert step.dirty_fields == {"settings.other"}
 
     plate.update_parameter(PATH, "plate again")
-    assert _reads(step) == _inherited("plate again", PLATE, saved="global")._replace(
+    assert _reads(step) == _inherited("plate again", PLATE, saved="replaced")._replace(
         dirty={PATH, "settings.other"}
     )
 
@@ -567,13 +568,18 @@ def test_global_state_edit_reaches_states_two_levels_down(step_under_plate):
     assert _reads(step) == _inherited("typed", GLOBAL)
 
 
-def test_another_thread_does_not_make_a_state_resolve_again(step_under_plate, resolved_fields):
-    """The global config is stored per thread; a snapshot follows the thread it was resolved in.
+def _plain_read() -> str | None:
+    """A lazy object no state owns, read in a context entered from the global config."""
+    with config_context(Holder()):
+        return LazySettings().value
 
-    A thread started without one (``threading.Thread`` copies no thread-local value)
-    reads the values the state has, and a thread that sets its own does not change
-    them. The registry's stores are one per process and not synchronised, so the
-    threads here run one after the other.
+
+def test_every_thread_reads_the_same_global_config(step_under_plate, resolved_fields):
+    """The global config is one per process, like the registry.
+
+    A thread reads the values the state has without resolving anything again, and
+    a global config a thread sets is the global config of every thread. Nothing here
+    is synchronised, so the threads run one after the other.
     """
     step, plate = step_under_plate
     plate.update_parameter(PATH, None)
@@ -584,28 +590,34 @@ def test_another_thread_does_not_make_a_state_resolve_again(step_under_plate, re
     resolved_fields.clear()
     seen: list[tuple] = []
 
-    def read_without_a_global_config():
-        seen.append((step.get_resolved_value(PATH), step.get_saved_resolved_value(PATH)))
-
-    def read_with_its_own_global_config():
-        set_global_config_for_editing(
-            GlobalConfig, GlobalConfig(settings=Settings(value="other thread"))
+    def read():
+        seen.append(
+            (
+                step.get_resolved_value(PATH),
+                step.get_saved_resolved_value(PATH),
+                _plain_read(),
+            )
         )
-        read_without_a_global_config()
 
-    for target in (read_without_a_global_config, read_with_its_own_global_config):
+    def set_and_read():
+        _replace_global("other thread")
+        read()
+
+    def in_a_thread(target):
         thread = threading.Thread(target=target)
         thread.start()
         thread.join()
 
-    assert seen == [expected, expected]
-    assert (step.get_resolved_value(PATH), step.get_saved_resolved_value(PATH)) == expected
+    in_a_thread(read)
+    assert seen == [(*expected, "global")]
     assert resolved_fields == [] and changes == []
 
-    # An ancestor edit is followed from any thread: ancestors are one per process.
-    thread = threading.Thread(target=lambda: plate.update_parameter(PATH, "from a thread"))
-    thread.start()
-    thread.join()
+    in_a_thread(set_and_read)
+    assert seen[1] == ("other thread", "plate", "other thread")
+    assert (step.get_resolved_value(PATH), _plain_read()) == ("other thread", "other thread")
+    assert changes == [{PATH}]
+
+    in_a_thread(lambda: plate.update_parameter(PATH, "from a thread"))
     assert step.get_resolved_value(PATH) == "from a thread"
 
 
@@ -655,7 +667,7 @@ ENTERED = {
 def _start_over() -> None:
     ObjectStateRegistry.clear()
     set_base_config_type(GlobalConfig)
-    set_global_config_for_editing(GlobalConfig, GlobalConfig(settings=Settings(value="global")))
+    set_global_config(GlobalConfig, GlobalConfig(settings=Settings(value="global")))
 
 
 def _history(entered) -> list:
@@ -666,6 +678,7 @@ def _history(entered) -> list:
     """
     plate = ObjectState(Holder(settings=LazySettings(other="plate other")), scope_id=PLATE)
     ObjectStateRegistry.register(plate)
+    global_state = _register_global_state()
     states: dict[str, ObjectState] = {}
     told: list[tuple] = []
     history: list[tuple] = []
@@ -702,7 +715,7 @@ def _history(entered) -> list:
         late = _step_state_at(f"{PLATE}::late")
         record("built")
 
-        _replace_global("replaced")
+        global_state.update_parameter(PATH, "replaced")
         record("global config replaced")
 
         plate.update_parameter(PATH, "edited")
@@ -714,7 +727,8 @@ def _history(entered) -> list:
         plate.update_parameter(OTHER_PATH, None)
         record("ancestor gives a field up")
 
-        _replace_global("saved too", saved=True)
+        global_state.update_parameter(PATH, "saved too")
+        global_state.mark_saved()
         record("saved global config replaced")
 
         before.invalidate_cache()
@@ -740,9 +754,6 @@ def _history(entered) -> list:
         plate.restore_saved()
         record("ancestor restored")
 
-        # Last: editing the state of the global config leaves the entered context.
-        global_state = ObjectState(get_live_global_config(GlobalConfig), scope_id=GLOBAL)
-        ObjectStateRegistry.register(global_state)
         plate.update_parameter(PATH, None)
         plate.mark_saved()
         global_state.update_parameter(PATH, "typed")
@@ -750,6 +761,16 @@ def _history(entered) -> list:
 
         global_state.mark_saved()
         record("global state saved")
+
+        global_state.update_parameter(PATH, "given up")
+        global_state.restore_saved()
+        record("global state restored")
+
+        _replace_global("set from outside")
+        record("global config set from outside")
+
+        ObjectStateRegistry.unregister(global_state)
+        record("global state unregistered")
 
     follow("first read after the block", late)
     record("after the block")
@@ -777,7 +798,14 @@ def test_the_changes_of_the_history_are_seen_outside_any_context():
     }
     assert value_reads("ancestor unregistered") == {_inherited("saved too", GLOBAL)}
     assert value_reads("global state edited") == {_inherited("typed", GLOBAL, saved="saved too")}
-    assert value_reads("after the block") == {_inherited("typed", GLOBAL)}
+    assert value_reads("global state saved") == {_inherited("typed", GLOBAL)}
+    assert value_reads("global state restored") == {_inherited("typed", GLOBAL)}
+    assert value_reads("global config set from outside") == {
+        _inherited("set from outside", GLOBAL)
+    }
+    # What was stored before the state was registered is the global config again.
+    assert value_reads("global state unregistered") == {FROM_GLOBAL}
+    assert value_reads("after the block") == {FROM_GLOBAL}
 
 
 @pytest.mark.parametrize("entered", ENTERED)
@@ -877,12 +905,9 @@ def test_context_entered_in_another_thread_is_not_a_source():
 def test_thread_started_with_the_entered_context_reads_states_as_outside():
     """``spawn_thread_with_context`` copies the entered context into the thread."""
     step = _step_state()
-    configs = get_live_global_config(GlobalConfig), get_saved_global_config(GlobalConfig)
     seen: list = []
 
     def read() -> None:
-        set_live_global_config(GlobalConfig, configs[0])  # stored per thread
-        set_saved_global_config(GlobalConfig, configs[1])
         seen.extend([LazySettings().value, _reads(step), _reads(_step_state())])
 
     with _ambient(scope_id=AMBIENT):
@@ -891,81 +916,3 @@ def test_thread_started_with_the_entered_context_reads_states_as_outside():
     assert seen == ["ambient", FROM_GLOBAL, FROM_GLOBAL]
 
 
-# --- Saving the state of the global config --------------------------------------
-# Saving that state makes its saved object the saved global config. An application
-# that also stores it with the setter, before or after, ends in the same place.
-
-SAVE_ORDERS = {
-    "save the state": ("save",),
-    "save the state, then store": ("save", "store"),
-    "store, then save the state": ("store", "save"),
-}
-
-
-def _save_a_global_edit(order: tuple[str, ...], *, registered: bool):
-    """Edit ``value`` in the global state, save in ``order``; what its descendants then read."""
-    global_state = ObjectState(get_live_global_config(GlobalConfig), scope_id=GLOBAL)
-    ObjectStateRegistry.register(global_state)
-    descendants = [ObjectState(Holder(), scope_id=PLATE), _step_state()]
-    told: list[tuple] = []
-    for state in descendants:
-        if registered:
-            ObjectStateRegistry.register(state)
-        state.on_state_changed(
-            lambda paths, state=state: told.append(
-                (state.scope_id, frozenset(paths), frozenset(state.dirty_fields))
-            )
-        )
-
-    global_state.update_parameter(PATH, "typed")
-    assert get_live_global_config(GlobalConfig).settings.value == "typed"
-    assert get_saved_global_config(GlobalConfig).settings.value == "global"
-    edited = global_state.to_object()
-
-    for operation in order:
-        if operation == "save":
-            global_state.mark_saved()
-        else:
-            set_saved_global_config(GlobalConfig, edited)
-
-    told_dirty = {scope: dirty for scope, _, dirty in told}  # the last each was told
-    dirty = [set(state.dirty_fields) for state in (global_state, *descendants)]
-    reads = [_reads(state) for state in descendants]
-    return (
-        dirty,
-        reads,
-        told_dirty,
-        tuple(told),
-        get_saved_global_config(GlobalConfig).settings.value,
-    )
-
-
-@pytest.mark.parametrize("registered", [True, False], ids=["registered", "not registered"])
-def test_saving_the_global_state_in_any_order_leaves_nothing_dirty(registered):
-    results = {}
-    for name, order in SAVE_ORDERS.items():
-        _start_over()
-        results[name] = _save_a_global_edit(order, registered=registered)
-
-    saved = _inherited("typed", GLOBAL)
-    # A state that is not registered is told on its next read, and by then it is
-    # as clean as it was before the edit.
-    told_clean = {PLATE: frozenset(), STEP: frozenset()} if registered else {}
-    expected = ([set(), set(), set()], [saved, saved], told_clean, "typed")
-    for name, (dirty, reads, told_dirty, _, saved_global) in results.items():
-        assert (dirty, reads, told_dirty, saved_global) == expected, name
-    assert len({told for *_, told, _ in results.values()}) == 1  # told the same, in the same order
-
-
-def test_registered_descendants_are_told_of_the_save_without_a_read():
-    global_state = ObjectState(get_live_global_config(GlobalConfig), scope_id=GLOBAL)
-    step = _step_state()
-    for state in (global_state, step):
-        ObjectStateRegistry.register(state)
-    global_state.update_parameter(PATH, "typed")
-    assert step._dirty_fields == {PATH}
-
-    global_state.mark_saved()
-
-    assert step._dirty_fields == set()
-    assert step._saved_resolved[PATH] == "typed"

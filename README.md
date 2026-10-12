@@ -16,7 +16,7 @@
   - Y-Axis: Sibling inheritance within same context
 - **Contextvars-Based**: Uses Python's `contextvars` for clean context management
 - **UI Integration**: Placeholder text generation for configuration forms
-- **Thread-Safe**: Thread-local global configuration storage
+- **One global config**: held by the registered global state, or stored where no state exists
 - **100% Generic**: No application-specific dependencies
 - **Small dependency surface**: Uses ``python-introspect`` for callable and
   dataclass analysis
@@ -75,7 +75,7 @@ resolution state.
 When using the decorator pattern with `auto_create_decorator`, you need to establish the global configuration context for lazy resolution:
 
 ```python
-from objectstate import ensure_global_config_context
+from objectstate import set_global_config
 
 # After creating your global config instance
 global_config = GlobalPipelineConfig(
@@ -84,15 +84,15 @@ global_config = GlobalPipelineConfig(
 )
 
 # REQUIRED: Establish global config context for lazy resolution
-ensure_global_config_context(GlobalPipelineConfig, global_config)
+set_global_config(GlobalPipelineConfig, global_config)
 
 # Now lazy configs can resolve from the global context
 ```
 
 **Key differences:**
 - `set_base_config_type(MyConfig)`: Sets the **type** (class) for the framework
-- `ensure_global_config_context(GlobalConfig, instance)`: Sets the **instance** (concrete values) for resolution
-- Call `ensure_global_config_context()` at application startup (GUI) or before pipeline execution
+- `set_global_config(GlobalConfig, instance)`: Sets the **instance** (concrete values) for resolution
+- Call `set_global_config()` at application startup (GUI) or before pipeline execution
 
 ## Installation
 

@@ -1096,13 +1096,6 @@ def patch_lazy_constructors(types: Optional[List[Type]] = None):
             lazy_type.__init__ = original_init
 
 
-# Generic utility functions for clean thread-local storage management
-def ensure_global_config_context(global_config_type: Type, global_config_instance: Any) -> None:
-    """Ensure proper thread-local storage setup for any global config type."""
-    from objectstate.global_config import set_global_config_for_editing
-    set_global_config_for_editing(global_config_type, global_config_instance)
-
-
 # ContextProvider infrastructure removed - was dead code feeding broken frame.f_locals manipulation
 
 
@@ -1209,58 +1202,6 @@ def create_dataclass_for_editing(dataclass_type: Type[T], source_config: Any, pr
 
 
 
-
-
-def rebuild_lazy_config_with_new_global_reference(
-    existing_lazy_config: Any,
-    new_global_config: Any,
-    global_config_type: Optional[Type] = None
-) -> Any:
-    """
-    Rebuild lazy config to reference new global config while preserving field states.
-
-    This function preserves the exact field state of the existing lazy config:
-    - Fields that are None (using lazy resolution) remain None
-    - Fields that have been explicitly set retain their concrete values
-    - Nested dataclass fields are recursively rebuilt to reference new global config
-    - The underlying global config reference is updated for None field resolution
-
-    Args:
-        existing_lazy_config: Current lazy config instance
-        new_global_config: New global config to reference for lazy resolution
-        global_config_type: Type of the global config (defaults to type of new_global_config)
-
-    Returns:
-        New lazy config instance with preserved field states and updated global reference
-    """
-    if existing_lazy_config is None:
-        return None
-
-    # Determine global config type
-    if global_config_type is None:
-        global_config_type = type(new_global_config)
-
-    # Set new global config in thread-local storage
-    ensure_global_config_context(global_config_type, new_global_config)
-
-    # Extract current field values without triggering lazy resolution - inline field processing pattern
-    def process_field_value(field_obj):
-        raw_value = object.__getattribute__(existing_lazy_config, field_obj.name)
-
-        if raw_value is not None and hasattr(raw_value, '__dataclass_fields__'):
-            try:
-                # Rebuild nested dataclass recursively
-                # Decorated config types declare lazy resolution nominally.
-                nested_result = rebuild_lazy_config_with_new_global_reference(raw_value, new_global_config, global_config_type)
-                return nested_result
-            except Exception as e:
-                logger.debug(f"Failed to rebuild nested config {field_obj.name}: {e}")
-                return raw_value
-        return raw_value
-
-    current_field_values = {f.name: process_field_value(f) for f in fields(existing_lazy_config)}
-
-    return type(existing_lazy_config)(**current_field_values)
 
 
 # Declarative Global Config Field Injection System

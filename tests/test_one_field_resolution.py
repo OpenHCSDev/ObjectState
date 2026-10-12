@@ -15,12 +15,12 @@ import pytest
 from objectstate import (
     LazyDataclassFactory,
     ObjectState,
+    ObjectStateRegistry,
     build_context_stack,
     config_context,
     mark_global_config_type,
     set_base_config_type,
-    set_global_config_for_editing,
-    set_live_global_config,
+    set_global_config,
 )
 from objectstate.context_manager import get_base_global_config, get_context_layer_stack
 from objectstate.dual_axis_resolver import resolve_with_provenance
@@ -60,11 +60,16 @@ class Step:
     path_planning_config: LazyPathPlanningConfig = field(default_factory=LazyPathPlanningConfig)
 
 
-def _use_global(saved: GlobalConfig, live: GlobalConfig | None = None) -> None:
+@pytest.fixture(autouse=True)
+def _empty_registry():
+    ObjectStateRegistry.clear()
+    yield
+    ObjectStateRegistry.clear()
+
+
+def _use_global(config: GlobalConfig) -> None:
     set_base_config_type(GlobalConfig)
-    set_global_config_for_editing(GlobalConfig, saved)
-    if live is not None:
-        set_live_global_config(GlobalConfig, live)
+    set_global_config(GlobalConfig, config)
 
 
 def test_attribute_read_and_provenance_agree_when_a_layer_has_no_scope_id():
@@ -139,10 +144,11 @@ def _object_sets_its_own_value():
 
 
 def _saved_global_differs_from_live():
-    _use_global(
-        saved=GlobalConfig(WellFilterConfig(well_filter=1)),
-        live=GlobalConfig(WellFilterConfig(well_filter=9, mode="live-only")),
-    )
+    _use_global(GlobalConfig(WellFilterConfig(well_filter=1)))
+    global_state = ObjectState(GlobalConfig(WellFilterConfig(well_filter=1)), scope_id="")
+    ObjectStateRegistry.register(global_state)
+    global_state.update_parameter("well_filter_config.well_filter", 9)
+    global_state.update_parameter("well_filter_config.mode", "live-only")
     return Step(), [("plate", Pipeline())], "plate::step"
 
 
@@ -231,7 +237,7 @@ def test_declared_default_is_read_and_reported_alike():
 
 def test_answers_survive_another_thread_entering_and_leaving_a_context():
     """Issue #33: a context's answers are not dropped by a context in another thread."""
-    saved_global = GlobalConfig(WellFilterConfig(well_filter=1))
+    _use_global(GlobalConfig(WellFilterConfig(well_filter=1)))
     first_resolved = threading.Event()
     other_thread_done = threading.Event()
     answers = []
@@ -239,7 +245,6 @@ def test_answers_survive_another_thread_entering_and_leaving_a_context():
 
     def resolve_twice():
         try:
-            _use_global(saved_global)  # the global config is per thread
             with config_context(Pipeline(), scope_id="plate"):
                 answers.append(resolve_with_provenance(LazyPathPlanningConfig, "well_filter"))
                 first_resolved.set()
@@ -252,7 +257,6 @@ def test_answers_survive_another_thread_entering_and_leaving_a_context():
     def enter_and_leave():
         try:
             assert first_resolved.wait(timeout=10)
-            _use_global(saved_global)  # the global config is per thread
             other = Pipeline(path_planning_config=LazyPathPlanningConfig(well_filter=7))
             with config_context(other, scope_id="other"):
                 answers.append(resolve_with_provenance(LazyPathPlanningConfig, "well_filter"))
@@ -296,6 +300,6 @@ def test_answers_are_dropped_with_the_context_they_were_computed_from():
 
 def test_base_global_config_is_never_silently_absent(monkeypatch):
     """A global config that cannot be looked up raises; it is not replaced by ``None``."""
-    monkeypatch.delattr("objectstate.global_config.get_current_global_config")
-    with pytest.raises(ImportError, match="get_current_global_config"):
+    monkeypatch.delattr("objectstate.global_config.get_live_global_config")
+    with pytest.raises(ImportError, match="get_live_global_config"):
         get_base_global_config()

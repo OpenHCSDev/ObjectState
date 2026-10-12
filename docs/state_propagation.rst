@@ -132,7 +132,7 @@ registered state than before, every field is.
 
 So no caller announces a change. Registering, unregistering or replacing an ancestor,
 editing, saving, restoring, undoing or redoing an ancestor's value, and replacing the
-global config with ``set_live_global_config`` / ``set_saved_global_config`` all reach
+global config with ``set_global_config`` all reach
 a state on its next read, whether the state is registered or not. A registered state
 is also told at once, so its subscribers hear of the change without a read; a state
 that is not registered is referenced by nothing and tells its subscribers on its next
@@ -144,26 +144,47 @@ Limits:
   ``ObjectState.to_object`` returns the same function object for a state that wraps a
   plain function, so states registered below a function-backed state follow its edits
   only through the registry (that is, when they are registered themselves).
-- The global config is stored per thread. A snapshot follows the global config of the
-  thread that resolved it; a read from another thread answers from the snapshot and
-  does not resolve it again for that thread's global config.
+- Nothing is synchronised. Every thread reads the same registry and the same global
+  config, so a thread that edits while another reads must be kept apart by the
+  application (in a GUI: edit in the GUI thread).
 
 The state of the global config
 ------------------------------
 
-The global config is stored per thread, once as edited (live) and once as saved. A
-state whose object is a global config writes that store when its own object changes:
-``update_parameter`` applies the edit to the live global config,
-``mark_saved`` stores the saved object as the saved global config, ``restore_saved``
-stores the saved object as the live one again, ``update_object_instance`` and time
-travel store both. Each is stored before any descendant resolves again, so saving the
-global state is one call: its registered descendants resolve their saved values
-against the object just saved and are told at once.
+The global config is the value every resolution starts from. There is one per config
+type per process, read as edited (live) and as saved, and one thing holds it
+(``objectstate.global_config``):
 
-``set_live_global_config``, ``set_saved_global_config`` and
-``ensure_global_config_context`` (both at once) store a global config where no state
-does it: at startup before a state exists, and in a thread or process that resolves
-plain lazy objects without a registry, such as a compile worker. Calling one with the
-values the global state has just stored, before or after ``mark_saved``, changes
-nothing. A setter tells no state; states find the replaced object on their next read.
+- The state registered at the global scope (``scope_id=""``) whose object is of that
+  type. The live global config is the object its parameters describe
+  (``object_for_resolution()``) and the saved global config is the object it last
+  saved. Nothing copies them anywhere: ``get_live_global_config``,
+  ``get_saved_global_config``, ``config_context`` and every state's resolution ask the
+  registered state. So an edit, a save, a restore, a replaced object, an undo or a
+  redo of that state is that change of the global config, and its registered
+  descendants are told at once.
+- While no such state is registered: the object given to ``set_global_config``. Nothing
+  edits it, so the live and the saved read are the same object. A process without
+  states (a compile worker, an execution server, a script) uses only this.
+
+Registering the global state is all it takes to make its object the global config; no
+``set_global_config`` call is needed beside it. Unregistering it (or travelling to a
+point in history where it was not registered) ends that at once: the global config is
+then again what ``set_global_config`` last stored while no state held it, or the
+declared defaults.
+
+``set_global_config(config_type, config)`` is the one way to replace the global config
+from outside. While a state holds the global config the call is
+``state.update_object_instance(config)``: the state takes the new object as its live
+and saved value (unsaved edits are dropped) and its descendants and their subscribers
+follow. A stored object that disagrees with a registered global state cannot be made.
+
+Threads play no part. The registry is one per process and so is the stored object, so
+a worker thread reads the global config the GUI thread edits, with or without
+``spawn_thread_with_context`` (which copies the entered ``config_context`` layers, not
+the global config, into the new thread).
+
+A ``config_context`` block entered before the global config changes keeps the layers
+it was entered with until it is left.
+
 

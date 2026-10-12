@@ -165,20 +165,19 @@ This flattens nested configs into a single dictionary keyed by nominal type.
 Global Config Context
 --------------------
 
-Global config uses thread-local storage for stability:
+The global config is one value per config type per process:
 
 .. code-block:: python
 
-   # Thread-local storage for global config
-   _global_config_storage: Dict[Type, threading.local] = {}
-   
-   def ensure_global_config_context(config_type: Type, config_instance: Any):
-       """Store the instance as both the live and the saved global config of this thread."""
-       set_global_config_for_editing(config_type, config_instance)
+   # What set_global_config stored while no state held the global config
+   _stored_global_configs: Dict[Type, Any] = {}
 
-The global config is the base in thread-local storage; contextvars hold the layers
-stacked on it. When a registered ``ObjectState`` holds the global config, that state
-writes this storage on edit, save and restore (``docs/state_propagation.rst``, "The
+   def set_global_config(config_type: Type, config: Any):
+       """Make ``config`` the global config, live and saved."""
+
+The global config is the base; contextvars hold the layers stacked on it. When an
+``ObjectState`` of the global config is registered at scope ``""``, that state holds
+the global config and nothing is stored beside it (``docs/state_propagation.rst``, "The
 state of the global config").
 
 Resolution Integration
@@ -229,11 +228,11 @@ Usage Pattern
 
 .. code-block:: python
 
-   from objectstate import config_context, ensure_global_config_context
+   from objectstate import config_context, set_global_config
 
    # Establish global context
    global_config = GlobalAppConfig(num_workers=4)
-   ensure_global_config_context(GlobalAppConfig, global_config)
+   set_global_config(GlobalAppConfig, global_config)
 
    # Create app config
    app_config = AppConfig(

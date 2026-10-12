@@ -19,7 +19,7 @@ Key Features
 
 * **Contextvars-Based**: Uses Python's ``contextvars`` for clean context management
 * **UI Integration**: Placeholder text generation for configuration forms
-* **Thread-Safe**: Thread-local global configuration storage
+* **One global config**: held by the registered global state, or stored where no state exists
 * **100% Generic**: No application-specific dependencies
 * **Small dependency surface**: Uses ``python-introspect`` for signature and
   dataclass analysis

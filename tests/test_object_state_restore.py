@@ -11,9 +11,8 @@ from objectstate import (
     get_live_global_config,
     mark_global_config_type,
     set_base_config_type,
-    set_global_config_for_editing,
+    set_global_config,
 )
-from objectstate.global_config import set_live_global_config
 
 
 def test_restore_saved_resets_live_global_context_for_descendants():
@@ -28,7 +27,7 @@ def test_restore_saved_resets_live_global_context_for_descendants():
     LazyGlobalConfig = LazyDataclassFactory.make_lazy_simple(GlobalConfig)
 
     saved_global = GlobalConfig(threshold=1)
-    set_global_config_for_editing(GlobalConfig, saved_global)
+    set_global_config(GlobalConfig, saved_global)
 
     global_state = ObjectState(saved_global, scope_id="")
     child_state = ObjectState(LazyGlobalConfig(), scope_id="plate::step")
@@ -68,8 +67,9 @@ def test_one_shot_saved_resolution_uses_saved_scope_without_editing_lifecycle(mo
         policy: LazyPolicy = field(default_factory=LazyPolicy)
 
     set_base_config_type(GlobalConfig)
-    set_global_config_for_editing(GlobalConfig, GlobalConfig(Policy(value=3)))
-    set_live_global_config(GlobalConfig, GlobalConfig(Policy(value=9)))
+    global_state = ObjectState(GlobalConfig(Policy(value=3)), scope_id="")
+    ObjectStateRegistry.register(global_state)
+    global_state.update_parameter("policy.value", 9)  # unsaved: the saved value stays 3
     authored_pipeline = Pipeline()
     submitted = Step()
 
@@ -134,7 +134,7 @@ def test_one_shot_saved_resolution_preserves_mro_subtypes_and_nonlazy_none():
         untouched: str | None = None
 
     set_base_config_type(GlobalConfig)
-    set_global_config_for_editing(GlobalConfig, GlobalConfig())
+    set_global_config(GlobalConfig, GlobalConfig())
     step = Step(domain=VolumeDomain())
     resolved, provenance = ObjectState.resolve_saved_object(
         step,

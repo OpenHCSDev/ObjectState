@@ -25,8 +25,6 @@ import copy
 from objectstate.object_state_metadata import ObjectStateMetadataStore
 from objectstate.construction_binding import StateConstructionBinding
 from objectstate.scope_key import ScopeKey
-from objectstate.global_config import GlobalContextValues
-from objectstate.context_manager import clear_current_temp_global
 from objectstate.parameter_owner import ParameterOwner
 from objectstate.snapshot_model import Snapshot, StateSnapshot, Timeline
 from objectstate.time_travel_profile import TimeTravelProfiler
@@ -88,7 +86,6 @@ class PreparedStateRestore:
     schema: "ObjectState"
     diff: "TimeTravelStateDiff"
     construction_changed: bool
-    context: GlobalContextValues | None
 
 
 @dataclass(frozen=True)
@@ -410,7 +407,7 @@ class ObjectStateRegistry:
         cls._states[key] = state
         cls.mark_snapshot_dirty_scope(key)
         logger.debug(f"Registered ObjectState: scope={key}, type={type(state.object_instance).__name__}")
-        cls._resolve_again_below((key,))
+        cls.resolve_again_below((key,))
 
         # Fire callbacks for UI binding
         cls._fire_register_callbacks(key, state)
@@ -435,7 +432,7 @@ class ObjectStateRegistry:
             # that reference this ObjectState. Graveyard persists for session lifetime.
             cls._graveyard[key] = removed_state
             logger.debug(f"Unregistered ObjectState: scope={key} (moved to graveyard)")
-            cls._resolve_again_below((key,))
+            cls.resolve_again_below((key,))
 
             # Fire callbacks for UI binding
             cls._fire_unregister_callbacks(key, state)
@@ -444,8 +441,24 @@ class ObjectStateRegistry:
             # graveyard preserves state for explicit operation snapshots.
 
     @classmethod
-    def _resolve_again_below(cls, changed_scopes: Iterable[ScopeKey]) -> None:
-        """Tell registered states at or below ``changed_scopes`` that registration changed.
+    def global_config_state(cls, config_type: type) -> Optional['ObjectState']:
+        """The state that holds the global config of ``config_type``: the one
+        registered at the global scope, when its object is of exactly that type.
+
+        ``objectstate.global_config`` reads and replaces the global config through
+        this state while there is one, so registering it is all it takes to make its
+        object the global config, and unregistering it (or time travel to a point
+        where it was not registered) ends that at once.
+        """
+        state = cls._states.get("")
+        if state is not None and type(state._extraction_target) is config_type:
+            return state
+        return None
+
+    @classmethod
+    def resolve_again_below(cls, changed_scopes: Iterable[ScopeKey]) -> None:
+        """Tell registered states at or below ``changed_scopes`` that what they are
+        resolved from may have changed (a registration, or a stored global config).
 
         Each state compares what it is resolved from now with what its resolved values
         were computed from (``ObjectState.resolve_again_if_sources_changed``), so a
@@ -508,7 +521,7 @@ class ObjectStateRegistry:
         # When history is enabled we must preserve removed states for time-travel (undo/redo),
         # otherwise snapshots may reference scopes that can no longer be resurrected.
         removed = [(key, cls._states.pop(key)) for key in scopes_to_delete]
-        cls._resolve_again_below(scopes_to_delete)
+        cls.resolve_again_below(scopes_to_delete)
         for key, state in removed:
             if cls._history_enabled:
                 cls._graveyard[key] = state
@@ -1506,7 +1519,6 @@ class ObjectStateRegistry:
                     construction_changed=(
                         state is not None and state.construction_binding() != binding
                     ),
-                    context=schema.prepare_history_global_context(),
                 )
                 del pending[scope]
                 progressed = True
@@ -1942,18 +1954,6 @@ class ObjectStateRegistry:
             return False
 
         prepared = cls._prepare_time_travel_states(transaction.snapshot)
-        contexts = {
-            restoration.context.config_type: restoration.context
-            for restoration in prepared.values()
-            if restoration.context is not None
-        }
-        for state in cls._states.values():
-            previous_context = state.prepare_history_global_context()
-            if previous_context is not None and previous_context.config_type not in contexts:
-                contexts[previous_context.config_type] = GlobalContextValues(
-                    previous_context.config_type, None, None
-                )
-        contexts_before = [GlobalContextValues.capture(config_type) for config_type in contexts]
         states_before = dict(cls._states)
         limbo_before = dict(cls._time_travel_limbo)
         graveyard_before = dict(cls._graveyard)
@@ -1983,16 +1983,11 @@ class ObjectStateRegistry:
                     reconciliation,
                     prepared,
                 )
-            for context in contexts.values():
-                context.apply()
-            clear_current_temp_global()
         except Exception:
             try:
                 for scope, restoration in reversed(list(prepared.items())):
                     checkpoints[scope].restore(restoration.state, emit_notifications=False)
             finally:
-                for context in contexts_before:
-                    context.apply()
                 cls._states = states_before
                 cls._time_travel_limbo = limbo_before
                 cls._graveyard = graveyard_before

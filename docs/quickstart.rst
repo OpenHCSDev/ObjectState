@@ -174,7 +174,7 @@ When using the decorator pattern with ``auto_create_decorator``, you need to est
 
    from objectstate import (
        auto_create_decorator,
-       ensure_global_config_context,
+       set_global_config,
    )
    from dataclasses import dataclass
 
@@ -192,7 +192,7 @@ When using the decorator pattern with ``auto_create_decorator``, you need to est
    )
 
    # REQUIRED: Establish global config context
-   ensure_global_config_context(GlobalPipelineConfig, global_config)
+   set_global_config(GlobalPipelineConfig, global_config)
 
    # Now lazy configs can resolve from the global context
 
@@ -200,8 +200,8 @@ Understanding the Difference
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 * ``set_base_config_type(MyConfig)``: Sets the **type** (class) for the framework
-* ``ensure_global_config_context(GlobalConfig, instance)``: Sets the **instance** (concrete values) for resolution
-* Call ``ensure_global_config_context()`` at application startup (GUI) or before pipeline execution
+* ``set_global_config(GlobalConfig, instance)``: Sets the **instance** (concrete values) for resolution
+* Call ``set_global_config()`` at application startup (GUI) or before pipeline execution
 
 Complete Example
 ----------------

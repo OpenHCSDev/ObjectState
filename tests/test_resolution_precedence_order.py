@@ -33,7 +33,7 @@ from objectstate import (
     build_context_stack,
     mark_global_config_type,
     set_base_config_type,
-    set_global_config_for_editing,
+    set_global_config,
 )
 from objectstate.dual_axis_resolver import resolve_with_provenance
 
@@ -140,7 +140,7 @@ class Reads(NamedTuple):
 def _reads(sites: frozenset[Site]) -> Reads:
     saved_global, plate, step = _objects(sites)
     set_base_config_type(GlobalConfig)
-    set_global_config_for_editing(GlobalConfig, saved_global)
+    set_global_config(GlobalConfig, saved_global)
     ancestors = [(PLATE, plate)]
 
     with build_context_stack(step, ancestors, STEP, use_live=False):
@@ -281,7 +281,7 @@ def test_read_kinds_of_an_editing_state_stay_distinct_and_agree_on_a_crossed_pai
     def editing_state_reads(sites: frozenset[Site]) -> tuple:
         saved_global, plate, step = _objects(sites)
         set_base_config_type(GlobalConfig)
-        set_global_config_for_editing(GlobalConfig, saved_global)
+        set_global_config(GlobalConfig, saved_global)
         states = []
         try:
             # An ancestor is registered before the state below it is built.

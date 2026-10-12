@@ -11,7 +11,7 @@ from objectstate import (
     mark_global_config_type,
     merge_configs,
     set_base_config_type,
-    set_global_config_for_editing,
+    set_global_config,
 )
 from objectstate.context_manager import (
     NoActiveContextError,
@@ -47,7 +47,7 @@ class Pipeline:
 def checked_global():
     set_base_config_type(CheckedGlobal)
     saved = CheckedGlobal()
-    set_global_config_for_editing(CheckedGlobal, saved)
+    set_global_config(CheckedGlobal, saved)
     return saved
 
 
@@ -99,7 +99,7 @@ def test_global_type_that_cannot_be_constructed_raises():
 
     mark_global_config_type(RequiredGlobal)
     set_base_config_type(RequiredGlobal)
-    set_global_config_for_editing(RequiredGlobal, RequiredGlobal(workers=2))
+    set_global_config(RequiredGlobal, RequiredGlobal(workers=2))
 
     with pytest.raises(TypeError, match="workers"):
         with build_context_stack(RequiredGlobal(workers=3), current_scope_id=""):

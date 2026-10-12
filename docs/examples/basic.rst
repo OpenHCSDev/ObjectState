@@ -174,7 +174,7 @@ Using the decorator pattern for automatic field injection and lazy class generat
 .. code-block:: python
 
    from dataclasses import dataclass
-   from objectstate import auto_create_decorator, ensure_global_config_context
+   from objectstate import auto_create_decorator, set_global_config
 
    # Create global config with auto_create_decorator
    @auto_create_decorator
@@ -213,7 +213,7 @@ Using the decorator pattern for automatic field injection and lazy class generat
    )
 
    # REQUIRED: Establish global context for lazy resolution
-   ensure_global_config_context(GlobalPipelineConfig, global_config)
+   set_global_config(GlobalPipelineConfig, global_config)
 
    # Now you can access injected configs
    print(f"Database: {global_config.database_config.host}:{global_config.database_config.port}")

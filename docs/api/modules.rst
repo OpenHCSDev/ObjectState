@@ -12,7 +12,7 @@ Configuration and lazy types
    Builds an application-specific configuration decorator and related lazy
    types.
 
-``config_context`` and ``ensure_global_config_context``
+``config_context`` and ``set_global_config``
    Install concrete configuration used during resolution.
 
 ``set_base_config_type``

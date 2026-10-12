@@ -8,7 +8,7 @@ from objectstate import (
     ObjectState,
     ObjectStateRegistry,
     set_base_config_type,
-    set_global_config_for_editing,
+    set_global_config,
 )
 
 
@@ -164,7 +164,7 @@ def test_one_shot_saved_resolution_detaches_inherited_alias_graph():
         options: LazyOptions
 
     set_base_config_type(GlobalConfig)
-    set_global_config_for_editing(GlobalConfig, GlobalConfig(Options()))
+    set_global_config(GlobalConfig, GlobalConfig(Options()))
     shared = ["saved"]
     func = RebuiltCallable()
     ancestor = Pipeline(Options(shared, shared, func))
