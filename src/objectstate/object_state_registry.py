@@ -25,7 +25,6 @@ from objectstate.construction_binding import StateConstructionBinding
 from objectstate.scope_key import ScopeKey
 from objectstate.global_config import GlobalContextValues
 from objectstate.context_manager import clear_current_temp_global
-from objectstate.dual_axis_resolver import clear_mro_resolution_cache
 from objectstate.parameter_owner import ParameterOwner
 from objectstate.snapshot_model import Snapshot, StateSnapshot, Timeline
 from objectstate.time_travel_profile import TimeTravelProfiler
@@ -766,12 +765,6 @@ class ObjectStateRegistry:
     ) -> None:
         """Immediate implementation for scope/type/field-aware invalidation."""
         from objectstate.lazy_factory import get_base_type_for_lazy
-        from objectstate.dual_axis_resolver import invalidate_mro_cache_for_field
-
-        # PERFORMANCE: Targeted cache invalidation - only clear entries for this field/type
-        if isinstance(changed_type, type):
-            invalidate_mro_cache_for_field(changed_type, field_name)
-
         changed_scope = cls._normalize_scope_id(scope_id)
 
         # Normalize to base type for comparison (LazyX → X)
@@ -1963,7 +1956,6 @@ class ObjectStateRegistry:
             for context in contexts.values():
                 context.apply()
             clear_current_temp_global()
-            clear_mro_resolution_cache()
         except Exception:
             try:
                 for scope, restoration in reversed(list(prepared.items())):
