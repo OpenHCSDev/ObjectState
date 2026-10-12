@@ -40,7 +40,14 @@ class UISpecialFieldRegistry:
     def register(cls, owner_type: T, field_names: tuple[str, ...]) -> T:
         if not field_names:
             raise ValueError("UI special field registration requires at least one field")
-        cls._fields_by_owner[owner_type] = frozenset(field_names)
+        declared = frozenset(field_names)
+        registered = cls._fields_by_owner.get(owner_type)
+        if registered is not None and registered != declared:
+            raise ValueError(
+                f"{owner_type.__qualname__} already declares UI special fields "
+                f"{sorted(registered)!r}; it cannot also declare {sorted(declared)!r}."
+            )
+        cls._fields_by_owner[owner_type] = declared
         return owner_type
 
     @classmethod
