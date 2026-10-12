@@ -226,6 +226,10 @@ class ObjectState:
         # Maps dotted_path → (source_scope_id, source_type) for inherited fields
         # source_type may differ from local container_type due to MRO inheritance
         self._live_provenance: dict[str, tuple[str | None, type | None]] = {}
+        # The registered ancestors each resolved snapshot was computed from, keyed by
+        # ``use_saved``. A snapshot is current only while ``_registered_ancestors()``
+        # still returns the same states.
+        self._ancestors_resolved_from: dict[bool, tuple[ObjectState, ...]] = {}
 
         # === Saved baseline (2 attributes) ===
         self._saved_resolved: dict[str, Any] = {}
@@ -476,8 +480,7 @@ class ObjectState:
     def to_saved_resolved_object(self) -> Any:
         """Reconstruct this state as an object with saved resolved values."""
         self._check_and_sync_delegate()
-        if not self._saved_resolved:
-            self._saved_resolved = self._compute_resolved_snapshot(use_saved=True)
+        self._ensure_saved_resolved()
         return self._reconstruct_from_resolved(
             "", self._saved_resolved, self._extraction_target, self._parameter_structure
         )
@@ -742,6 +745,12 @@ class ObjectState:
             self._invalid_fields.clear()
             return set()  # First populate - no "changes" to flash
 
+        if not self._resolved_from_registered_ancestors():
+            # Registration changed above this state: every inherited field may have
+            # another source, so both snapshots are resolved again in full. Pending
+            # field invalidations are covered by the full pass.
+            return self._resolve_again_from_registered_ancestors(notify=notify_flash)
+
         # Partial recompute for invalid fields only
         if self._invalid_fields:
             logger.debug(f"🔄 _ensure_live_resolved: scope={self.scope_id}, recomputing {len(self._invalid_fields)} invalid fields: {list(self._invalid_fields)}")
@@ -758,6 +767,60 @@ class ObjectState:
             )
 
         return changed_paths
+
+    def _registered_ancestors(self) -> tuple[ObjectState, ...]:
+        """The other states this state's resolved values are computed from.
+
+        This state is left out: registering it adds no value it does not hold.
+        """
+        return tuple(
+            state
+            for _, state in ObjectStateRegistry.registered_ancestors(self.scope_id)
+            if state is not self
+        )
+
+    def _resolved_from_registered_ancestors(self) -> bool:
+        """Whether both resolved snapshots were computed from today's ancestors."""
+        ancestors = self._registered_ancestors()
+        return all(
+            self._ancestors_resolved_from.get(use_saved) == ancestors
+            for use_saved in (False, True)
+        )
+
+    def _resolve_again_from_registered_ancestors(self, *, notify: bool) -> set[str]:
+        """Resolve the live and saved snapshots in full; return the changed live paths."""
+        previous = self._live_resolved or {}
+        self._live_resolved = self._compute_resolved_snapshot()
+        self._invalid_fields.clear()
+        self._saved_resolved = self._compute_resolved_snapshot(use_saved=True)
+        changed_values = {
+            path: (previous.get(path), value)
+            for path, value in self._live_resolved.items()
+            if previous.get(path) != value
+        }
+        if changed_values:
+            self._set_last_changed_values(changed_values)
+        changed_paths = self.notification_fields_for_value_changes(changed_values)
+        self._sync_materialized_state(
+            changed_value_fields=changed_paths, emit_notifications=notify
+        )
+        return changed_paths
+
+    def resolve_again_if_ancestors_changed(self) -> None:
+        """Resolve again when other states are registered above this one than before.
+
+        Every resolved read makes this check itself. ``ObjectStateRegistry`` calls it
+        when registration changes so subscribers are told at once.
+        """
+        if self._live_resolved is not None:
+            self._ensure_live_resolved()
+
+    def _ensure_saved_resolved(self) -> None:
+        """Make ``_saved_resolved`` hold every field, resolved from today's ancestors."""
+        if self._live_resolved is not None and not self._resolved_from_registered_ancestors():
+            self._resolve_again_from_registered_ancestors(notify=True)
+        elif not self._saved_resolved:
+            self._saved_resolved = self._compute_resolved_snapshot(use_saved=True)
 
     # DELETED: _create_nested_states() - No longer needed with flat storage
     # Nested ObjectStates are no longer created - flat storage handles all parameters
@@ -1157,9 +1220,7 @@ class ObjectState:
         # Auto-detect delegate changes before resolving values
         self._check_and_sync_delegate()
 
-        # Ensure saved resolved cache is populated
-        if not self._saved_resolved:
-            self._saved_resolved = self._compute_resolved_snapshot(use_saved=True)
+        self._ensure_saved_resolved()
 
         # Check if this is a container/dataclass field (has subfields in _saved_resolved)
         prefix = f"{param_name}."
@@ -1190,8 +1251,7 @@ class ObjectState:
         self._check_and_sync_delegate()
         self._ensure_live_resolved()
         assert self._live_resolved is not None
-        if not self._saved_resolved:
-            self._saved_resolved = self._compute_resolved_snapshot(use_saved=True)
+        self._ensure_saved_resolved()
 
         path = owner_field_path
         raw_value = self.parameters.get(path.value, MISSING)
@@ -2092,6 +2152,7 @@ class ObjectState:
             raise TypeError("ObjectState.parameters must remain a canonical flat dictionary.")
         if not isinstance(self._saved_parameters, dict):
             raise TypeError("ObjectState._saved_parameters must remain a canonical flat dictionary.")
+        self._ancestors_resolved_from[use_saved] = self._registered_ancestors()
         ancestors = ObjectStateRegistry.get_ancestor_objects_with_scopes(
             self.scope_id, use_saved=use_saved
         )

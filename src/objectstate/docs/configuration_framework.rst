@@ -149,7 +149,7 @@ Usage Example
        )
    )
 
-The lazy configs resolve through dual-axis algorithm: check ``AppConfig`` context first, then ``GlobalAppConfig`` context, walking MRO at each level.
+The lazy configs resolve class first: ``DatabaseConfig`` is looked up in the ``AppConfig`` layer, then in the ``GlobalAppConfig`` layer, and only if neither holds a value is a base class of ``DatabaseConfig`` tried in those layers. A value on the more specific class in the global config therefore beats a value on a base class in the app config. :ref:`precedence-order` states the order with an example.
 
 Framework Modules
 ----------------

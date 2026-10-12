@@ -195,10 +195,37 @@ The dual-axis resolver reads the layer stack of the active context:
 
    value, source_scope, source_type = resolve_with_provenance(LazyDatabaseConfig, "port")
 
-For each type in the container type's MRO, most specific first, it asks every layer from
-innermost to outermost for a config of that type and returns the first value that is not
-``None``, together with the layer's scope id and the type it was read from. Attribute access
-on a lazy config returns the ``value`` of this same result.
+Attribute access on a lazy config returns the ``value`` of this same result.
+
+.. _precedence-order:
+
+Precedence Order
+~~~~~~~~~~~~~~~~
+
+Resolution is class first. For each class in the MRO of the type being read, most specific
+first, the resolver asks every layer from the innermost scope to the outermost for a config
+of that class and returns the first value that is not ``None``, together with the layer's
+scope id and the class it was read from. Only when no layer holds a value for a class is
+the next, less specific class tried.
+
+So the class decides before the scope does. Take ``Leaf(Base)``, a field ``value`` read on
+``Leaf`` in a step, and two layers that hold a value:
+
+==========================  ======================  =====================
+Layer (scope)               ``Base.value``          ``Leaf.value``
+==========================  ======================  =====================
+plate (inner)               ``"base at plate"``     ``None``
+global (outer)              ``None``                ``"leaf at global"``
+==========================  ======================  =====================
+
+The read returns ``"leaf at global"`` with source ``("", Leaf)``: ``Leaf`` is tried in
+every scope before ``Base`` is tried in any, although the plate is the nearer scope. A
+value on the same class in a nearer scope does win: with ``Leaf.value`` also set on the
+plate, the plate's value is returned.
+
+This is the only statement of the order. ``objectstate.dual_axis_resolver`` implements it
+in ``_resolve_in_layers``; ``tests/test_resolution_precedence_order.py`` checks it for
+every set of (class, scope) sites.
 
 Usage Pattern
 ------------

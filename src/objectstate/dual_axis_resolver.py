@@ -151,11 +151,16 @@ def resolve_in_stack(stack, container_type: type, field_name: str) -> ResolvedFi
 
 
 def _resolve_in_layers(layers: tuple, container_type: type, field_name: str) -> ResolvedField:
-    """Walk the container type's MRO and, for each type, the layers from inner to outer.
+    """Resolve class first: the MRO is the outer loop, the layers the inner one.
 
-    MRO order dominates layer order: ``None`` in an inner layer means "inherit", so
-    every outer layer is asked for the same type before a less specific type is
-    tried. A layer that masks the layers outside it ends the walk outward.
+    For each class in the container type's MRO, most specific first, every layer is
+    asked from the innermost scope to the outermost; the first value that is not
+    ``None`` wins. ``None`` in an inner layer means "inherit", so a less specific
+    class is tried only after every layer was asked for the more specific one.
+    A layer that masks the layers outside it ends the walk outward.
+
+    The order is stated with an example in ``docs/context_system.rst`` under
+    "Precedence Order"; this function is its implementation.
     """
     container_base = _normalize_to_base(container_type)
 
