@@ -17,6 +17,7 @@ from typing import (
     Tuple,
     TYPE_CHECKING,
     Generator,
+    Iterable,
     TypeAlias,
 )
 import copy
@@ -409,6 +410,7 @@ class ObjectStateRegistry:
         cls._states[key] = state
         cls.mark_snapshot_dirty_scope(key)
         logger.debug(f"Registered ObjectState: scope={key}, type={type(state.object_instance).__name__}")
+        cls._resolve_again_below((key,))
 
         # Fire callbacks for UI binding
         cls._fire_register_callbacks(key, state)
@@ -433,12 +435,43 @@ class ObjectStateRegistry:
             # that reference this ObjectState. Graveyard persists for session lifetime.
             cls._graveyard[key] = removed_state
             logger.debug(f"Unregistered ObjectState: scope={key} (moved to graveyard)")
+            cls._resolve_again_below((key,))
 
             # Fire callbacks for UI binding
             cls._fire_unregister_callbacks(key, state)
 
             # Structural unregistration is not a user-edit boundary. The
             # graveyard preserves state for explicit operation snapshots.
+
+    @classmethod
+    def _resolve_again_below(cls, changed_scopes: Iterable[ScopeKey]) -> None:
+        """Tell registered states at or below ``changed_scopes`` that registration changed.
+
+        Each state compares the ancestors registered now with the ones its resolved
+        values were computed from (``ObjectState.resolve_again_if_ancestors_changed``),
+        so a state whose ancestors are the same does no work. This call only makes
+        the comparison happen now, so subscribers hear of changed values without
+        waiting for the next read.
+        """
+        changed_scopes = tuple(changed_scopes)
+        for state in tuple(cls._states.values()):
+            if any(scope.contains(state.scope_id) for scope in changed_scopes):
+                state.resolve_again_if_ancestors_changed()
+
+    @classmethod
+    def registered_ancestors(
+        cls, scope_id: str | None
+    ) -> tuple[tuple[ScopeKey, 'ObjectState'], ...]:
+        """The states registered at the global scope, each prefix of ``scope_id`` and
+        ``scope_id`` itself, least specific first.
+
+        Resolved values of a state at ``scope_id`` are computed from these states.
+        """
+        return tuple(
+            (ancestor_key, cls._states[ancestor_key])
+            for ancestor_key in cls._normalize_scope_id(scope_id).ancestors()
+            if ancestor_key in cls._states
+        )
 
     @classmethod
     def unregister_scope_and_descendants(cls, scope_id: Optional[str], _skip_snapshot: bool = False) -> int:
@@ -474,8 +507,9 @@ class ObjectStateRegistry:
         # NOTE: Unlike plain unregister(), this is often used for hierarchical deletes.
         # When history is enabled we must preserve removed states for time-travel (undo/redo),
         # otherwise snapshots may reference scopes that can no longer be resurrected.
-        for key in scopes_to_delete:
-            state = cls._states.pop(key)
+        removed = [(key, cls._states.pop(key)) for key in scopes_to_delete]
+        cls._resolve_again_below(scopes_to_delete)
+        for key, state in removed:
             if cls._history_enabled:
                 cls._graveyard[key] = state
                 logger.debug(f"Unregistered ObjectState (cascade): scope={key} (moved to graveyard)")
@@ -669,21 +703,10 @@ class ObjectStateRegistry:
             List of objects from ancestor scopes, ordered least→most specific.
             Each object is from state.object_instance (saved) or state.to_object() (live).
         """
-        scope_key = cls._normalize_scope_id(scope_id)
-
-        # Get objects from ancestor scopes, least-specific to most-specific
-        objects = []
-        for ancestor_key in scope_key.ancestors():
-            state = cls._states.get(ancestor_key)
-            if state:
-                if use_saved:
-                    # Return saved baseline (saved_object handles delegation correctly)
-                    objects.append(state.saved_object)
-                else:
-                    # Return live state with current edits
-                    objects.append(state.to_object(update_delegate=False))
-
-        return objects
+        return [
+            state.saved_object if use_saved else state.to_object(update_delegate=False)
+            for _, state in cls.registered_ancestors(scope_id)
+        ]
 
     @classmethod
     def get_ancestor_objects_with_scopes(
@@ -714,28 +737,20 @@ class ObjectStateRegistry:
         Returns:
             List of (scope_id, object) tuples from ancestor scopes, ordered least→most specific.
         """
-        scope_key = cls._normalize_scope_id(scope_id)
-
-        # Get (scope_id, object) tuples from ancestor scopes
-        results: List[Tuple[str, Any]] = []
-        for ancestor_key in scope_key.ancestors():
-            state = cls._states.get(ancestor_key)
-            if state:
-                # Get object - either with or without delegate sync
-                logger.debug(f"🐛 get_ancestor_objects_with_scopes: Getting object for ancestor_key={ancestor_key!r}, skip_delegate_sync={skip_delegate_sync}, use_saved={use_saved}")
-
-                if use_saved:
-                    # For saved baseline, we want object_instance (the original saved state)
-                    # Not reconstructed, no delegate sync needed
-                    obj = state._extraction_target
-                else:
-                    # For live state, reconstruct from current parameters
-                    # Control whether delegate sync happens
-                    obj = state.to_object(update_delegate=False, sync_delegate=not skip_delegate_sync)
-
-                results.append((ancestor_key, obj))
-
-        return results
+        # Saved: the object as last saved, without delegate sync or reconstruction.
+        # Live: rebuilt from the current parameters; ``skip_delegate_sync`` decides
+        # whether the delegate is synchronised first.
+        return [
+            (
+                ancestor_key,
+                state._extraction_target
+                if use_saved
+                else state.to_object(
+                    update_delegate=False, sync_delegate=not skip_delegate_sync
+                ),
+            )
+            for ancestor_key, state in cls.registered_ancestors(scope_id)
+        ]
 
     # ========== SCOPE + TYPE + FIELD AWARE INVALIDATION ==========
 
