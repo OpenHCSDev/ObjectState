@@ -606,71 +606,21 @@ class LazyMethodBindings:
 
     @staticmethod
     def create_resolver() -> Callable[[Any, str], Any]:
-        """Create field resolver method using new pure function interface."""
-        from objectstate.dual_axis_resolver import resolve_field_inheritance
-        from objectstate.context_manager import (
-            NoActiveContextError,
-            extract_all_configs,
-            get_current_temp_global,
-        )
+        """Create the method that resolves one field in the active context."""
+        from objectstate.dual_axis_resolver import resolve_with_provenance
 
         def _resolve_field_value(self, field_name: str) -> Any:
-            current_context = get_current_temp_global()
-            if current_context is None:
-                raise NoActiveContextError(
-                    f"Cannot resolve {type(self).__name__}.{field_name}: "
-                    "no config context is active."
-                )
-            available_configs = extract_all_configs(current_context)
-            return resolve_field_inheritance(self, field_name, available_configs)
+            return resolve_with_provenance(type(self), field_name).value
 
         return _resolve_field_value
 
     @staticmethod
     def create_getattribute() -> Callable[[Any, str], Any]:
-        """Create lazy __getattribute__ method using new context system."""
-        from objectstate.dual_axis_resolver import resolve_field_inheritance, _has_concrete_field_override
-        from objectstate.context_manager import current_temp_global, extract_all_configs
-
-        def _find_mro_concrete_value(base_class, name):
-            """Extract common MRO traversal pattern."""
-            return next((getattr(cls, name) for cls in base_class.__mro__
-                        if _has_concrete_field_override(cls, name)), None)
-
-        def _standalone_field_value(self, name):
-            """Resolve one inherited field without an active config context."""
-            instance_type = object.__getattribute__(self, '__class__')
-            base_type = get_base_type_for_lazy(instance_type) or instance_type
-            mro_value = _find_mro_concrete_value(base_type, name)
-            if mro_value is not None:
-                return mro_value
-
-            fields_by_name = instance_type.__dict__.get('_fields_by_name')
-            if fields_by_name is None:
-                field_tuple = fields(instance_type)
-                fields_by_name = {item.name: item for item in field_tuple}
-                instance_type._fields_by_name = fields_by_name
-            field_definition = fields_by_name.get(name)
-            if field_definition and '_inherited_default' in field_definition.metadata:
-                inherited = field_definition.metadata['_inherited_default']
-                if inherited is not MISSING:
-                    return inherited
-                factory = field_definition.metadata.get(
-                    '_inherited_default_factory', MISSING
-                )
-                if factory is not MISSING:
-                    return factory()
-            return None
+        """Create lazy __getattribute__: a None field reads its value from the active context."""
+        from objectstate.context_manager import context_layer_stack
+        from objectstate.dual_axis_resolver import declared_default, resolve_in_stack
 
         def __getattribute__(self: Any, name: str) -> Any:
-            """
-            Three-stage resolution using new context system.
-
-            Stage 1: Check instance value
-            Stage 2: Simple field path lookup in current scope's merged config
-            Stage 3: Inheritance resolution using same merged context
-            """
-            # Stage 1: Get instance value
             value = object.__getattribute__(self, name)
             # Fast path: non-None values never need resolution
             if value is not None:
@@ -689,57 +639,19 @@ class LazyMethodBindings:
             if name not in _fns:
                 return value
 
-            # Stage 2: Simple field path lookup in current scope's merged global
-            try:
-                current_context = current_temp_global.get()
-                if current_context is not None:
-                    config_field_name = _single_declared_config_field(
-                        type(current_context),
-                        type(self),
-                        required=False,
-                    )
-                    if config_field_name is not None:
-                        config_instance = getattr(
-                            current_context,
-                            config_field_name,
-                        )
-                        if config_instance is not None:
-                            resolved_value = object.__getattribute__(
-                                config_instance,
-                                name,
-                            )
-                            if resolved_value is not None:
-                                return resolved_value
-            except LookupError:
-                # No context available, continue to inheritance
-                pass
+            stack = context_layer_stack.get()
+            if not stack.layers:
+                return declared_default(_cls, name)[0]
+            resolved_value = resolve_in_stack(stack, _cls, name).value
+            if resolved_value is not None:
+                return resolved_value
 
-            # Stage 3: Inheritance resolution using same merged context
-            try:
-                current_context = current_temp_global.get()
-                if current_context is None:
-                    return _standalone_field_value(self, name)
-                available_configs = extract_all_configs(current_context)
-                resolved_value = resolve_field_inheritance(self, name, available_configs)
+            # A nested dataclass field that nothing supplies reads as an empty instance.
+            field_obj = _cls.__dict__['_fields_by_name'].get(name)
+            if field_obj and is_dataclass(field_obj.type):
+                return field_obj.type()
+            return None
 
-                if resolved_value is not None:
-                    return resolved_value
-
-                # For nested dataclass fields, return lazy instance
-                # PERFORMANCE: O(1) dict lookup instead of O(n) linear scan
-                _fbm = self.__class__.__dict__.get('_fields_by_name')
-                if _fbm is None:
-                    _ft = fields(self.__class__)
-                    _fbm = {f.name: f for f in _ft}
-                    self.__class__._fields_by_name = _fbm
-                field_obj = _fbm.get(name)
-                if field_obj and is_dataclass(field_obj.type):
-                    return field_obj.type()
-
-                return _standalone_field_value(self, name)
-
-            except LookupError:
-                return _standalone_field_value(self, name)
         return __getattribute__
 
     @staticmethod

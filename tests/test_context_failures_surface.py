@@ -62,7 +62,7 @@ def test_build_context_stack_sets_nothing_until_entered_and_resets_on_exit(check
 
     with pending:
         assert get_current_temp_global().workers == 5
-        assert [scope for scope, _ in context_layer_stack.get()] == ["", "plate", "step"]
+        assert [layer.scope_id for layer in context_layer_stack.get().layers] == ["", "plate", "step"]
 
     assert (get_current_temp_global(), context_layer_stack.get()) == before
 

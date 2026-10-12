@@ -7,7 +7,6 @@ from objectstate import (
     LazyDataclassFactory,
     config_context,
     get_current_temp_global,
-    set_current_temp_global,
     clear_current_temp_global,
     merge_configs,
     extract_all_configs,
@@ -103,18 +102,14 @@ def test_config_context_cleanup(global_config):
         pass
 
 
-def test_set_and_clear_current_temp_global(global_config):
-    """Test manually setting and clearing temp global."""
-    set_current_temp_global(global_config)
-    assert get_current_temp_global() == global_config
+def test_clear_current_temp_global_leaves_no_active_context(global_config):
+    """After clearing inside a context, neither the merged config nor a layer is active."""
+    from objectstate.context_manager import get_context_layer_stack
 
-    clear_current_temp_global()
-    try:
-        result = get_current_temp_global()
-        assert result is None
-    except LookupError:
-        pass
-
+    with config_context(global_config):
+        clear_current_temp_global()
+        assert get_current_temp_global() is None
+        assert get_context_layer_stack().layers == ()
 
 def test_merge_configs(global_config):
     """Test merging overrides into base config.

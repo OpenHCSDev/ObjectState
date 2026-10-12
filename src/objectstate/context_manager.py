@@ -22,7 +22,7 @@ import logging
 import threading
 from collections.abc import Sequence
 from contextlib import ExitStack, contextmanager
-from typing import Any, Dict, get_type_hints
+from typing import Any, Dict, Optional, Tuple, get_type_hints
 from dataclasses import fields, is_dataclass
 from python_introspect import resolve_annotated, resolve_optional
 
@@ -42,12 +42,60 @@ current_temp_global = contextvars.ContextVar('current_temp_global')
 # The stack is a tuple of types, ordered from outermost to innermost context
 context_type_stack = contextvars.ContextVar('context_type_stack', default=())
 
-# Context layer stack - tracks (scope_id, obj) tuples for provenance tracking
-# Parallel to merged config - NOT flattened, preserves hierarchy for inheritance source lookup
-# Used by get_field_provenance() to determine which scope provided a resolved value
-from typing import Tuple, Optional
-context_layer_stack: contextvars.ContextVar[Tuple[Tuple[str, Any], ...]] = contextvars.ContextVar(
-    'context_layer_stack', default=()
+class ContextLayer:
+    """One object entered with ``config_context``, with the scope it was entered under.
+
+    ``scope_id`` is ``None`` for a layer entered without one. ``masks_outer_layers``
+    is True for a layer entered with ``mask_with_none``: a ``None`` in it is final,
+    so no layer outside it supplies a value.
+    """
+
+    __slots__ = ("scope_id", "obj", "masks_outer_layers", "_configs")
+
+    def __init__(self, scope_id: Optional[str], obj: Any, masks_outer_layers: bool = False):
+        self.scope_id = scope_id
+        self.obj = obj
+        self.masks_outer_layers = masks_outer_layers
+        self._configs: Optional[Dict[type, Any]] = None
+
+    @property
+    def configs(self) -> Dict[type, Any]:
+        """The config instances this layer holds, by type. Extracted once per layer."""
+        configs = self._configs
+        if configs is None:
+            configs = self._configs = extract_all_configs(self.obj)
+        return configs
+
+    def __repr__(self) -> str:
+        return f"ContextLayer({self.scope_id!r}, {type(self.obj).__name__})"
+
+
+class ContextLayerStack:
+    """The layers of one active context, outermost first.
+
+    This is the value field resolution reads. Every ``config_context`` entry makes a
+    new stack, and ``resolved_fields`` holds the answers computed from that stack, so
+    the answers are dropped together with the stack they belong to.
+    """
+
+    __slots__ = ("layers", "resolved_fields", "__weakref__")
+
+    def __init__(self, layers: Tuple[ContextLayer, ...] = ()):
+        self.layers = layers
+        self.resolved_fields: Dict[Tuple[type, str], Any] = {}
+
+    def with_layer(self, layer: ContextLayer) -> "ContextLayerStack":
+        return ContextLayerStack(self.layers + (layer,))
+
+    def __repr__(self) -> str:
+        return f"ContextLayerStack({self.layers!r})"
+
+
+NO_LAYERS = ContextLayerStack()
+
+# The layer stack of the active context. NO_LAYERS means no context is active.
+context_layer_stack: contextvars.ContextVar[ContextLayerStack] = contextvars.ContextVar(
+    'context_layer_stack', default=NO_LAYERS
 )
 
 def _merge_nested_dataclass(base, override, mask_with_none: bool = False):
@@ -132,9 +180,10 @@ def config_context(obj, mask_with_none: bool = False, use_live_global: bool = Tr
                        loaded instance with static class defaults.
         use_live_global: If True (default), use LIVE global config (UI sees unsaved edits).
                         If False, use SAVED global config (compiler sees saved values).
-        scope_id: Optional scope identifier for provenance tracking (e.g., "plate_123::step_0").
-                 When provided, the (scope_id, obj) tuple is pushed to context_layer_stack
-                 to enable inheritance source lookup via get_field_provenance().
+        scope_id: The scope this layer belongs to (e.g., "plate_123::step_0"). Field
+                 resolution reports it as the source scope of every value the layer
+                 supplies. A layer entered without one supplies values all the same and
+                 is reported with source scope ``None``.
 
     Usage:
         # UI operations (default - uses LIVE)
@@ -145,9 +194,9 @@ def config_context(obj, mask_with_none: bool = False, use_live_global: bool = Tr
         with config_context(orchestrator.pipeline_config, use_live_global=False):
             # Compiler uses saved global config only
 
-        # With provenance tracking
+        # With a scope id
         with config_context(step, scope_id="plate_123::step_0"):
-            # Layer tracked for inheritance source lookup
+            # Values this layer supplies are reported as coming from that scope
     """
     # Get current context as base for nested contexts, or fall back to base global config
     current_context = get_current_temp_global()
@@ -229,26 +278,27 @@ def config_context(obj, mask_with_none: bool = False, use_live_global: bool = Tr
     current_types = context_type_stack.get()
     new_types = current_types + (type(obj),) if obj is not None else current_types
 
-    # Track (scope_id, obj) in layer stack for provenance tracking
-    current_layers = context_layer_stack.get()
-    new_layers = current_layers + ((scope_id, obj),) if scope_id is not None else current_layers
+    # A context entered while none is active starts from the global config, so the
+    # global config is its outermost layer.
+    if current_context is None:
+        current_stack = ContextLayerStack((ContextLayer("", base_config),))
+    else:
+        current_stack = context_layer_stack.get()
+    new_stack = (
+        current_stack.with_layer(ContextLayer(scope_id, obj, mask_with_none))
+        if obj is not None
+        else current_stack
+    )
 
     merged_token = current_temp_global.set(merged_config)
     type_token = context_type_stack.set(new_types)
-    layer_token = context_layer_stack.set(new_layers)
-    # PERFORMANCE: Clear caches on context push (new merged config)
-    clear_extract_all_configs_cache()
-    from objectstate.dual_axis_resolver import clear_mro_resolution_cache
-    clear_mro_resolution_cache()
+    layer_token = context_layer_stack.set(new_stack)
     try:
         yield
     finally:
         current_temp_global.reset(merged_token)
         context_type_stack.reset(type_token)
         context_layer_stack.reset(layer_token)
-        # PERFORMANCE: Clear caches on context pop
-        clear_extract_all_configs_cache()
-        clear_mro_resolution_cache()
 
 
 def get_context_type_stack():
@@ -272,24 +322,19 @@ def get_context_type_stack():
     return context_type_stack.get()
 
 
-def get_context_layer_stack() -> Tuple[Tuple[str, Any], ...]:
+def get_context_layer_stack() -> ContextLayerStack:
     """
-    Get the current layer stack for provenance tracking.
+    Get the layer stack of the active context: the value field resolution reads.
 
-    Returns a tuple of (scope_id, obj) tuples, ordered from outermost to innermost.
-    Only includes layers where scope_id was explicitly provided to config_context().
-
-    Used by get_field_provenance() to determine which scope provided a resolved value.
-
-    Returns:
-        Tuple of (scope_id, obj) tuples representing the context hierarchy.
-        Empty tuple if no layers with scope_ids are active.
+    ``.layers`` holds one ``ContextLayer`` per object entered with ``config_context``,
+    outermost first, below the global config the context started from. It is empty
+    when no context is active.
 
     Example:
         with config_context(plate, scope_id="plate_123"):
             with config_context(step, scope_id="plate_123::step_0"):
-                layers = get_context_layer_stack()
-                # layers == (("plate_123", plate), ("plate_123::step_0", step))
+                scopes = [layer.scope_id for layer in get_context_layer_stack().layers]
+                # scopes == ["", "plate_123", "plate_123::step_0"]
     """
     return context_layer_stack.get()
 
@@ -304,11 +349,8 @@ def _normalize_type(t):
     PERFORMANCE: Results are cached with lru_cache since type->base_type
     mappings are immutable after class creation.
     """
-    try:
-        from objectstate.lazy_factory import get_base_type_for_lazy
-        return get_base_type_for_lazy(t) or t
-    except ImportError:
-        return t
+    from objectstate.lazy_factory import get_base_type_for_lazy
+    return get_base_type_for_lazy(t) or t
 
 
 def _is_global_type(t):
@@ -316,11 +358,8 @@ def _is_global_type(t):
 
     This function is defined here to avoid circular imports with lazy_factory.
     """
-    try:
-        from objectstate.lazy_factory import is_global_config_type
-        return is_global_config_type(t)
-    except ImportError:
-        return False
+    from objectstate.lazy_factory import is_global_config_type
+    return is_global_config_type(t)
 
 
 # Hierarchy registry - built from active form managers
@@ -543,8 +582,10 @@ def build_context_stack(
     Enter every context layer needed to resolve ``object_instance``; leave them on exit.
 
     Layers, outermost first:
-    1. The global layer, under scope ``""``. When ``object_instance`` is itself a global
-       config, this is a fresh instance of its type holding the declared defaults.
+    1. The global config, under scope ``""``. ``config_context`` puts it below the
+       first layer entered while no context is active. When ``object_instance`` is
+       itself a global config, a fresh instance of its type holding the declared
+       defaults is entered above it, also under scope ``""``, and masks it.
     2. Each ancestor, under its own scope id. Global-config ancestors are left out
        because layer 1 already stands for them.
     3. ``object_instance``, under ``current_scope_id``.
@@ -560,23 +601,21 @@ def build_context_stack(
     """
     from objectstate.lazy_factory import GlobalConfigBase
 
+    def enter(stack: ExitStack, obj: object, scope_id: str | None, mask: bool = False):
+        stack.enter_context(
+            config_context(obj, mask_with_none=mask, use_live_global=use_live, scope_id=scope_id)
+        )
+
     with ExitStack() as stack:
         if isinstance(object_instance, GlobalConfigBase):
-            declared_defaults = type(object_instance)()
-            stack.enter_context(
-                config_context(declared_defaults, mask_with_none=True, scope_id="")
-            )
-        else:
-            global_layer = get_base_global_config(use_live=use_live)
-            if global_layer:
-                stack.enter_context(config_context(global_layer, scope_id=""))
+            enter(stack, type(object_instance)(), "", mask=True)
 
         for scope_id, ancestor_obj in ancestor_objects_with_scopes:
             if isinstance(ancestor_obj, GlobalConfigBase):
                 continue
-            stack.enter_context(config_context(ancestor_obj, scope_id=scope_id))
+            enter(stack, ancestor_obj, scope_id)
 
-        stack.enter_context(config_context(object_instance, scope_id=current_scope_id))
+        enter(stack, object_instance, current_scope_id)
         yield
 
 
@@ -603,34 +642,26 @@ def merge_configs(base, overrides: Dict[str, Any]):
 
 def get_base_global_config(use_live: bool = True):
     """
-    Get the base global config (fallback when no context set).
+    Get the global config a context starts from when none is active.
 
-    This provides the global config that was set up with ensure_global_config_context(),
-    or a default if none was set. Used as the base for merging operations.
+    This is the config set with ensure_global_config_context(), or an instance of the
+    base config type holding its declared defaults when none was set. Raises when no
+    base config type is set or its defaults cannot be constructed.
 
     Args:
         use_live: If True (default), return LIVE config (UI sees unsaved edits).
                  If False, return SAVED config (compiler sees saved values).
-
-    Returns:
-        Current global config instance or default instance of base config type
     """
-    try:
-        from objectstate.config import get_base_config_type
-        from objectstate.global_config import get_current_global_config
+    from objectstate.config import get_base_config_type
+    from objectstate.global_config import get_current_global_config
 
-        base_config_type = get_base_config_type()
+    base_config_type = get_base_config_type()
 
-        # Get the appropriate global config (live or saved)
-        current_global = get_current_global_config(base_config_type, use_live=use_live)
-        if current_global is not None:
-            return current_global
+    current_global = get_current_global_config(base_config_type, use_live=use_live)
+    if current_global is not None:
+        return current_global
 
-        # Fallback to default if none was set
-        return base_config_type()
-    except ImportError:
-        logger.warning("Could not get base config type")
-        return None
+    return base_config_type()
 
 
 def get_current_temp_global():
@@ -646,33 +677,15 @@ def get_current_temp_global():
     return current_temp_global.get(None)
 
 
-def set_current_temp_global(config):
-    """
-    Set current context (for testing/debugging).
-    
-    This is primarily for testing purposes. Normal code should use
-    config_context() manager instead.
-    
-    Args:
-        config: Global config instance to set as current context
-        
-    Returns:
-        Token for resetting the context
-    """
-    return current_temp_global.set(config)
-
-
 def clear_current_temp_global():
     """
-    Clear current context (for testing/debugging).
-    
-    This removes any active context, causing resolution to fall back
-    to default behavior.
+    Leave the active context without restoring an outer one.
+
+    After this no context is active: lazy fields fall back to their declared
+    defaults until the next ``config_context`` is entered.
     """
-    try:
-        current_temp_global.set(None)
-    except LookupError:
-        pass  # No context was set
+    current_temp_global.set(None)
+    context_layer_stack.set(NO_LAYERS)
 
 
 # Utility functions for debugging and introspection
@@ -714,17 +727,28 @@ def extract_all_configs_from_context() -> Dict[type, Any]:
     return extract_all_configs(current)
 
 
-# PERFORMANCE: Cache extracted configs per context object id
-# Cleared when context changes (config_context push/pop)
-_extract_all_configs_cache: Dict[int, Dict[type, Any]] = {}
+@functools.lru_cache(maxsize=None)
+def _declared_config_fields(dataclass_type: type) -> Tuple[Tuple[str, type], ...]:
+    """The fields of a dataclass type that are declared as dataclass types, with those types.
+
+    A fact about the class, so it is kept per class.
+    """
+    annotations = get_type_hints(dataclass_type, include_extras=True)
+    declared = []
+    for field_info in fields(dataclass_type):
+        field_type = annotations.get(field_info.name, field_info.type)
+        actual_type = resolve_optional(resolve_annotated(field_type))
+        if is_dataclass(actual_type):
+            declared.append((field_info.name, actual_type))
+    return tuple(declared)
 
 
 def extract_all_configs(context_obj) -> Dict[type, Any]:
     """
     Extract all config instances from a context object using type-driven approach.
 
-    PERFORMANCE: Results are cached per context object id. Cache is cleared on
-    context changes via clear_extract_all_configs_cache().
+    A context layer keeps its own result (``ContextLayer.configs``); this function
+    itself keeps nothing.
 
     This function leverages dataclass field type annotations to efficiently extract
     config instances, avoiding string matching and runtime attribute scanning.
@@ -738,11 +762,6 @@ def extract_all_configs(context_obj) -> Dict[type, Any]:
     if context_obj is None:
         return {}
 
-    # PERFORMANCE: Check cache first
-    obj_id = id(context_obj)
-    if obj_id in _extract_all_configs_cache:
-        return _extract_all_configs_cache[obj_id]
-
     configs: Dict[type, Any] = {}
 
     # Include the context object itself if it's a dataclass
@@ -751,35 +770,27 @@ def extract_all_configs(context_obj) -> Dict[type, Any]:
 
     # Type-driven extraction: Use dataclass field annotations to find config fields
     if is_dataclass(type(context_obj)):
-        annotations = get_type_hints(type(context_obj), include_extras=True)
-        for field_info in fields(type(context_obj)):
-            field_type = annotations.get(field_info.name, field_info.type)
-            field_name = field_info.name
-
-            actual_type = resolve_optional(resolve_annotated(field_type))
-
-            # Only process fields that are dataclass types (config objects)
-            if is_dataclass(actual_type):
-                field_value = getattr(context_obj, field_name)
-                if field_value is None:
-                    continue
-                if not _is_compatible_config_type(field_value, actual_type):
-                    raise TypeError(
-                        f"{type(context_obj).__name__}.{field_name} declares "
-                        f"{actual_type.__name__}, got {type(field_value).__name__}."
-                    )
-                _record_config_instance(
-                    configs,
-                    field_value,
-                    source=f"{type(context_obj).__name__}.{field_name}",
+        for field_name, declared_type in _declared_config_fields(type(context_obj)):
+            # Read the stored value: a None field holds no config in this object,
+            # and resolving it here would ask the context that is being read.
+            field_value = object.__getattribute__(context_obj, field_name)
+            if field_value is None:
+                continue
+            if not _is_compatible_config_type(field_value, declared_type):
+                raise TypeError(
+                    f"{type(context_obj).__name__}.{field_name} declares "
+                    f"{declared_type.__name__}, got {type(field_value).__name__}."
                 )
+            _record_config_instance(
+                configs,
+                field_value,
+                source=f"{type(context_obj).__name__}.{field_name}",
+            )
 
     # For non-dataclass objects (orchestrators, etc.), extract dataclass attributes
     else:
         _extract_from_object_attributes_typed(context_obj, configs)
 
-    # Cache result
-    _extract_all_configs_cache[obj_id] = configs
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug(
             "Extracted %d configs: %s",
@@ -787,11 +798,6 @@ def extract_all_configs(context_obj) -> Dict[type, Any]:
             [config_type.__name__ for config_type in configs],
         )
     return configs
-
-
-def clear_extract_all_configs_cache() -> None:
-    """Clear the extract_all_configs cache. Call when context changes."""
-    _extract_all_configs_cache.clear()
 
 
 def _record_config_instance(
