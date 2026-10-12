@@ -112,7 +112,9 @@ def _objects(sites: frozenset[Site]) -> tuple[GlobalConfig, Holder, Holder]:
 
     def configs(scope: str, make_config) -> dict:
         return {
-            FIELD_OF[config_class]: make_config(config_class)(value=_value_at((config_class, scope)))
+            FIELD_OF[config_class]: make_config(config_class)(
+                value=_value_at((config_class, scope))
+            )
             for config_class in CLASSES
             if (config_class, scope) in sites
         }
