@@ -22,7 +22,7 @@ import logging
 import threading
 from collections.abc import Sequence
 from contextlib import ExitStack, contextmanager
-from typing import Any, Dict, Optional, Tuple, get_type_hints
+from typing import Any, Dict, get_type_hints
 from dataclasses import fields, is_dataclass
 from python_introspect import resolve_annotated, resolve_optional
 
@@ -52,14 +52,14 @@ class ContextLayer:
 
     __slots__ = ("scope_id", "obj", "masks_outer_layers", "_configs")
 
-    def __init__(self, scope_id: Optional[str], obj: Any, masks_outer_layers: bool = False):
+    def __init__(self, scope_id: str | None, obj: Any, masks_outer_layers: bool = False):
         self.scope_id = scope_id
         self.obj = obj
         self.masks_outer_layers = masks_outer_layers
-        self._configs: Optional[Dict[type, Any]] = None
+        self._configs: dict[type, Any] | None = None
 
     @property
-    def configs(self) -> Dict[type, Any]:
+    def configs(self) -> dict[type, Any]:
         """The config instances this layer holds, by type. Extracted once per layer."""
         configs = self._configs
         if configs is None:
@@ -80,9 +80,9 @@ class ContextLayerStack:
 
     __slots__ = ("layers", "resolved_fields", "__weakref__")
 
-    def __init__(self, layers: Tuple[ContextLayer, ...] = ()):
+    def __init__(self, layers: tuple[ContextLayer, ...] = ()):
         self.layers = layers
-        self.resolved_fields: Dict[Tuple[type, str], Any] = {}
+        self.resolved_fields: dict[tuple[type, str], Any] = {}
 
     def with_layer(self, layer: ContextLayer) -> "ContextLayerStack":
         return ContextLayerStack(self.layers + (layer,))
@@ -163,7 +163,12 @@ def _merge_nested_dataclass(base, override, mask_with_none: bool = False):
 
 
 @contextmanager
-def config_context(obj, mask_with_none: bool = False, use_live_global: bool = True, scope_id: Optional[str] = None):
+def config_context(
+    obj,
+    mask_with_none: bool = False,
+    use_live_global: bool = True,
+    scope_id: str | None = None,
+):
     """
     Create new context scope with obj's matching fields merged into base config.
 
@@ -728,8 +733,8 @@ def extract_all_configs_from_context() -> Dict[type, Any]:
     return extract_all_configs(current)
 
 
-@functools.lru_cache(maxsize=None)
-def _declared_config_fields(dataclass_type: type) -> Tuple[Tuple[str, type], ...]:
+@functools.cache
+def _declared_config_fields(dataclass_type: type) -> tuple[tuple[str, type], ...]:
     """The fields of a dataclass type that are declared as dataclass types, with those types.
 
     A fact about the class, so it is kept per class.

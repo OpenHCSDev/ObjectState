@@ -11,7 +11,7 @@ The resolver is completely generic and has no application-specific dependencies.
 import functools
 import logging
 from dataclasses import MISSING, fields, is_dataclass
-from typing import Any, NamedTuple, Optional, Tuple
+from typing import Any, NamedTuple
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +28,8 @@ class ResolvedField(NamedTuple):
     """
 
     value: Any
-    source_scope: Optional[str]
-    source_type: Optional[type]
+    source_scope: str | None
+    source_type: type | None
 
 
 @functools.lru_cache(maxsize=None)
@@ -47,7 +47,7 @@ def _normalize_to_base(t: type) -> type:
     return get_base_type_for_lazy(t) or t
 
 
-def _direct_owner_field_default(config_type: type, field_name: str) -> Tuple[bool, Any]:
+def _direct_owner_field_default(config_type: type, field_name: str) -> tuple[bool, Any]:
     """Return the default owned by config_type for field_name.
 
     Lazy config resolution intentionally forces inherited dataclass fields to
@@ -76,7 +76,7 @@ def _direct_owner_field_default(config_type: type, field_name: str) -> Tuple[boo
     return False, None
 
 
-def declared_default(container_type: type, field_name: str) -> Tuple[Any, Optional[type]]:
+def declared_default(container_type: type, field_name: str) -> tuple[Any, type | None]:
     """The value a field has when no context layer supplies one.
 
     In order: the default the base type declares for the field itself, the first
@@ -167,15 +167,15 @@ def _resolve_in_layers(layers: tuple, container_type: type, field_name: str) -> 
 
     # Where the field lives when every layer leaves it None: the outermost layer
     # holding the first MRO type that any layer holds.
-    unset_scope: Optional[str] = None
-    unset_type: Optional[type] = None
+    unset_scope: str | None = None
+    unset_type: type | None = None
     unset_found = False
 
     for mro_class in container_base.__mro__:
         if not is_dataclass(mro_class):
             continue
         mro_type = _normalize_to_base(mro_class)
-        outermost_scope: Optional[str] = None
+        outermost_scope: str | None = None
         held_by_a_layer = False
 
         for layer in visible_layers:
@@ -200,7 +200,9 @@ def _resolve_in_layers(layers: tuple, container_type: type, field_name: str) -> 
     return ResolvedField(default_value, unset_scope, own_default_type or unset_type)
 
 
-def get_field_provenance(container_type: type, field_name: str) -> Tuple[Optional[str], Optional[type]]:
+def get_field_provenance(
+    container_type: type, field_name: str
+) -> tuple[str | None, type | None]:
     """
     Find which scope AND type provided the concrete value for a field.
 
