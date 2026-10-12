@@ -119,7 +119,9 @@ A ``ResolvedField`` named tuple:
 
 * ``value``: The resolved field value (may be ``None``)
 * ``source_scope``: The scope id of the layer that supplied the value. ``None`` for a layer
-  entered with ``config_context(obj)`` without a ``scope_id``.
+  entered with ``config_context(obj)`` without a ``scope_id``. ``ObjectState.get_provenance``
+  never reports such a layer: a state resolves against the global config and its registered
+  ancestors only (:ref:`state-resolution-inputs`).
 * ``source_type``: The type the value was read from: the container type or one of its bases.
 
 When no layer holds a value, ``value`` is the declared default and the source names the

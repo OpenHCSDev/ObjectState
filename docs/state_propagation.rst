@@ -95,17 +95,35 @@ Use parent forwarding when all of the following are true:
 For a nested dataclass field in the same state, call ``update_parameter()`` on
 the dotted path instead.
 
+.. _state-resolution-inputs:
+
 What a resolved value is computed from
 --------------------------------------
 
-A resolved value of a state is computed from three things: which states are
-registered at the scopes above it, what each of them stores for the field's config
-type and field name, and what the global config stores. Each resolved snapshot (live
+A resolved value of a state depends only on the state's place in the registered
+hierarchy. It is computed from three things: which states are registered at the
+scopes above it, what each of them stores for the field's config type and field name,
+and what the global config stores. Nothing else is an input. In particular a
+``config_context`` that the caller has entered is not: a state built, read or resolved
+again inside such a block has the values, saved values, reported sources, dirty
+fields and notifications it has outside it, during the block and after it. The state
+resolves against a layer stack of its own (``build_context_stack``) that starts from
+the global config and holds the registered ancestors and the state's object; the
+caller's context is set aside while it does and is active again afterwards. So the
+reported source of a resolved value is always a scope where a state is registered, or
+``""`` for the global config.
+
+This is the only statement of the rule. A lazy config object that no state owns is a
+different route: plain attribute access on it resolves against whatever
+``config_context`` is entered (see ``context_system.rst`` in the package docs), which
+is how a compiler resolves a pipeline's objects.
+
+Each resolved snapshot (live
 and saved) keeps the objects it was computed from (``ResolutionSources``): the global
 config instance of the thread that resolved it and the object of every state
 registered above. Every resolved read (``get_resolved_value``,
 ``get_saved_resolved_value``, ``get_provenance``, ``to_resolved_object``,
-``state.fields``) first compares those objects with the ones the state would be given
+``state.fields``, ``dirty_fields``) first compares those objects with the ones the state would be given
 now. When they are the same objects the read answers from the snapshot. When one is
 another object, the two are compared field by field, the way field resolution reads a
 context layer, and only the fields of the state that are unset and can inherit a
@@ -129,7 +147,23 @@ Limits:
 - The global config is stored per thread. A snapshot follows the global config of the
   thread that resolved it; a read from another thread answers from the snapshot and
   does not resolve it again for that thread's global config.
-- A state built or resolved inside a ``config_context`` the caller entered takes that
-  context's layers into its snapshot and keeps them after the block
-  (`issue #53 <https://github.com/OpenHCSDev/ObjectState/issues/53>`_).
+
+The state of the global config
+------------------------------
+
+The global config is stored per thread, once as edited (live) and once as saved. A
+state whose object is a global config writes that store when its own object changes:
+``update_parameter`` applies the edit to the live global config,
+``mark_saved`` stores the saved object as the saved global config, ``restore_saved``
+stores the saved object as the live one again, ``update_object_instance`` and time
+travel store both. Each is stored before any descendant resolves again, so saving the
+global state is one call: its registered descendants resolve their saved values
+against the object just saved and are told at once.
+
+``set_live_global_config``, ``set_saved_global_config`` and
+``ensure_global_config_context`` (both at once) store a global config where no state
+does it: at startup before a state exists, and in a thread or process that resolves
+plain lazy objects without a registry, such as a compile worker. Calling one with the
+values the global state has just stored, before or after ``mark_saved``, changes
+nothing. A setter tells no state; states find the replaced object on their next read.
 

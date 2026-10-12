@@ -2049,7 +2049,8 @@ class ObjectState:
 
     @property
     def dirty_fields(self) -> set[str]:
-        """Fields where resolved_live != resolved_saved."""
+        """Fields whose live and saved resolved values differ, among today's sources."""
+        self._ensure_live_resolved()
         return self._dirty_fields
 
     @property
@@ -2309,7 +2310,8 @@ class ObjectState:
     def mark_saved(self) -> None:
         """Mark current state as saved baseline.
 
-        UNIFIED: Works for any object_instance type.
+        UNIFIED: Works for any object_instance type. For the state of a global
+        config, the saved object also becomes the saved global config.
 
         CRITICAL: Invalidates descendant caches for any parameters that changed.
         This ensures that when saving, other windows that inherited from the
@@ -2377,6 +2379,7 @@ class ObjectState:
 
         # Update saved parameters (after object_instance update, before invalidation)
         self._saved_parameters = self._copy_parameters_for_saved_baseline(self.parameters)
+        self._store_saved_object_as_saved_global_config()
 
         # NOW invalidate descendant caches AFTER object_instance is updated
         # This ensures descendants see the NEW object_instance when they recompute
@@ -2477,6 +2480,23 @@ class ObjectState:
         with ObjectStateRegistry.atomic(f"restore {self.scope_id}"):
             self._restore_saved_impl(propagate_descendants=propagate_descendants)
             return
+
+    def _store_saved_object_as_saved_global_config(self) -> None:
+        """Saving the state of a global config makes its saved object the saved global config.
+
+        Stored before any descendant resolves its saved values again, so they resolve
+        against the object that was just saved. An application that also calls
+        ``set_saved_global_config`` with the same values, before or after
+        ``mark_saved``, changes nothing.
+        """
+        obj_type = type(self._extraction_target)
+        from objectstate.lazy_factory import is_global_config_type
+        if not is_global_config_type(obj_type):
+            return
+
+        from objectstate.global_config import set_saved_global_config
+
+        set_saved_global_config(obj_type, self._extraction_target)
 
     def _restore_live_global_context_from_saved(self) -> None:
         """Keep global live thread-local aligned after cancelling edits."""

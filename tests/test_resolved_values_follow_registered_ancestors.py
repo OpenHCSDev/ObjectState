@@ -16,14 +16,20 @@ clearing the registry), registered again with another value, replaced at its sco
 registered with unsaved edits; an ancestor's value edited, saved, restored, undone
 and redone, one and two levels up, with the descendant registered or not; the
 global config replaced through its setters; the descendant's ``scope_id`` moved
-under another ancestor; a context entered after the build. Only the fields a change
-can reach are resolved again. The case at the end of the file is known to fail and
-says why.
+under another ancestor. Only the fields a change can reach are resolved again.
+
+A context the caller has entered is not one of the sources: the second half of the
+file runs one sequence of builds, edits, saves and replacements outside any context
+and inside several kinds of entered context, and requires the same reads and the
+same notifications. A lazy object that no state owns does resolve against the
+entered context. The last section saves the state of the global config and stores
+the saved global config in both orders.
 """
 
 import gc
 import threading
 import weakref
+from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
@@ -36,12 +42,18 @@ from objectstate import (
     build_context_stack,
     config_context,
     dual_axis_resolver,
+    get_live_global_config,
+    get_saved_global_config,
     mark_global_config_type,
+    resolve_with_provenance,
     set_base_config_type,
     set_global_config_for_editing,
     set_live_global_config,
     set_saved_global_config,
+    spawn_thread_with_context,
 )
+
+from objectstate.context_manager import get_context_layer_stack
 
 
 @dataclass
@@ -295,20 +307,6 @@ def test_scope_moved_under_another_ancestor(step_and_plate):
 
     step.scope_id = STEP
     assert _reads(step) == _inherited("plate", PLATE)
-
-
-def test_context_entered_after_the_build_changes_no_read(step_and_plate):
-    step, _ = step_and_plate
-    expected = _inherited("plate", PLATE)
-    assert _reads(step) == expected
-
-    with config_context(Holder(settings=LazySettings(value="ambient")), scope_id="ambient"):
-        inside = _reads(step)
-
-    # ``uncached`` is resolved inside the entered context on purpose; see the last
-    # test in this file for what that shows.
-    assert inside._replace(uncached="plate") == expected
-    assert _reads(step) == expected
 
 
 # --- Sources other than registration --------------------------------------------
@@ -565,10 +563,7 @@ def test_global_state_edit_reaches_states_two_levels_down(step_under_plate):
     global_state.update_parameter(PATH, "typed")
     assert _reads(step) == _inherited("typed", GLOBAL, saved="global")
 
-    # Saving the global state does not store the saved global config; the
-    # application does, with the setter.
     global_state.mark_saved()
-    set_saved_global_config(GlobalConfig, global_state.to_object())
     assert _reads(step) == _inherited("typed", GLOBAL)
 
 
@@ -614,17 +609,363 @@ def test_another_thread_does_not_make_a_state_resolve_again(step_under_plate, re
     assert step.get_resolved_value(PATH) == "from a thread"
 
 
-# --- Known to fail --------------------------------------------------------------
-# Open in issue #53: an owner decision on whether a state's values may depend on a
-# context the caller has entered.
+# --- A context the caller has entered is not a source ---------------------------
+# A state resolves against the global config, the states registered above it and its
+# own object. ``config_context`` blocks entered around a build, a read or a change
+# supply nothing, whatever they hold and whatever scope they claim.
 
-OPEN = "open, see https://github.com/OpenHCSDev/ObjectState/issues/53: "
+OTHER_PATH = "settings.other"
+AMBIENT = "ambient"  # a scope where no state is registered
 
 
-@pytest.mark.xfail(strict=True, reason=OPEN + "a state resolved inside a context keeps its values")
+def _ambient(value: str = "ambient", **entered):
+    return config_context(
+        Holder(settings=LazySettings(value=value, other=f"{value} other")), **entered
+    )
+
+
+def _nested():
+    contexts = ExitStack()
+    contexts.enter_context(_ambient("outer", scope_id="outer"))
+    contexts.enter_context(_ambient("inner", scope_id="inner"))
+    return contexts
+
+
+def _ambient_global_config():
+    return config_context(
+        GlobalConfig(settings=Settings(value="ambient", other="ambient other")), scope_id=GLOBAL
+    )
+
+
+ENTERED = {
+    "one context": lambda: _ambient(scope_id=AMBIENT),
+    "without a scope id": _ambient,
+    "under the scope of a registered ancestor": lambda: _ambient(scope_id=PLATE),
+    "under the scope of the state itself": lambda: _ambient(scope_id=STEP),
+    "under the global scope": lambda: _ambient(scope_id=GLOBAL),
+    "a global config": _ambient_global_config,
+    "masking the layers outside it": lambda: _ambient(scope_id=AMBIENT, mask_with_none=True),
+    "started from the saved global config": lambda: _ambient(
+        scope_id=AMBIENT, use_live_global=False
+    ),
+    "nested": _nested,
+}
+
+
+def _start_over() -> None:
+    ObjectStateRegistry.clear()
+    set_base_config_type(GlobalConfig)
+    set_global_config_for_editing(GlobalConfig, GlobalConfig(settings=Settings(value="global")))
+
+
+def _history(entered) -> list:
+    """Every read and notification of three steps while their sources change inside ``entered()``.
+
+    One step is built and registered before the block, one is built inside it and
+    never registered, one is built inside it and first read after it.
+    """
+    plate = ObjectState(Holder(settings=LazySettings(other="plate other")), scope_id=PLATE)
+    ObjectStateRegistry.register(plate)
+    states: dict[str, ObjectState] = {}
+    told: list[tuple] = []
+    history: list[tuple] = []
+
+    def follow(name: str, state: ObjectState) -> ObjectState:
+        states[name] = state
+        state.on_resolved_changed(lambda paths: told.append((name, "resolved", frozenset(paths))))
+        state.on_state_changed(lambda paths: told.append((name, "state", frozenset(paths))))
+        return state
+
+    def record(event: str) -> None:
+        registered = {state.scope_id for state in ObjectStateRegistry.get_all()} | {GLOBAL}
+        seen = {}
+        for name, state in states.items():
+            # ``dirty_fields`` first: it is a read like the others and must not need one.
+            dirty = frozenset(state.dirty_fields)
+            other = (
+                state.get_resolved_value(OTHER_PATH),
+                state.get_saved_resolved_value(OTHER_PATH),
+                state.get_provenance(OTHER_PATH),
+            )
+            seen[name] = (dirty, _reads(state), other)
+            for path in (PATH, OTHER_PATH):
+                source = state.get_provenance(path)
+                assert source is None or source[0] in registered, (event, name, path, source)
+        history.append((event, seen, tuple(told)))
+
+    before = follow("built before", _step_state())
+    ObjectStateRegistry.register(before)
+    record("before the block")
+
+    with entered():
+        follow("built inside", _step_state_at(f"{PLATE}::inside"))
+        late = _step_state_at(f"{PLATE}::late")
+        record("built")
+
+        _replace_global("replaced")
+        record("global config replaced")
+
+        plate.update_parameter(PATH, "edited")
+        record("ancestor edited")
+
+        plate.mark_saved()
+        record("ancestor saved")
+
+        plate.update_parameter(OTHER_PATH, None)
+        record("ancestor gives a field up")
+
+        _replace_global("saved too", saved=True)
+        record("saved global config replaced")
+
+        before.invalidate_cache()
+        record("every field resolved again")
+
+        with _ambient("deeper", scope_id="deeper"):
+            plate.update_parameter(PATH, "edited deeper")
+            record("ancestor edited one block further in")
+
+        ObjectStateRegistry.unregister(plate)
+        record("ancestor unregistered")
+
+        ObjectStateRegistry.register(plate)
+        record("ancestor registered again")
+
+        before.update_parameter(PATH, "own")
+        record("own value set")
+
+        before.update_parameter(PATH, None)
+        before.mark_saved()
+        record("own value given up and saved")
+
+        plate.restore_saved()
+        record("ancestor restored")
+
+        # Last: editing the state of the global config leaves the entered context.
+        global_state = ObjectState(get_live_global_config(GlobalConfig), scope_id=GLOBAL)
+        ObjectStateRegistry.register(global_state)
+        plate.update_parameter(PATH, None)
+        plate.mark_saved()
+        global_state.update_parameter(PATH, "typed")
+        record("global state edited")
+
+        global_state.mark_saved()
+        record("global state saved")
+
+    follow("first read after the block", late)
+    record("after the block")
+    return history
+
+
+def test_the_changes_of_the_history_are_seen_outside_any_context():
+    """The sequence the next test repeats inside contexts does change what is read."""
+    history = {event: seen for event, seen, _ in _history(nullcontext)}
+
+    def value_reads(event: str) -> set:
+        return {reads for _, reads, _ in history[event].values()}
+
+    assert value_reads("built") == {FROM_GLOBAL}
+    assert value_reads("global config replaced") == {
+        _inherited("replaced", GLOBAL, saved="global")
+    }
+    assert value_reads("ancestor edited") == {_inherited("edited", PLATE, saved="global")}
+    assert value_reads("ancestor saved") == {_inherited("edited", PLATE)}
+    assert {other for _, _, other in history["ancestor saved"].values()} == {
+        ("plate other", "plate other", (PLATE, Settings))
+    }
+    assert {other for _, _, other in history["ancestor gives a field up"].values()} == {
+        (None, "plate other", (GLOBAL, Settings))
+    }
+    assert value_reads("ancestor unregistered") == {_inherited("saved too", GLOBAL)}
+    assert value_reads("global state edited") == {_inherited("typed", GLOBAL, saved="saved too")}
+    assert value_reads("after the block") == {_inherited("typed", GLOBAL)}
+
+
+@pytest.mark.parametrize("entered", ENTERED)
+def test_reads_and_notifications_inside_an_entered_context_are_those_outside(entered):
+    outside = _history(nullcontext)
+    _start_over()
+
+    assert _history(ENTERED[entered]) == outside
+
+
 def test_resolving_inside_an_entered_context_does_not_take_its_values():
-    entered = Holder(settings=LazySettings(value="ambient"))
-    with config_context(entered, scope_id="ambient"):
+    with _ambient(scope_id=AMBIENT):
         step = _step_state()
+        assert _reads(step) == FROM_GLOBAL
 
     assert _reads(step) == FROM_GLOBAL
+
+
+def test_layers_a_state_resolves_against_start_from_the_global_config(step_under_plate):
+    step, plate = step_under_plate
+    ancestors = ObjectStateRegistry.get_ancestor_objects_with_scopes(step.scope_id)
+
+    with _nested():
+        entered = get_context_layer_stack()
+        with build_context_stack(step.to_object(), ancestors, step.scope_id):
+            layers = get_context_layer_stack().layers
+            assert [(layer.scope_id, layer.obj) for layer in layers] == [
+                (GLOBAL, get_live_global_config(GlobalConfig)),
+                *ancestors,
+                (STEP, step.to_object()),
+            ]
+            assert ancestors[0] == (PLATE, plate.to_object())
+        assert get_context_layer_stack() is entered
+
+        with pytest.raises(ZeroDivisionError):
+            with build_context_stack(step.to_object(), ancestors, step.scope_id):
+                1 / 0
+        assert get_context_layer_stack() is entered
+
+
+def test_lazy_object_no_state_owns_resolves_against_the_entered_context(step_under_plate):
+    """Plain attribute access reads the entered context, before and after a state resolves in it."""
+    step, plate = step_under_plate
+    plain = LazySettings()
+
+    with _ambient(scope_id=AMBIENT):
+        entered = get_context_layer_stack()
+
+        def reads_the_entered_context() -> None:
+            assert (plain.value, Holder().settings.other) == ("ambient", "ambient other")
+            assert tuple(resolve_with_provenance(LazySettings, "value")) == (
+                "ambient",
+                AMBIENT,
+                Settings,
+            )
+            assert get_context_layer_stack() is entered
+
+        reads_the_entered_context()
+
+        built_inside = _step_state_at(f"{PLATE}::inside")
+        assert _reads(built_inside) == _inherited("plate", PLATE)
+        reads_the_entered_context()
+
+        plate.update_parameter(PATH, "edited")
+        assert step.get_resolved_value(PATH) == "edited"
+        reads_the_entered_context()
+
+        step.invalidate_cache()
+        _replace_global("replaced")
+        assert step.get_resolved_value(PATH) == "edited"
+        reads_the_entered_context()
+
+        with _ambient("inner", scope_id="inner"):
+            assert built_inside.get_provenance(PATH) == (PLATE, Settings)
+            assert plain.value == "inner"
+        reads_the_entered_context()
+
+
+def test_context_entered_in_another_thread_is_not_a_source():
+    entered, read = threading.Event(), threading.Event()
+
+    def hold_a_context() -> None:
+        with _ambient(scope_id=AMBIENT):
+            entered.set()
+            read.wait(timeout=10)
+
+    thread = threading.Thread(target=hold_a_context)
+    thread.start()
+    try:
+        assert entered.wait(timeout=10)
+        assert _reads(_step_state()) == FROM_GLOBAL
+    finally:
+        read.set()
+        thread.join()
+
+
+def test_thread_started_with_the_entered_context_reads_states_as_outside():
+    """``spawn_thread_with_context`` copies the entered context into the thread."""
+    step = _step_state()
+    configs = get_live_global_config(GlobalConfig), get_saved_global_config(GlobalConfig)
+    seen: list = []
+
+    def read() -> None:
+        set_live_global_config(GlobalConfig, configs[0])  # stored per thread
+        set_saved_global_config(GlobalConfig, configs[1])
+        seen.extend([LazySettings().value, _reads(step), _reads(_step_state())])
+
+    with _ambient(scope_id=AMBIENT):
+        spawn_thread_with_context(read).join()
+
+    assert seen == ["ambient", FROM_GLOBAL, FROM_GLOBAL]
+
+
+# --- Saving the state of the global config --------------------------------------
+# Saving that state makes its saved object the saved global config. An application
+# that also stores it with the setter, before or after, ends in the same place.
+
+SAVE_ORDERS = {
+    "save the state": ("save",),
+    "save the state, then store": ("save", "store"),
+    "store, then save the state": ("store", "save"),
+}
+
+
+def _save_a_global_edit(order: tuple[str, ...], *, registered: bool):
+    """Edit ``value`` in the global state, save in ``order``; what its descendants then read."""
+    global_state = ObjectState(get_live_global_config(GlobalConfig), scope_id=GLOBAL)
+    ObjectStateRegistry.register(global_state)
+    descendants = [ObjectState(Holder(), scope_id=PLATE), _step_state()]
+    told: list[tuple] = []
+    for state in descendants:
+        if registered:
+            ObjectStateRegistry.register(state)
+        state.on_state_changed(
+            lambda paths, state=state: told.append(
+                (state.scope_id, frozenset(paths), frozenset(state.dirty_fields))
+            )
+        )
+
+    global_state.update_parameter(PATH, "typed")
+    assert get_live_global_config(GlobalConfig).settings.value == "typed"
+    assert get_saved_global_config(GlobalConfig).settings.value == "global"
+    edited = global_state.to_object()
+
+    for operation in order:
+        if operation == "save":
+            global_state.mark_saved()
+        else:
+            set_saved_global_config(GlobalConfig, edited)
+
+    told_dirty = {scope: dirty for scope, _, dirty in told}  # the last each was told
+    dirty = [set(state.dirty_fields) for state in (global_state, *descendants)]
+    reads = [_reads(state) for state in descendants]
+    return (
+        dirty,
+        reads,
+        told_dirty,
+        tuple(told),
+        get_saved_global_config(GlobalConfig).settings.value,
+    )
+
+
+@pytest.mark.parametrize("registered", [True, False], ids=["registered", "not registered"])
+def test_saving_the_global_state_in_any_order_leaves_nothing_dirty(registered):
+    results = {}
+    for name, order in SAVE_ORDERS.items():
+        _start_over()
+        results[name] = _save_a_global_edit(order, registered=registered)
+
+    saved = _inherited("typed", GLOBAL)
+    # A state that is not registered is told on its next read, and by then it is
+    # as clean as it was before the edit.
+    told_clean = {PLATE: frozenset(), STEP: frozenset()} if registered else {}
+    expected = ([set(), set(), set()], [saved, saved], told_clean, "typed")
+    for name, (dirty, reads, told_dirty, _, saved_global) in results.items():
+        assert (dirty, reads, told_dirty, saved_global) == expected, name
+    assert len({told for *_, told, _ in results.values()}) == 1  # told the same, in the same order
+
+
+def test_registered_descendants_are_told_of_the_save_without_a_read():
+    global_state = ObjectState(get_live_global_config(GlobalConfig), scope_id=GLOBAL)
+    step = _step_state()
+    for state in (global_state, step):
+        ObjectStateRegistry.register(state)
+    global_state.update_parameter(PATH, "typed")
+    assert step._dirty_fields == {PATH}
+
+    global_state.mark_saved()
+
+    assert step._dirty_fields == set()
+    assert step._saved_resolved[PATH] == "typed"
