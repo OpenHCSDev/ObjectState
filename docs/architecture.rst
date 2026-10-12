@@ -527,6 +527,9 @@ Sets the **instance** (concrete values) for resolution:
 * Required for lazy resolution to work
 * Internally calls ``set_global_config_for_editing()``
 * Should be called at application startup (GUI) or before pipeline execution
+* Not needed after an edit or a save made through the ``ObjectState`` of the global
+  config: that state stores the live and the saved instance itself
+  (see :doc:`state_propagation`)
 
 **Key Differences:**
 

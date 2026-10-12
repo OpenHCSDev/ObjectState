@@ -173,16 +173,13 @@ Global config uses thread-local storage for stability:
    _global_config_storage: Dict[Type, threading.local] = {}
    
    def ensure_global_config_context(config_type: Type, config_instance: Any):
-       """Establish global config as base context."""
-       # Store in thread-local
+       """Store the instance as both the live and the saved global config of this thread."""
        set_global_config_for_editing(config_type, config_instance)
-       
-       # Also inject into contextvars base
-       with config_context(config_instance):
-           # Global context now available
-           pass
 
-This hybrid approach uses thread-local for the global base and contextvars for dynamic stacking.
+The global config is the base in thread-local storage; contextvars hold the layers
+stacked on it. When a registered ``ObjectState`` holds the global config, that state
+writes this storage on edit, save and restore (``docs/state_propagation.rst``, "The
+state of the global config").
 
 Resolution Integration
 ---------------------
@@ -268,8 +265,13 @@ No manual cleanup needed - Python's context manager protocol handles it.
 Framework-Agnostic Context Stack Building
 -----------------------------------------
 
-``build_context_stack()`` is a context manager that enters every layer needed to
-resolve one object, and leaves them again when the block ends:
+``build_context_stack()`` is a context manager that enters the complete layer stack
+that resolves one object, and leaves it again when the block ends. It is how an
+``ObjectState`` resolves. The stack is built from the arguments and the global config
+alone: a context the caller has entered is set aside for the duration of the block and
+is active again after it. ``docs/state_propagation.rst`` ("What a resolved value is
+computed from") states the rule this implements; plain attribute access on a lazy
+object, everywhere else on this page, reads the entered context.
 
 .. code-block:: python
 
@@ -292,5 +294,6 @@ Layers are entered outermost first:
 
 Every layer carries a scope id, so ``resolve_with_provenance()`` can name the scope
 that supplied a value. The global layer is the one ``config_context()`` puts below the
-first layer entered while no context is active. Nothing is set until the ``with`` block is entered. A layer
-that cannot be built raises; the block never runs with a layer missing.
+first layer entered while no context is active, which is always the case inside this
+block. Nothing is set until the ``with`` block is entered. A layer that cannot be built
+raises; the block never runs with a layer missing.

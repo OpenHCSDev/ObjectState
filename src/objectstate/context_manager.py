@@ -585,13 +585,20 @@ def build_context_stack(
     use_live: bool = True,
 ):
     """
-    Enter every context layer needed to resolve ``object_instance``; leave them on exit.
+    Enter the complete layer stack that resolves ``object_instance``; leave it on exit.
+
+    The stack is built from the arguments and the global config alone. A context the
+    caller has entered is set aside for the duration of the block and is active again
+    after it: none of its layers is below, between or above the layers entered here.
+    This is how an ``ObjectState`` resolves, so a state's resolved values depend on
+    its object, the states registered above it and the global config, and never on
+    where the read was made. A lazy object that no state owns is resolved by plain
+    attribute access against whatever ``config_context`` is entered.
 
     Layers, outermost first:
-    1. The global config, under scope ``""``. ``config_context`` puts it below the
-       first layer entered while no context is active. When ``object_instance`` is
-       itself a global config, a fresh instance of its type holding the declared
-       defaults is entered above it, also under scope ``""``, and masks it.
+    1. The global config, under scope ``""``. When ``object_instance`` is itself a
+       global config, a fresh instance of its type holding the declared defaults is
+       entered above it, also under scope ``""``, and masks it.
     2. Each ancestor, under its own scope id. Global-config ancestors are left out
        because layer 1 already stands for them.
     3. ``object_instance``, under ``current_scope_id``.
@@ -613,6 +620,14 @@ def build_context_stack(
         )
 
     with ExitStack() as stack:
+        # With no context active, the first layer entered starts from the global config.
+        for variable, no_context in (
+            (current_temp_global, None),
+            (context_type_stack, ()),
+            (context_layer_stack, NO_LAYERS),
+        ):
+            stack.callback(variable.reset, variable.set(no_context))
+
         if isinstance(object_instance, GlobalConfigBase):
             enter(stack, type(object_instance)(), "", mask=True)
 
