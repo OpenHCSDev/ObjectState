@@ -284,11 +284,7 @@ def resolve_with_provenance(container_type: type, field_name: str) -> Tuple[Any,
     for scope_id, layer_obj in layers:
         if layer_obj is None:
             continue
-        try:
-            layer_configs = extract_all_configs(layer_obj)
-            all_layer_configs.append((scope_id, layer_configs))
-        except Exception:
-            continue
+        all_layer_configs.append((scope_id, extract_all_configs(layer_obj)))
 
     # PHASE 1: Hierarchy walk - check ONLY same-type config at each scope (inner to outer)
     # This gives hierarchy precedence: inner/child scopes override outer/parent scopes
