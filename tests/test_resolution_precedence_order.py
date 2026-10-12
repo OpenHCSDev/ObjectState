@@ -13,9 +13,9 @@ Two requirements hold whatever the loop order of the resolver is:
 
 Which axis is the outer loop only shows on a crossed pair: a value on a less
 specific class in a more specific scope against a value on a more specific class in
-a less specific scope, with no site most specific on both. The crossed tests here
-are a CHARACTERISATION OF TODAY'S BEHAVIOUR (class first), not a statement of
-intended policy: the documentation states both orders. See
+a less specific scope, with no site most specific on both. The policy is class
+first: the more specific class wins such a pair. It is stated in
+``docs/context_system.rst`` under "Precedence Order" and checked by
 ``test_crossed_pair_is_won_by_the_more_specific_class``.
 """
 
@@ -244,16 +244,10 @@ def test_winner_is_the_first_site_of_one_strict_total_order():
     ids=[f"{_value_at(a)} vs {_value_at(b)}" for a, b in CROSSED_PAIRS],
 )
 def test_crossed_pair_is_won_by_the_more_specific_class(inner_scope_site, specific_class_site):
-    """CHARACTERISATION of today's behaviour, not a statement of intended policy.
+    """The policy: class first.
 
-    ``_resolve_in_layers`` walks the MRO outside and the layers inside, so a value on
-    ``Leaf`` in the global config beats a value on ``Base`` set on the plate. Its
-    docstring and ``docs/context_system.rst`` describe that order;
-    ``docs/configuration_framework.rst`` describes the opposite one ("check
-    ``AppConfig`` context first, then ``GlobalAppConfig`` context, walking MRO at each
-    level"). Until the owner settles which is intended, this test only records what
-    the resolver does. If the scope is meant to be the outer loop, flip the expected
-    winner here and in ``test_all_sites_are_ordered_class_first_then_scope``.
+    The MRO is the outer loop and the layers the inner one, so a value on ``Leaf``
+    in the global config beats a value on ``Base`` set on the plate.
     """
     assert inner_scope_site[0] is not specific_class_site[0]
     assert inner_scope_site[1] != specific_class_site[1]
@@ -268,7 +262,7 @@ def test_crossed_pair_is_won_by_the_more_specific_class(inner_scope_site, specif
 
 
 def test_all_sites_are_ordered_class_first_then_scope():
-    """CHARACTERISATION: the one order is the product order with the class outer."""
+    """The one order is the product order with the class outer."""
     for sites in ALL_SITE_SETS:
         if sites:
             assert _winner(sites) == min(sites, key=ALL_SITES.index), sites
@@ -279,7 +273,7 @@ def test_read_kinds_of_an_editing_state_stay_distinct_and_agree_on_a_crossed_pai
 
     The stored value stays ``None``; the resolved value and the source are the
     resolver's answer for the same crossed pair. Which site that is, is the
-    characterised class-first order (see the crossed-pair test above).
+    class-first order (see the crossed-pair test above).
     """
     crossed = frozenset({(Base, PLATE), (Leaf, GLOBAL)})
     plate_only = frozenset({(Base, PLATE)})
