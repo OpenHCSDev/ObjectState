@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import copy
 import logging
-import threading
 from collections.abc import Callable, Sequence
 from dataclasses import fields as dataclass_fields
 from dataclasses import is_dataclass
@@ -35,7 +34,6 @@ from objectstate.scope_key import ScopeKey
 from objectstate.parameter_owner import ParameterOwner
 from objectstate.parameter_structure import ParameterStructure
 from objectstate.resolution_sources import ResolutionSources
-from objectstate.global_config import GlobalContextValues
 from objectstate.lazy_factory import is_global_config_type
 from objectstate.subfield_semantics import (
     MISSING,
@@ -337,7 +335,7 @@ class ObjectState:
 
         This implements auto-detection of delegate changes (Option 3 from architectural discussion).
         When object_instance's delegate attribute is replaced with a new instance (e.g., after
-        rebuild_lazy_config_with_new_global_reference()), this method detects the change and
+        code that rebuilds the config), this method detects the change and
         automatically re-extracts parameters from the new delegate.
 
         Returns:
@@ -777,7 +775,7 @@ class ObjectState:
                 self._invalid_fields.clear()
             else:
                 changed_paths = set()
-            self._resolved_from[False] = sources.recorded_after(self._resolved_from.get(False))
+            self._resolved_from[False] = sources
 
         if notify_flash and (live_resolved_again or saved_resolved_again):
             self._sync_materialized_state(changed_value_fields=changed_paths)
@@ -788,8 +786,8 @@ class ObjectState:
         self, *, sync_delegates: bool = False
     ) -> tuple[ResolutionSources, ResolutionSources]:
         """What this state's fields are resolved from today, live then saved (so the
-        pair is indexed by ``use_saved``): the global config stored for the running
-        thread and the objects of the other states registered above.
+        pair is indexed by ``use_saved``): the global config and the objects of the
+        other states registered above.
 
         This state's own object is left out (its own parameters are not an outside
         source), and so are global config objects of ancestors, for which
@@ -810,15 +808,17 @@ class ObjectState:
             live.append(
                 (scope, state.object_for_resolution(sync_delegate=sync_delegates))
             )
-        thread = threading.current_thread()
         global_config_type = get_base_config_type()
         return (
-            ResolutionSources(thread, get_live_global_config(global_config_type), tuple(live)),
-            ResolutionSources(thread, get_saved_global_config(global_config_type), tuple(saved)),
+            ResolutionSources(get_live_global_config(global_config_type), tuple(live)),
+            ResolutionSources(get_saved_global_config(global_config_type), tuple(saved)),
         )
 
     def object_for_resolution(self, use_saved: bool = False, sync_delegate: bool = False) -> Any:
         """The object a state below this one enters as a context layer.
+
+        For the state of a global config these two objects are the live and the saved
+        global config (``objectstate.global_config``).
 
         Saved: the object as last saved, without delegate sync or reconstruction.
         Live: rebuilt from the current parameters when they changed since the last
@@ -864,7 +864,7 @@ class ObjectState:
         """
         stale = self._fields_with_other_sources(sources, use_saved=True)
         if stale is not None and not stale:
-            self._resolved_from[True] = sources.recorded_after(self._resolved_from.get(True))
+            self._resolved_from[True] = sources
             return False
         self._saved_resolved = self._compute_resolved_snapshot(use_saved=True)
         return True
@@ -1130,50 +1130,6 @@ class ObjectState:
         self._invalid_fields.update(local_invalidations)
         self._cached_object = None  # Invalidate cached reconstructed object
         self._cached_object_applied = False
-
-        # GLOBAL CONFIG EXCEPTION: Update LIVE thread-local FIRST, BEFORE invalidating descendants!
-        # This is critical: descendants re-resolve during invalidation, so they need to see
-        # the NEW value in the LIVE thread-local, not the old one.
-        obj_type = type(self.object_instance)
-        from objectstate.lazy_factory import is_global_config_type
-        if is_global_config_type(obj_type):
-            try:
-                from objectstate.context_manager import clear_current_temp_global
-                from objectstate.global_config import get_live_global_config, set_live_global_config
-                from objectstate.lazy_factory import replace_raw
-
-                # Get current LIVE config
-                current_live = get_live_global_config(obj_type)
-                if current_live is not None:
-                    # Do a quick partial update to set the new value in LIVE thread-local
-                    if '.' in param_name:
-                        # Nested field like 'partition_filter_config.partition_filter'
-                        parts = param_name.split('.')
-                        nested_config_name = parts[0]
-                        nested_field_name = '.'.join(parts[1:])
-
-                        # Get nested config using object.__getattribute__ to avoid lazy resolution
-                        try:
-                            nested_config = object.__getattribute__(current_live, nested_config_name)
-                        except AttributeError:
-                            nested_config = None
-
-                        if nested_config is not None and is_dataclass(nested_config):
-                            # Update the nested config with the new value
-                            updated_nested = replace_raw(nested_config, **{nested_field_name: value})
-                            # Update LIVE thread-local with the updated nested config
-                            temp_live = replace_raw(current_live, **{nested_config_name: updated_nested})
-                            set_live_global_config(obj_type, temp_live)
-                    else:
-                        # Top-level field
-                        temp_live = replace_raw(current_live, **{param_name: value})
-                        set_live_global_config(obj_type, temp_live)
-
-                # Clear cached context so resolution uses updated LIVE thread-local
-                clear_current_temp_global()
-
-            except Exception as e:
-                logger.warning(f"Failed to update LIVE thread-local: {e}")
 
         # Materialize the origin once after its live context is authoritative,
         # then cascade only to descendants.
@@ -1729,20 +1685,6 @@ class ObjectState:
         self._cached_object_applied = False
         self._invalid_fields.clear()
 
-    def prepare_history_global_context(self) -> GlobalContextValues | None:
-        """Derive saved/live global projections from canonical raw state values."""
-
-        target_type = type(self._extraction_target)
-        if not is_global_config_type(target_type):
-            return None
-        contexts = GlobalContextValues(
-            target_type,
-            self._reconstruct_from_parameter_snapshot("", self._saved_parameters),
-            self._reconstruct_from_parameter_snapshot("", self.parameters),
-        )
-        contexts.validate()
-        return contexts
-
     def update_object_instance(self, new_instance: Any) -> None:
         """Replace object_instance with a new instance and re-extract parameters.
 
@@ -1797,15 +1739,6 @@ class ObjectState:
         self._cached_object = None
         self._cached_object_applied = False
         self._invalid_fields.clear()
-
-        obj_type = type(self._extraction_target)
-        from objectstate.lazy_factory import is_global_config_type
-        if is_global_config_type(obj_type):
-            from objectstate.context_manager import clear_current_temp_global
-            from objectstate.global_config import set_global_config_for_editing
-
-            set_global_config_for_editing(obj_type, self._extraction_target)
-            clear_current_temp_global()
 
         self._live_resolved = self._compute_resolved_snapshot(use_saved=False)
         self._saved_resolved = self._compute_resolved_snapshot(use_saved=True)
@@ -2379,7 +2312,6 @@ class ObjectState:
 
         # Update saved parameters (after object_instance update, before invalidation)
         self._saved_parameters = self._copy_parameters_for_saved_baseline(self.parameters)
-        self._store_saved_object_as_saved_global_config()
 
         # NOW invalidate descendant caches AFTER object_instance is updated
         # This ensures descendants see the NEW object_instance when they recompute
@@ -2481,36 +2413,6 @@ class ObjectState:
             self._restore_saved_impl(propagate_descendants=propagate_descendants)
             return
 
-    def _store_saved_object_as_saved_global_config(self) -> None:
-        """Saving the state of a global config makes its saved object the saved global config.
-
-        Stored before any descendant resolves its saved values again, so they resolve
-        against the object that was just saved. An application that also calls
-        ``set_saved_global_config`` with the same values, before or after
-        ``mark_saved``, changes nothing.
-        """
-        obj_type = type(self._extraction_target)
-        from objectstate.lazy_factory import is_global_config_type
-        if not is_global_config_type(obj_type):
-            return
-
-        from objectstate.global_config import set_saved_global_config
-
-        set_saved_global_config(obj_type, self._extraction_target)
-
-    def _restore_live_global_context_from_saved(self) -> None:
-        """Keep global live thread-local aligned after cancelling edits."""
-        obj_type = type(self.object_instance)
-        from objectstate.lazy_factory import is_global_config_type
-        if not is_global_config_type(obj_type):
-            return
-
-        from objectstate.context_manager import clear_current_temp_global
-        from objectstate.global_config import set_live_global_config
-
-        set_live_global_config(obj_type, copy.deepcopy(self._extraction_target))
-        clear_current_temp_global()
-
     def _restore_saved_impl(self, *, propagate_descendants: bool = True) -> None:
         """Internal restore implementation (wrapped by restore_saved atomic block)."""
 
@@ -2549,7 +2451,6 @@ class ObjectState:
         # CRITICAL: Also restore _saved_parameters to match current parameters
         # After restore, parameters == saved (both extracted from object_instance)
         self._saved_parameters = self._copy_parameters_for_saved_baseline(self.parameters)
-        self._restore_live_global_context_from_saved()
 
         self.invalidate_cache()
         # Invalidate cached reconstructed object (may contain unsaved edits)

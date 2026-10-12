@@ -9,7 +9,7 @@ Key Features:
 - Dual-axis inheritance (context hierarchy + sibling inheritance)
 - Contextvars-based context management
 - Placeholder text generation for UI
-- Thread-local global configuration storage
+- One global config per process, held by the registered global state
 
 Quick Start:
     >>> from objectstate import (
@@ -47,7 +47,7 @@ Modules:
     - dual_axis_resolver: Dual-axis inheritance resolver
     - context_manager: Contextvars-based context management
     - placeholder: Placeholder text generation for UI
-    - global_config: Thread-local global configuration storage
+    - global_config: The global config and the one thing that holds it
     - config: Framework configuration (pluggable types and behaviors)
 """
 
@@ -58,7 +58,6 @@ from objectstate.lazy_factory import (
     register_lazy_type_mapping,
     get_base_type_for_lazy,
     get_lazy_type_for_base,
-    ensure_global_config_context,
     # Constructor patching for code execution
     patch_lazy_constructors,
     # Global config type checking
@@ -86,7 +85,6 @@ from objectstate.dual_axis_resolver import (
 from objectstate.context_manager import (
     config_context,
     get_current_temp_global,
-    clear_current_temp_global,
     merge_configs,
     extract_all_configs,
     get_base_global_config,
@@ -111,10 +109,8 @@ from objectstate.placeholder import LazyDefaultPlaceholderService
 
 # Global config
 from objectstate.global_config import (
-    get_current_global_config,
-    set_global_config_for_editing,
-    set_saved_global_config,
-    set_live_global_config,
+    set_global_config,
+    forget_stored_global_config,
     get_saved_global_config,
     get_live_global_config,
 )
@@ -155,7 +151,6 @@ __all__ = [
     'register_lazy_type_mapping',
     'get_base_type_for_lazy',
     'get_lazy_type_for_base',
-    'ensure_global_config_context',
     # Constructor patching for code execution
     'patch_lazy_constructors',
     # Global config type checking
@@ -172,7 +167,6 @@ __all__ = [
     # Context
     'config_context',
     'get_current_temp_global',
-    'clear_current_temp_global',
     'merge_configs',
     'extract_all_configs',
     'get_base_global_config',
@@ -182,8 +176,10 @@ __all__ = [
     # Placeholder
     'LazyDefaultPlaceholderService',
     # Global config
-    'get_current_global_config',
-    'set_global_config_for_editing',
+    'set_global_config',
+    'forget_stored_global_config',
+    'get_live_global_config',
+    'get_saved_global_config',
     # Configuration
     'set_base_config_type',
     'get_base_config_type',
@@ -210,7 +206,7 @@ __all__ = [
     'ObjectStateEditSession',
 ]
 
-__version__ = "3.0.4"
+__version__ = "4.0.0"
 __author__ = 'OpenHCS Team'
 __description__ = 'Generic configuration framework for lazy dataclass resolution'
 

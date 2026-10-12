@@ -53,8 +53,7 @@ def reset_and_init_base_config():
     """Reset and initialize base config type before each test."""
     # Store original values
     original_base_type = config_module._base_config_type
-    original_saved = dict(global_config_module._saved_global_config_contexts)
-    original_live = dict(global_config_module._live_global_config_contexts)
+    original_stored = dict(global_config_module._stored_global_configs)
 
     # Set up base config type for all tests
     set_base_config_type(TestGlobalConfig)
@@ -63,10 +62,8 @@ def reset_and_init_base_config():
 
     # Restore original values after test
     config_module._base_config_type = original_base_type
-    global_config_module._saved_global_config_contexts.clear()
-    global_config_module._saved_global_config_contexts.update(original_saved)
-    global_config_module._live_global_config_contexts.clear()
-    global_config_module._live_global_config_contexts.update(original_live)
+    global_config_module._stored_global_configs.clear()
+    global_config_module._stored_global_configs.update(original_stored)
 
 
 @pytest.fixture

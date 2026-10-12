@@ -13,13 +13,12 @@ way field resolution reads a layer (``extract_all_configs``). Only fields that
 can inherit one of those pairs need to be resolved again.
 
 Objects are compared by identity. ``ObjectState.to_object`` builds a new object
-whenever a parameter changed, and the global config setters store another
+whenever a parameter changed, and ``set_global_config`` stores another
 instance, so another identity is the signal that values may differ. Every state
 below an edited ancestor asks about the same pair of objects, so the answer for
 a pair is kept and computed once per edit.
 """
 
-import threading
 from collections import OrderedDict
 from dataclasses import fields, is_dataclass
 from typing import Any, NamedTuple
@@ -37,18 +36,13 @@ _differing_fields_of_pair: "OrderedDict[tuple[int, int], tuple[Any, Any, frozens
 class ResolutionSources(NamedTuple):
     """What one resolved snapshot of a state is computed from.
 
-    ``global_config`` is the instance stored for the running thread, ``None`` when
-    none was set (the declared defaults are used then), and ``thread`` is that
-    thread: the global config is stored per thread, so two sources read in
-    different threads say nothing about each other's global config and are not
-    compared on it. A snapshot therefore follows a replaced global config in the
-    thread that resolved it, and a read from another thread never resolves it again
-    for that thread's global config. ``ancestors`` are the ``(scope id, object)``
-    pairs of the states registered above the state, least specific first, without
-    global config objects: the global config stands for them.
+    ``global_config`` is the global config (``objectstate.global_config``), ``None``
+    when there is none (the declared defaults are used then). ``ancestors`` are the
+    ``(scope id, object)`` pairs of the states registered above the state, least
+    specific first, without global config objects: the global config stands for
+    them.
     """
 
-    thread: threading.Thread
     global_config: Any | None
     ancestors: tuple[tuple[str, Any], ...]
 
@@ -56,7 +50,7 @@ class ResolutionSources(NamedTuple):
         """Whether ``other`` holds the same objects at the same scopes."""
         if other is None:
             return False
-        if self.thread is other.thread and self.global_config is not other.global_config:
+        if self.global_config is not other.global_config:
             return False
         if len(self.ancestors) != len(other.ancestors):
             return False
@@ -64,17 +58,6 @@ class ResolutionSources(NamedTuple):
             if mine[1] is not theirs[1] or mine[0] != theirs[0]:
                 return False
         return True
-
-    def recorded_after(self, earlier: "ResolutionSources | None") -> "ResolutionSources":
-        """What a snapshot is recorded as computed from once it follows these sources.
-
-        A snapshot brought up to date in another thread than the one that resolved it
-        was not compared on the global config, so it keeps the global config, and the
-        thread, it was resolved with.
-        """
-        if earlier is None or earlier.thread is self.thread:
-            return self
-        return self._replace(thread=earlier.thread, global_config=earlier.global_config)
 
     def fields_that_differ(self, earlier: "ResolutionSources | None") -> frozenset[FieldKey] | None:
         """The fields whose stored value differs between ``earlier`` and these sources.
@@ -85,15 +68,14 @@ class ResolutionSources(NamedTuple):
         """
         if earlier is None:
             return None
-        same_thread = self.thread is earlier.thread
-        if same_thread and (earlier.global_config is None) != (self.global_config is None):
+        if (earlier.global_config is None) != (self.global_config is None):
             return None
         if tuple(scope for scope, _ in earlier.ancestors) != tuple(
             scope for scope, _ in self.ancestors
         ):
             return None
         differing: frozenset[FieldKey] = frozenset()
-        if same_thread and self.global_config is not earlier.global_config:
+        if self.global_config is not earlier.global_config:
             differing |= _fields_that_differ(earlier.global_config, self.global_config)
         for (_, before), (_, now) in zip(earlier.ancestors, self.ancestors):
             if before is not now:

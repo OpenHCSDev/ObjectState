@@ -126,7 +126,7 @@ Usage Example
 
    from objectstate import (
        auto_create_decorator, config_context,
-       ensure_global_config_context, LazyDataclassFactory
+       set_global_config, LazyDataclassFactory
    )
 
    # Create global config with concrete values
@@ -139,7 +139,7 @@ Usage Example
    )
 
    # Establish global context
-   ensure_global_config_context(GlobalAppConfig, global_config)
+   set_global_config(GlobalAppConfig, global_config)
 
    # Create app config with lazy configs for inheritance
    app_config = AppConfig(
@@ -169,28 +169,18 @@ The ``objectstate`` package contains:
   UI placeholder generation showing inherited values
 
 **global_config.py**
-  Thread-local storage for global configuration
+  The global config and the one thing that holds it
 
 **object_state.py**
   ObjectState and ObjectStateRegistry for UI state management
 
-Thread-Local Context Synchronization
-------------------------------------
+Global Config and Editing
+-------------------------
 
-The configuration framework maintains thread-local context for global configuration to support lazy placeholder resolution across the application.
-
-**Context Lifecycle**
-
-1. **Initialization**: Context set during application startup
-2. **Live Updates**: Context synchronized with form edits in real-time
-3. **Restoration**: Original context restored on cancel
-4. **Cleanup**: Context cleared on window close
-
-**UI Integration**
-
-The configuration window implements special handling for global configuration to ensure thread-local context stays synchronized with form edits. Each field change triggers immediate context update, ensuring placeholder values in other windows update immediately.
-
-When users cancel config editing, the original context is restored to prevent context pollution from experimental changes.
+The global config is one value per process. While an ``ObjectState`` of it is
+registered at scope ``""`` that state holds it: a form edit is an edit of the state
+and is the live global config at once, cancel is ``restore_saved`` and save is
+``mark_saved``. Nothing else is synchronised or restored.
 
 **Implementation Details**
 

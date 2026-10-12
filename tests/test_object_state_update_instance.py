@@ -15,7 +15,7 @@ from objectstate import (
     get_live_global_config,
     mark_global_config_type,
     set_base_config_type,
-    set_global_config_for_editing,
+    set_global_config,
 )
 
 
@@ -334,7 +334,7 @@ def test_global_update_object_instance_refreshes_inherited_descendants():
     set_base_config_type(GlobalConfig)
     LazyGlobalConfig = LazyDataclassFactory.make_lazy_simple(GlobalConfig)
 
-    set_global_config_for_editing(GlobalConfig, GlobalConfig(threshold=1))
+    set_global_config(GlobalConfig, GlobalConfig(threshold=1))
     global_state = ObjectState(GlobalConfig(threshold=1), scope_id="")
     child_state = ObjectState(LazyGlobalConfig(), scope_id="plate::step")
     ObjectStateRegistry.register(global_state, _skip_snapshot=True)

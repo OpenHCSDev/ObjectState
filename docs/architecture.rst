@@ -487,8 +487,8 @@ How It Works
 Global Configuration Context
 -----------------------------
 
-Understanding set_base_config_type vs ensure_global_config_context
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Understanding set_base_config_type vs set_global_config
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The framework provides two related but distinct functions:
 
@@ -507,29 +507,27 @@ Sets the **type** (class) for the framework:
 * Required for type validation and registry
 * Does not set any concrete values
 
-**ensure_global_config_context(config_type: Type, instance: Any)**
+**set_global_config(config_type: Type, instance: Any)**
 
 Sets the **instance** (concrete values) for resolution:
 
 .. code-block:: python
 
-   from objectstate import ensure_global_config_context
+   from objectstate import set_global_config
 
    global_config = GlobalPipelineConfig(
        num_workers=8,
        output_dir="/data"
    )
 
-   ensure_global_config_context(GlobalPipelineConfig, global_config)
+   set_global_config(GlobalPipelineConfig, global_config)
 
-* Call after creating global config instance
-* Uses thread-local storage for thread safety
-* Required for lazy resolution to work
-* Internally calls ``set_global_config_for_editing()``
-* Should be called at application startup (GUI) or before pipeline execution
-* Not needed after an edit or a save made through the ``ObjectState`` of the global
-  config: that state stores the live and the saved instance itself
-  (see :doc:`state_propagation`)
+* Call after creating global config instance, in a process that registers no
+  ``ObjectState`` for it (a script, a compile worker, an execution server)
+* One value per process: every thread reads it
+* Not needed when an ``ObjectState`` of the global config is registered at scope
+  ``""``: that state's object is the global config, live and saved
+  (see :doc:`state_propagation`). Calling it then replaces that state's object.
 
 **Key Differences:**
 
@@ -539,7 +537,7 @@ Sets the **instance** (concrete values) for resolution:
 
    * - Aspect
      - set_base_config_type
-     - ensure_global_config_context
+     - set_global_config
    * - What it sets
      - Type (class)
      - Instance (concrete values)
@@ -549,17 +547,18 @@ Sets the **instance** (concrete values) for resolution:
    * - Purpose
      - Type registration
      - Enable lazy resolution
-   * - Thread safety
-     - Global registry
-     - Thread-local storage
+   * - Scope
+     - One per process
+     - One per process
 
 Thread Safety
 -------------
 
-The framework is fully thread-safe through:
+Threads see:
 
-1. **Thread-local storage** for global configs
+1. **One global config per process**, read by every thread
 2. **ContextVars** for temporary contexts
 3. **Immutable frozen dataclasses** (when using ``frozen=True``)
 
-This makes it safe to use in multi-threaded applications, including web servers and async applications.
+Entered contexts are per thread or task. The global config and the registry are shared
+and not synchronised: keep edits in one thread.

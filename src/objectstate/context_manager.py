@@ -182,7 +182,7 @@ def config_context(
         mask_with_none: If True, None values override/mask base config values, and
                        field resolution does not look at any layer outside this one.
                        If False (default), None values are ignored (normal inheritance).
-                       Use True when editing GlobalPipelineConfig to mask thread-local
+                       Use True when editing GlobalPipelineConfig to mask the
                        loaded instance with static class defaults.
         use_live_global: If True (default), use LIVE global config (UI sees unsaved edits).
                         If False, use SAVED global config (compiler sees saved values).
@@ -665,20 +665,21 @@ def get_base_global_config(use_live: bool = True):
     """
     Get the global config a context starts from when none is active.
 
-    This is the config set with ensure_global_config_context(), or an instance of the
-    base config type holding its declared defaults when none was set. Raises when no
-    base config type is set or its defaults cannot be constructed.
+    This is the global config of the base config type (see ``objectstate.global_config``),
+    or an instance of that type holding its declared defaults when there is none.
+    Raises when no base config type is set or its defaults cannot be constructed.
 
     Args:
         use_live: If True (default), return LIVE config (UI sees unsaved edits).
                  If False, return SAVED config (compiler sees saved values).
     """
     from objectstate.config import get_base_config_type
-    from objectstate.global_config import get_current_global_config
+    from objectstate.global_config import get_live_global_config, get_saved_global_config
 
     base_config_type = get_base_config_type()
 
-    current_global = get_current_global_config(base_config_type, use_live=use_live)
+    read = get_live_global_config if use_live else get_saved_global_config
+    current_global = read(base_config_type)
     if current_global is not None:
         return current_global
 
@@ -696,17 +697,6 @@ def get_current_temp_global():
         Current merged global config or None
     """
     return current_temp_global.get(None)
-
-
-def clear_current_temp_global():
-    """
-    Leave the active context without restoring an outer one.
-
-    After this no context is active: lazy fields fall back to their declared
-    defaults until the next ``config_context`` is entered.
-    """
-    current_temp_global.set(None)
-    context_layer_stack.set(NO_LAYERS)
 
 
 # Utility functions for debugging and introspection
@@ -899,12 +889,10 @@ def spawn_thread_with_context(
 ):
     """Spawn a thread with current context propagated.
 
-    This ensures thread-local context (like GlobalPipelineConfig from
-    config framework) is accessible in spawned thread.
-
-    Python's threading module creates isolated thread-local storage, so contextvars
-    don't automatically propagate to spawned threads. This utility wraps
-    threading.Thread to propagate the current context using contextvars.copy_context().
+    A new thread starts with no ``config_context`` entered. This starts one with the
+    layers the caller has entered (``contextvars.copy_context()``), so plain lazy
+    objects read in it what they read in the caller. The global config and the
+    registry are one per process and need no copying.
 
     Args:
         target: The function to run in thread
