@@ -1,5 +1,11 @@
 # Changelog
 
+## 4.0.1
+
+Requires `python-introspect>=0.3.0,<0.4` (was `<0.3`). ObjectState does not call
+python-introspect's JSON codec (`to_jsonable`, `dataclass_from_mapping`), so nothing
+it stores or sends changes form.
+
 ## 4.0.0
 
 The global config has one holder (#56). While a state whose object is of the
