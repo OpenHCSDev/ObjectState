@@ -4,6 +4,7 @@ Replaces LiveContextService._active_form_managers as the single source of truth.
 """
 
 from contextlib import contextmanager
+from contextvars import ContextVar, Token
 from dataclasses import dataclass, is_dataclass, replace
 import logging
 from typing import (
@@ -136,8 +137,10 @@ class TimeTravelChangeSet:
     triggering_scope: Optional[str]
     scope_changes: Dict[str, TimeTravelScopeChange]
 
-    def legacy_entries(self, states: Dict[str, 'ObjectState']) -> List[TimeTravelStateEntry]:
-        """Project to the existing callback payload shape."""
+    def states_needing_navigation(
+        self, states: dict[str, 'ObjectState']
+    ) -> list[TimeTravelStateEntry]:
+        """Return the registered states this restore changed, as completion callbacks take them."""
         return [
             (scope_key, states[scope_key])
             for scope_key, change in self.scope_changes.items()
@@ -156,6 +159,35 @@ class DeferredFieldInvalidation:
     include_origin: bool = True
 
 
+@dataclass
+class AtomicBlock:
+    """One open ``atomic`` / ``atomic_success`` block: the undo step being coalesced.
+
+    The block belongs to the context that opened it, exactly as a
+    ``config_context`` layer does: a new thread starts outside every block, and
+    an asyncio task started inside a block inherits it.
+    """
+
+    label: str
+    triggering_scope: str | None
+    entry_signature: RegistryMutationSignature
+    depth: int = 1
+    snapshot_requested: bool = False
+
+
+# Which block, and how many deferrals, the running context is inside. These
+# answer "whose block is this", so they live where ``config_context`` keeps its
+# scope (``contextvars``, see ``context_manager``). What the blocks act on, the
+# registered states, the history and the queue of owed invalidations, is one
+# per process and stays on ``ObjectStateRegistry``.
+_atomic_block: ContextVar[AtomicBlock | None] = ContextVar(
+    "objectstate_atomic_block", default=None
+)
+_live_invalidation_deferrals: ContextVar[int] = ContextVar(
+    "objectstate_live_invalidation_deferrals", default=0
+)
+
+
 class ObjectStateRegistry:
     """Singleton registry of all ObjectState instances.
 
@@ -167,7 +199,16 @@ class ObjectStateRegistry:
     - ImageBrowser: registers when opened, unregisters when closed
     - Config window: registers PipelineConfig/GlobalPipelineConfig
 
-    Thread safety: Not thread-safe (all operations expected on main thread).
+    One registry per process, by design: the registered states, the snapshot
+    history, the callbacks and the queue of owed live-cache invalidations are
+    class attributes, so two independent registries cannot exist.
+
+    Per context (thread or asyncio task), like ``config_context``: the open
+    ``atomic`` / ``atomic_success`` block and the ``defer_live_invalidations``
+    nesting. A thread outside any block never sees another thread's block.
+
+    Thread safety: the process-wide stores above are not synchronized; callers
+    that mutate the registry from several threads must serialize those calls.
     """
     _states: Dict[str, 'ObjectState'] = {}  # Keys are always strings (None normalized to "")
 
@@ -175,7 +216,6 @@ class ObjectStateRegistry:
     # Callbacks receive (scope_id: str, object_state: ObjectState)
     _on_register_callbacks: List[Callable[[str, 'ObjectState'], None]] = []
     _on_unregister_callbacks: List[Callable[[str, 'ObjectState'], None]] = []
-    _deferred_invalidation_depth: int = 0
     _deferred_invalidations: Set[DeferredFieldInvalidation] = set()
     _snapshot_dirty_scopes: Set[str] = set()
 
@@ -290,11 +330,11 @@ class ObjectStateRegistry:
     @contextmanager
     def defer_live_invalidations(cls) -> Generator[None, None, None]:
         """Queue descendant live-cache invalidations for an explicit later flush."""
-        cls._deferred_invalidation_depth += 1
+        token = _live_invalidation_deferrals.set(_live_invalidation_deferrals.get() + 1)
         try:
             yield
         finally:
-            cls._deferred_invalidation_depth -= 1
+            _live_invalidation_deferrals.reset(token)
 
     @classmethod
     def has_deferred_invalidations(cls) -> bool:
@@ -309,8 +349,7 @@ class ObjectStateRegistry:
 
         requests = tuple(cls._deferred_invalidations)
         cls._deferred_invalidations.clear()
-        previous_depth = cls._deferred_invalidation_depth
-        cls._deferred_invalidation_depth = 0
+        token = _live_invalidation_deferrals.set(0)
         try:
             for request in requests:
                 cls._invalidate_by_type_and_scope_now(
@@ -321,7 +360,7 @@ class ObjectStateRegistry:
                     include_origin=request.include_origin,
                 )
         finally:
-            cls._deferred_invalidation_depth = previous_depth
+            _live_invalidation_deferrals.reset(token)
 
     @classmethod
     def _fire_callbacks(cls, callbacks: List[Callable], role: str, *args: Any) -> None:
@@ -498,17 +537,13 @@ class ObjectStateRegistry:
         cls._time_travel_limbo.clear()
         cls._graveyard.clear()
         cls._deferred_invalidations.clear()
-        cls._deferred_invalidation_depth = 0
+        _live_invalidation_deferrals.set(0)
         cls._snapshot_dirty_scopes.clear()
         cls._snapshots.clear()
         cls._timelines.clear()
         cls._current_head = None
         cls._current_timeline = cls.MAIN_BRANCH
-        cls._atomic_depth = 0
-        cls._atomic_label = None
-        cls._atomic_triggering_scope = None
-        cls._atomic_snapshot_requested = False
-        cls._atomic_entry_signature = None
+        _atomic_block.set(None)
         logger.debug("Cleared ObjectState registry, history, limbo, and graveyard")
 
     # ========== TOKEN MANAGEMENT AND CHANGE NOTIFICATION ==========
@@ -735,7 +770,7 @@ class ObjectStateRegistry:
                 well as its descendants.
         """
         changed_scope = cls._normalize_scope_id(scope_id)
-        if cls._deferred_invalidation_depth > 0:
+        if _live_invalidation_deferrals.get() > 0:
             cls._deferred_invalidations.add(
                 DeferredFieldInvalidation(
                     scope_id=changed_scope,
@@ -877,13 +912,6 @@ class ObjectStateRegistry:
     _max_history_size: int = 1000  # Max snapshots in DAG (increased since we don't truncate branches)
     _in_time_travel: bool = False  # Flag for PFM to know to refresh widget values
 
-    # Atomic operation state - when >0, snapshots are deferred until operation completes
-    _atomic_depth: int = 0
-    _atomic_label: Optional[str] = None  # Label for the coalesced snapshot
-    _atomic_triggering_scope: Optional[str] = None
-    _atomic_snapshot_requested: bool = False
-    _atomic_entry_signature: Optional[RegistryMutationSignature] = None
-
     # Limbo: ObjectStates temporarily removed during time-travel
     # When traveling to a snapshot, ObjectStates not in that snapshot are moved here.
     # When traveling forward or to head, they're restored from here.
@@ -926,28 +954,12 @@ class ObjectStateRegistry:
                 the first scoped snapshot request inside the atomic block becomes
                 the owner.
         """
-        cls._atomic_depth += 1
-        if cls._atomic_depth == 1:
-            cls._atomic_label = label
-            cls._atomic_triggering_scope = scope_id
-            cls._atomic_snapshot_requested = False
-            cls._atomic_entry_signature = cls._registry_mutation_signature()
-
+        block, token = cls._enter_atomic_block(label, scope_id)
         try:
             yield
         finally:
-            cls._atomic_depth -= 1
-            if cls._atomic_depth == 0:
-                # Outermost atomic block - record the coalesced snapshot
-                final_label = cls._atomic_label or label
-                triggering_scope = cls._atomic_triggering_scope
-                should_record = cls._atomic_should_record()
-                cls._atomic_label = None
-                cls._atomic_triggering_scope = None
-                cls._atomic_snapshot_requested = False
-                cls._atomic_entry_signature = None
-                if should_record:
-                    cls.record_snapshot(final_label, triggering_scope)
+            if cls._leave_atomic_block(block, token) and cls._atomic_should_record(block):
+                cls.record_snapshot(block.label, block.triggering_scope)
 
     @classmethod
     @contextmanager
@@ -963,7 +975,7 @@ class ObjectStateRegistry:
         raises, the outermost success-only operation unwinds without recording
         a partial snapshot.
         """
-        outermost = cls._atomic_depth == 0
+        outermost = cls.current_atomic_block() is None
         snapshots_before = set(cls._snapshots) if outermost else None
         timelines_before = copy.deepcopy(cls._timelines) if outermost else None
         current_head_before = cls._current_head if outermost else None
@@ -973,30 +985,16 @@ class ObjectStateRegistry:
             set(cls._snapshot_dirty_scopes) if outermost else None
         )
 
-        cls._atomic_depth += 1
-        if cls._atomic_depth == 1:
-            cls._atomic_label = label
-            cls._atomic_triggering_scope = scope_id
-            cls._atomic_snapshot_requested = False
-            cls._atomic_entry_signature = cls._registry_mutation_signature()
-
+        block, token = cls._enter_atomic_block(label, scope_id)
         succeeded = False
         try:
             yield
             succeeded = True
         finally:
-            cls._atomic_depth -= 1
-            if cls._atomic_depth == 0:
-                final_label = cls._atomic_label or label
-                triggering_scope = cls._atomic_triggering_scope
-                should_record = cls._atomic_should_record()
-                cls._atomic_label = None
-                cls._atomic_triggering_scope = None
-                cls._atomic_snapshot_requested = False
-                cls._atomic_entry_signature = None
+            if cls._leave_atomic_block(block, token):
                 if succeeded:
-                    if should_record:
-                        cls.record_snapshot(final_label, triggering_scope)
+                    if cls._atomic_should_record(block):
+                        cls.record_snapshot(block.label, block.triggering_scope)
                 elif snapshots_before is not None and timelines_before is not None:
                     for snapshot_id in set(cls._snapshots) - snapshots_before:
                         del cls._snapshots[snapshot_id]
@@ -1006,6 +1004,44 @@ class ObjectStateRegistry:
                     cls._in_time_travel = bool(in_time_travel_before)
                     if snapshot_dirty_scopes_before is not None:
                         cls._snapshot_dirty_scopes = snapshot_dirty_scopes_before
+
+    @classmethod
+    def current_atomic_block(cls) -> AtomicBlock | None:
+        """Return the block the running context is inside, or None outside any block."""
+        block = _atomic_block.get()
+        if block is None or block.depth == 0:
+            return None
+        return block
+
+    @classmethod
+    def _enter_atomic_block(
+        cls, label: str, scope_id: str | None
+    ) -> tuple[AtomicBlock, Token[AtomicBlock | None] | None]:
+        """Join the running context's block, opening one when it is outside any."""
+        block = cls.current_atomic_block()
+        if block is not None:
+            block.depth += 1
+            return block, None
+        block = AtomicBlock(
+            label=label,
+            triggering_scope=scope_id,
+            entry_signature=cls._registry_mutation_signature(),
+        )
+        return block, _atomic_block.set(block)
+
+    @classmethod
+    def _leave_atomic_block(
+        cls, block: AtomicBlock, token: Token[AtomicBlock | None] | None
+    ) -> bool:
+        """Leave ``block``; return whether that closed it, so its step is now due.
+
+        A block dropped by ``clear()`` while open is not due: its states are gone.
+        """
+        block.depth -= 1
+        still_current = _atomic_block.get() is block
+        if token is not None:
+            _atomic_block.reset(token)
+        return block.depth == 0 and still_current
 
     @classmethod
     def _registry_mutation_signature(
@@ -1027,12 +1063,12 @@ class ObjectStateRegistry:
         return tuple(entries)
 
     @classmethod
-    def _atomic_should_record(cls) -> bool:
-        """Return whether the outer atomic scope produced a user-visible state change."""
+    def _atomic_should_record(cls, block: AtomicBlock) -> bool:
+        """Return whether the closed block produced a user-visible state change."""
 
-        if cls._atomic_snapshot_requested:
+        if block.snapshot_requested:
             return True
-        return cls._registry_mutation_signature() != cls._atomic_entry_signature
+        return cls._registry_mutation_signature() != block.entry_signature
 
     @classmethod
     def ensure_baseline_snapshot(cls, label: str = "init") -> None:
@@ -1120,11 +1156,12 @@ class ObjectStateRegistry:
 
         # ATOMIC OPERATIONS: Defer snapshot until atomic block exits
         # The atomic() context manager will call record_snapshot() when it completes
-        if cls._atomic_depth > 0:
-            cls._atomic_snapshot_requested = True
-            if scope_id is not None and cls._atomic_triggering_scope is None:
-                cls._atomic_triggering_scope = scope_id
-            logger.debug(f"⏱️ ATOMIC: Deferring snapshot '{label}' (depth={cls._atomic_depth})")
+        block = cls.current_atomic_block()
+        if block is not None:
+            block.snapshot_requested = True
+            if scope_id is not None and block.triggering_scope is None:
+                block.triggering_scope = scope_id
+            logger.debug(f"⏱️ ATOMIC: Deferring snapshot '{label}' (depth={block.depth})")
             return
 
         import time
@@ -1886,7 +1923,7 @@ class ObjectStateRegistry:
         if not cls._on_time_travel_complete_callbacks:
             return
 
-        states_with_changes = change_set.legacy_entries(cls._states)
+        states_with_changes = change_set.states_needing_navigation(cls._states)
         logger.debug(
             "⏱️ TIME_TRAVEL: Firing %d callback(s) with %d changed state(s)",
             len(cls._on_time_travel_complete_callbacks),

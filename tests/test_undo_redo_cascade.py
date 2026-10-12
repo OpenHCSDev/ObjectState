@@ -25,11 +25,6 @@ def _reset_registry_and_history() -> None:
     ObjectStateRegistry._current_timeline = "main"
     ObjectStateRegistry._current_head = None
     ObjectStateRegistry._in_time_travel = False
-    ObjectStateRegistry._atomic_depth = 0
-    ObjectStateRegistry._atomic_label = None
-    ObjectStateRegistry._atomic_triggering_scope = None
-    ObjectStateRegistry._atomic_snapshot_requested = False
-    ObjectStateRegistry._atomic_entry_signature = None
 
 
 @dataclass
@@ -236,7 +231,7 @@ def test_time_travel_callback_entries_include_nested_resolved_path_changes() -> 
         },
     )
 
-    assert change_set.legacy_entries(ObjectStateRegistry._states) == [
+    assert change_set.states_needing_navigation(ObjectStateRegistry._states) == [
         (step_scope, step_state)
     ]
 
