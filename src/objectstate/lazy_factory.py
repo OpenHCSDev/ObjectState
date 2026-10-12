@@ -890,10 +890,7 @@ class LazyDataclassFactory:
                 else:
                     lazy_nested_type = get_lazy_type_for_base(nested_type)
                 if lazy_nested_type is None:
-                    lazy_nested_type = LazyDataclassFactory.make_lazy_simple(
-                        base_class=nested_type,
-                        lazy_class_name=f"Lazy{nested_type.__name__}"
-                    )
+                    lazy_nested_type = LazyDataclassFactory.make_lazy_simple(nested_type)
                 field_type = lazy_nested_type
                 logger.debug(f"Created lazy class for {field_definition.name}: {nested_type} -> {lazy_nested_type}")
 
@@ -942,7 +939,7 @@ class LazyDataclassFactory:
     @staticmethod
     def _create_lazy_dataclass_unified(
         base_class: Type,
-        lazy_class_name: str,
+        lazy_class_name: str | None,
         debug_template: str,
     ) -> Type:
         """
@@ -957,13 +954,15 @@ class LazyDataclassFactory:
 
         registered_type = get_lazy_type_for_base(base_class)
         if registered_type is not None:
-            if registered_type.__name__ != lazy_class_name:
+            if lazy_class_name not in (None, registered_type.__name__):
                 raise ValueError(
                     f"{base_class.__name__} already owns lazy type "
                     f"{registered_type.__name__}; cannot also create "
                     f"{lazy_class_name}."
                 )
             return registered_type
+        if lazy_class_name is None:
+            lazy_class_name = f"{LAZY_CLASS_NAME_PREFIX}{base_class.__name__}"
 
         # Create lazy dataclass with introspected fields
         # CRITICAL FIX: Avoid inheriting from classes with custom metaclasses to prevent descriptor conflicts
@@ -1055,7 +1054,7 @@ class LazyDataclassFactory:
     @staticmethod
     def make_lazy_simple(
         base_class: Type,
-        lazy_class_name: str = None
+        lazy_class_name: str | None = None
     ) -> Type:
         """
         Create lazy dataclass using new contextvars system.
@@ -1065,14 +1064,12 @@ class LazyDataclassFactory:
 
         Args:
             base_class: Base dataclass to make lazy
-            lazy_class_name: Optional name for the lazy class
+            lazy_class_name: Name for the lazy class. When omitted the factory
+                names it, or returns the lazy class the base already owns.
 
         Returns:
             Generated lazy dataclass with contextvars-based resolution
         """
-        # Generate class name if not provided
-        lazy_class_name = lazy_class_name or f"Lazy{base_class.__name__}"
-
         return LazyDataclassFactory._create_lazy_dataclass_unified(
             base_class=base_class,
             lazy_class_name=lazy_class_name,
@@ -1352,7 +1349,6 @@ def rebuild_lazy_config_with_new_global_reference(
 
 # Naming configuration
 GLOBAL_CONFIG_PREFIX = "Global"
-LAZY_CONFIG_PREFIX = "Lazy"
 
 # Registry to accumulate all decorations before injection
 _pending_injections = {}
@@ -1365,9 +1361,9 @@ PREVIEW_LABEL_REGISTRY: Dict[Type, str] = {}
 # Used by UI to display compact field names in list item previews
 FIELD_ABBREVIATIONS_REGISTRY: Dict[Type, Dict[str, str]] = {}
 
-# Group abbreviations registry: Type -> abbreviation string
-# Used by UI to display compact config class names in grouped previews
-GROUP_ABBREVIATIONS_REGISTRY: Dict[Type, str] = {}
+# Class attribute holding a config class's own group abbreviation. The class
+# is the only owner; get_group_abbreviation reads it on demand.
+GROUP_ABBREVIATION_ATTRIBUTE = "_abbreviation"
 
 # Always viewable fields registry: Type -> List[field_name]
 # Used by UI to auto-discover which fields should always be shown in list item previews
@@ -1398,7 +1394,7 @@ class abbreviation:
         name: The abbreviation string
 
     Returns:
-        When used as class decorator: the class with _abbreviation attribute set
+        When used as class decorator: the class, declaring its group abbreviation
         When used in Annotated: a marker object storing the abbreviation
     """
 
@@ -1407,21 +1403,7 @@ class abbreviation:
 
     def __call__(self, cls: Type) -> Type:
         """Class decorator usage: @abbreviation('wfc')"""
-        cls._abbreviation = self.name
-        # CRITICAL: Register immediately so @global_pipeline_config detects the correct value.
-        # Decorators apply bottom-up, so @abbreviation runs AFTER @global_pipeline_config.
-        # Without this, @global_pipeline_config would see the parent's _abbreviation.
-        GROUP_ABBREVIATIONS_REGISTRY[cls] = self.name
-        
-        # Also update the lazy wrapper class if it exists
-        # The lazy wrapper is created by @global_pipeline_config before @abbreviation runs,
-        # so we need to update its abbreviation here to keep them in sync.
-        lazy_class_name = f"{LAZY_CONFIG_PREFIX}{cls.__name__}"
-        lazy_class = getattr(sys.modules[cls.__module__], lazy_class_name, None)
-        if lazy_class is not None:
-            GROUP_ABBREVIATIONS_REGISTRY[lazy_class] = self.name
-            logger.debug(f"🔍 @abbreviation: Updated lazy wrapper {lazy_class_name} -> {self.name}")
-        
+        declare_group_abbreviation(cls, self.name)
         return cls
 
     def __repr__(self) -> str:
@@ -1475,42 +1457,39 @@ def _extract_abbreviations_from_annotations(cls: Type) -> Dict[str, str]:
     return field_abbreviations
 
 
-def get_group_abbreviation(config_type: Union[str, type]) -> str:
-    """Look up group abbreviation from GROUP_ABBREVIATIONS_REGISTRY.
+def declare_group_abbreviation(config_type: type, name: str) -> None:
+    """Declare a config class's own group abbreviation.
 
-    Handles both type objects and type name strings.
-
-    Args:
-        config_type: Config class or type name to get abbreviation for
-
-    Returns:
-        Abbreviation string if found, otherwise falls back to class name prefix
+    A lazy class has no abbreviation of its own: the declaration lands on its
+    base class. A second, different declaration for one class raises.
     """
-    import logging
-    logger = logging.getLogger(__name__)
-    
+    declaring_type = get_base_type_for_lazy(config_type) or config_type
+    declared = vars(declaring_type).get(GROUP_ABBREVIATION_ATTRIBUTE)
+    if declared is not None and declared != name:
+        raise ValueError(
+            f"{declaring_type.__qualname__} already declares abbreviation "
+            f"{declared!r}; cannot also declare {name!r}."
+        )
+    setattr(declaring_type, GROUP_ABBREVIATION_ATTRIBUTE, name)
+
+
+def get_group_abbreviation(config_type: str | type) -> str:
+    """Read a config class's group abbreviation from its declaration.
+
+    A lazy class answers with its base class's declaration. A class with no
+    declaration of its own answers with its nearest declaring ancestor, then
+    with the prefix of its class name. A type name string answers with its
+    prefix.
+    """
     if isinstance(config_type, str):
         return config_type.split('_')[0] if config_type else "root"
 
-    # Debug: Log lookup attempt
-    logger.debug(f"🔍 get_group_abbreviation: looking up {config_type.__name__}")
-    logger.debug(f"🔍   MRO: {[c.__name__ for c in config_type.__mro__]}")
-    logger.debug(f"🔍   Registry keys: {[k.__name__ if hasattr(k, '__name__') else str(k) for k in GROUP_ABBREVIATIONS_REGISTRY.keys()]}")
-
-    if config_type in GROUP_ABBREVIATIONS_REGISTRY:
-        abbr = GROUP_ABBREVIATIONS_REGISTRY[config_type]
-        logger.debug(f"🔍   Found direct: {abbr}")
-        return abbr
-
-    for base in config_type.__mro__[1:]:
-        if base in GROUP_ABBREVIATIONS_REGISTRY:
-            abbr = GROUP_ABBREVIATIONS_REGISTRY[base]
-            logger.debug(f"🔍   Found in MRO {base.__name__}: {abbr}")
-            return abbr
-
-    fallback = config_type.__name__.split('_')[0]
-    logger.debug(f"🔍   Fallback: {fallback}")
-    return fallback
+    declaring_type = get_base_type_for_lazy(config_type) or config_type
+    for ancestor in declaring_type.__mro__:
+        declared = vars(ancestor).get(GROUP_ABBREVIATION_ATTRIBUTE)
+        if declared is not None:
+            return declared
+    return config_type.__name__.split('_')[0]
 
 
 def create_global_default_decorator(target_config_class: Type):
@@ -1539,7 +1518,7 @@ def create_global_default_decorator(target_config_class: Type):
             preview_label: Short label for list item previews (e.g., "NAP", "FIJI", "MAT"). If set,
                           config will appear in preview when enabled. Registered in PREVIEW_LABEL_REGISTRY.
             abbreviation: Short abbreviation for config class name used in grouped previews (e.g., "pp" for PathPlanningConfig).
-                         Registered in GROUP_ABBREVIATIONS_REGISTRY.
+                         Declared on the class; see declare_group_abbreviation.
             field_abbreviations: Dict mapping field names to abbreviations for compact display.
                           E.g., {'partition_filter': 'pf', 'num_workers': 'W'}. Registered in
                               FIELD_ABBREVIATIONS_REGISTRY.
@@ -1555,9 +1534,7 @@ def create_global_default_decorator(target_config_class: Type):
                 if inherited_fields:
                     actual_cls = rebuild_with_none_defaults(actual_cls, inherited_fields)
 
-            # Generate field and class names
             field_name = _camel_to_snake(actual_cls.__name__)
-            lazy_class_name = f"{LAZY_CONFIG_PREFIX}{actual_cls.__name__}"
 
             # Mark class with typed ui_hidden metadata for UI layer to check
             # This allows the config to remain in the context (for lazy resolution)
@@ -1570,14 +1547,10 @@ def create_global_default_decorator(target_config_class: Type):
             if preview_label is not None:
                 PREVIEW_LABEL_REGISTRY[actual_cls] = preview_label
 
-            # Register group abbreviation for config class name in grouped previews
-            # Priority: explicit parameter > @abbreviation decorator > auto-generated
-            detected_class_abbr = getattr(actual_cls, '_abbreviation', None)
-            final_class_abbr = abbreviation or detected_class_abbr
-            logger.debug(f"🔍 @global_pipeline_config: {actual_cls.__name__} - detected={detected_class_abbr}, explicit={abbreviation}, final={final_class_abbr}")
-            if final_class_abbr is not None:
-                GROUP_ABBREVIATIONS_REGISTRY[actual_cls] = final_class_abbr
-                logger.debug(f"🔍   Registered {actual_cls.__name__} -> {final_class_abbr}")
+            # The class owns its group abbreviation; @abbreviation writes the
+            # same declaration, so the two decorators may come in either order.
+            if abbreviation is not None:
+                declare_group_abbreviation(actual_cls, abbreviation)
 
             # Register field abbreviations for compact preview display
             # Priority: explicit parameter > @abbreviation in Annotated types
@@ -1609,7 +1582,6 @@ def create_global_default_decorator(target_config_class: Type):
                 _pending_injections[target_class_name]['configs_to_inject'].append({
                     'config_class': actual_cls,
                     'field_name': field_name,
-                    'lazy_class_name': lazy_class_name,
                     'optional': optional,  # Store the optional flag
                     'inherit_as_none': inherit_as_none,  # Store the inherit_as_none flag
                     'ui_hidden': ui_hidden  # Store the ui_hidden flag for field metadata
@@ -1623,25 +1595,17 @@ def create_global_default_decorator(target_config_class: Type):
             # is the capability contract used by the factory and its consumers.
             bind_lazy_resolution_to_class(actual_cls)
 
-            lazy_class = LazyDataclassFactory.make_lazy_simple(
-                base_class=actual_cls,
-                lazy_class_name=lazy_class_name
-            )
+            lazy_class = LazyDataclassFactory.make_lazy_simple(actual_cls)
 
             # Export lazy class to config module immediately
             config_module = sys.modules[actual_cls.__module__]
-            setattr(config_module, lazy_class_name, lazy_class)
+            setattr(config_module, lazy_class.__name__, lazy_class)
 
             # Copy metadata to lazy class for UI compatibility
             if ui_hidden:
                 mark_ui_hidden_config(lazy_class)
             if preview_label is not None:
                 PREVIEW_LABEL_REGISTRY[lazy_class] = preview_label
-            # Copy class abbreviation to lazy class
-            # Priority: 1. explicit param, 2. registry lookup (set by @abbreviation), 3. detected from class
-            class_abbr_to_copy = abbreviation or GROUP_ABBREVIATIONS_REGISTRY.get(actual_cls) or detected_class_abbr
-            if class_abbr_to_copy is not None:
-                GROUP_ABBREVIATIONS_REGISTRY[lazy_class] = class_abbr_to_copy
             # Copy field abbreviations to lazy class (from explicit param or detected from Annotated)
             field_abbr_to_copy = field_abbreviations or detected_field_abbrs
             if field_abbr_to_copy:
@@ -1746,11 +1710,8 @@ def _inject_multiple_fields_into_dataclass(target_class: Type, configs: List[Dic
 
     # Create lazy classes and recreate PipelineConfig inline
     for config in configs:
-        lazy_class = LazyDataclassFactory.make_lazy_simple(
-            base_class=config['config_class'],
-            lazy_class_name=config['lazy_class_name']
-        )
-        _register_lazy_class(lazy_class, config['lazy_class_name'], config['config_class'].__module__)
+        lazy_class = LazyDataclassFactory.make_lazy_simple(config['config_class'])
+        _register_lazy_class(lazy_class, lazy_class.__name__, config['config_class'].__module__)
 
     # Create lazy version of the updated global config itself with proper naming
     # Global configs must start with GLOBAL_CONFIG_PREFIX - fail-loud if not
