@@ -447,16 +447,16 @@ class ObjectStateRegistry:
     def _resolve_again_below(cls, changed_scopes: Iterable[ScopeKey]) -> None:
         """Tell registered states at or below ``changed_scopes`` that registration changed.
 
-        Each state compares the ancestors registered now with the ones its resolved
-        values were computed from (``ObjectState.resolve_again_if_ancestors_changed``),
-        so a state whose ancestors are the same does no work. This call only makes
-        the comparison happen now, so subscribers hear of changed values without
-        waiting for the next read.
+        Each state compares what it is resolved from now with what its resolved values
+        were computed from (``ObjectState.resolve_again_if_sources_changed``), so a
+        state whose ancestors are the same does no work. This call only makes the
+        comparison happen now, so subscribers hear of changed values without waiting
+        for the next read.
         """
         changed_scopes = tuple(changed_scopes)
         for state in tuple(cls._states.values()):
             if any(scope.contains(state.scope_id) for scope in changed_scopes):
-                state.resolve_again_if_ancestors_changed()
+                state.resolve_again_if_sources_changed()
 
     @classmethod
     def registered_ancestors(
@@ -737,17 +737,10 @@ class ObjectStateRegistry:
         Returns:
             List of (scope_id, object) tuples from ancestor scopes, ordered least→most specific.
         """
-        # Saved: the object as last saved, without delegate sync or reconstruction.
-        # Live: rebuilt from the current parameters; ``skip_delegate_sync`` decides
-        # whether the delegate is synchronised first.
         return [
             (
                 ancestor_key,
-                state._extraction_target
-                if use_saved
-                else state.to_object(
-                    update_delegate=False, sync_delegate=not skip_delegate_sync
-                ),
+                state.object_for_resolution(use_saved, sync_delegate=not skip_delegate_sync),
             )
             for ancestor_key, state in cls.registered_ancestors(scope_id)
         ]
@@ -882,29 +875,14 @@ class ObjectStateRegistry:
             state.invalidate_field(dotted_path)
             invalidated_paths.add(dotted_path)
 
-            # If invalidating saved baseline, remove from saved_resolved so it recomputes
-            if invalidate_saved and dotted_path in state._saved_resolved:
-                del state._saved_resolved[dotted_path]
-                if _debug:
-                    logger.debug(f"Invalidated saved_resolved cache for {dotted_path}")
-
-        # Trigger recompute immediately to detect if resolved values actually changed.
-        # This ensures callbacks fire only when values change, not just when fields are invalidated.
-        # Prevents false flashes when Reset is clicked on already-reset fields.
         if invalidated_paths:
-            changed_paths = state._ensure_live_resolved(notify_flash=False)
-
-            # If we invalidated saved baseline, recompute it now with fresh ancestor values
             if invalidate_saved:
-                # Recompute entire saved_resolved snapshot to pick up new ancestor saved values
-                old_saved_resolved = state._saved_resolved
-                state._saved_resolved = state._compute_resolved_snapshot(use_saved=True)
-                logger.debug(f"Recomputed saved_resolved baseline after invalidation")
-
-                if old_saved_resolved != state._saved_resolved:
-                    state._sync_materialized_state(changed_value_fields=changed_paths)
-            else:
-                state._sync_materialized_state(changed_value_fields=changed_paths)
+                # Without recorded sources the saved snapshot is resolved again in full.
+                state._resolved_from.pop(True, None)
+            # Resolve now, so callbacks fire only for values that really changed (no
+            # flash when Reset is clicked on a field that is already reset).
+            changed_paths = state._ensure_live_resolved(notify_flash=False)
+            state._sync_materialized_state(changed_value_fields=changed_paths)
 
     # ========== REGISTRY-LEVEL TIME-TRAVEL (DAG Model) ==========
 

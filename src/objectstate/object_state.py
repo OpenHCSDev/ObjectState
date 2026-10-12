@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import fields as dataclass_fields
 from dataclasses import is_dataclass
@@ -33,6 +34,7 @@ from objectstate.object_state_registry import ObjectStateRegistry
 from objectstate.scope_key import ScopeKey
 from objectstate.parameter_owner import ParameterOwner
 from objectstate.parameter_structure import ParameterStructure
+from objectstate.resolution_sources import ResolutionSources
 from objectstate.global_config import GlobalContextValues
 from objectstate.lazy_factory import is_global_config_type
 from objectstate.subfield_semantics import (
@@ -226,10 +228,10 @@ class ObjectState:
         # Maps dotted_path → (source_scope_id, source_type) for inherited fields
         # source_type may differ from local container_type due to MRO inheritance
         self._live_provenance: dict[str, tuple[str | None, type | None]] = {}
-        # The registered ancestors each resolved snapshot was computed from, keyed by
-        # ``use_saved``. A snapshot is current only while ``_registered_ancestors()``
-        # still returns the same states.
-        self._ancestors_resolved_from: dict[bool, tuple[ObjectState, ...]] = {}
+        # What each resolved snapshot was computed from, keyed by ``use_saved``. A
+        # snapshot is current only while ``_resolution_sources()`` still returns the
+        # same objects; a snapshot without an entry is resolved again in full.
+        self._resolved_from: dict[bool, ResolutionSources] = {}
 
         # === Saved baseline (2 attributes) ===
         self._saved_resolved: dict[str, Any] = {}
@@ -268,9 +270,8 @@ class ObjectState:
         # === Time-Travel ===
         # Instance-level time-travel removed - use ObjectStateRegistry class-level DAG instead
 
-        # Initialize baselines (suppress flash during init)
-        self._ensure_live_resolved(notify_flash=False)
-        assert self._live_resolved is not None  # Guaranteed by _ensure_live_resolved
+        # Initialize baselines (nothing to tell anyone during init)
+        self._live_resolved = self._compute_resolved_snapshot()
 
         # CRITICAL: Initialize _saved_parameters BEFORE _compute_resolved_snapshot(use_saved=True)
         # because that method reads from _saved_parameters to get raw values.
@@ -723,91 +724,153 @@ class ObjectState:
             self._forwarding_to_parent = False
 
     def _ensure_live_resolved(self, notify_flash: bool = True) -> set[str]:
-        """Ensure _live_resolved cache is populated.
+        """Bring both resolved snapshots up to date; return the changed live paths.
 
-        PERFORMANCE: Field-level invalidation only.
-        - First access: full compute to populate cache
-        - After update_parameter(): only recompute invalid fields
-        - Cross-window access: return cached values directly (no work)
+        Two things make a field out of date: it was invalidated on this state
+        (``_invalid_fields``), or the snapshot was computed from other sources than
+        the state has now (``_fields_with_other_sources``): an ancestor registered,
+        unregistered or replaced, an ancestor's value edited, saved or restored, the
+        global config replaced. Both are found here, on every resolved read, so no
+        caller has to announce a change and a state that is not registered follows
+        its ancestors like a registered one. Only the fields that can be affected are
+        resolved again; when nothing changed the cost is the comparison of the
+        sources.
 
         Args:
-            notify_flash: If True, fire on_resolved_changed callbacks for flash animations.
-                          Set to False during initialization to suppress flash.
-
-        Returns:
-            Set of paths that changed (for flash). Empty if no changes.
-
-        NOTE: This method handles CACHE + FLASH only. Caller handles _sync_materialized_state().
+            notify_flash: True (reads): when anything was resolved again, dirty and
+                signature fields are updated and subscribers are told here. False:
+                the caller does that with the returned paths
+                (``_sync_materialized_state``).
         """
-        # First access - populate cache
         if self._live_resolved is None:
+            # First access - populate cache; there is no earlier value to compare with.
             self._live_resolved = self._compute_resolved_snapshot()
             self._invalid_fields.clear()
-            return set()  # First populate - no "changes" to flash
+            return set()
 
-        if not self._resolved_from_registered_ancestors():
-            # Registration changed above this state: every inherited field may have
-            # another source, so both snapshots are resolved again in full. Pending
-            # field invalidations are covered by the full pass.
-            return self._resolve_again_from_registered_ancestors(notify=notify_flash)
+        sources, saved_sources = self._resolution_sources()
+        saved_resolved_again = self._resolve_saved_again_if_sources_changed(saved_sources)
+        if saved_resolved_again:
+            sources, _ = self._resolution_sources()
 
-        # Partial recompute for invalid fields only
-        if self._invalid_fields:
-            logger.debug(f"🔄 _ensure_live_resolved: scope={self.scope_id}, recomputing {len(self._invalid_fields)} invalid fields: {list(self._invalid_fields)}")
-            changed_paths = self._recompute_invalid_fields()
+        stale = self._fields_with_other_sources(sources, use_saved=False)
+        if stale is None:
+            # Other states are registered above this one: every inherited field may
+            # have another source. Pending field invalidations are covered.
+            previous = self._live_resolved
+            self._live_resolved = self._compute_resolved_snapshot()
             self._invalid_fields.clear()
+            changed_values = {
+                path: (previous.get(path), value)
+                for path, value in self._live_resolved.items()
+                if previous.get(path) != value
+            }
+            if changed_values:
+                self._set_last_changed_values(changed_values)
+            changed_paths = self.notification_fields_for_value_changes(changed_values)
+            live_resolved_again = True
         else:
-            logger.debug(f"🔄 _ensure_live_resolved: scope={self.scope_id}, no invalid fields to recompute")
-            changed_paths = set()
+            self._invalid_fields.update(stale)
+            live_resolved_again = bool(self._invalid_fields)
+            if live_resolved_again:
+                changed_paths = self._recompute_invalid_fields(sources)
+                self._invalid_fields.clear()
+            else:
+                changed_paths = set()
+            self._resolved_from[False] = sources.recorded_after(self._resolved_from.get(False))
 
-        if notify_flash and changed_paths:
-            self._notify_resolved_changed(
-                changed_paths,
-                context="_ensure_live_resolved",
-            )
+        if notify_flash and (live_resolved_again or saved_resolved_again):
+            self._sync_materialized_state(changed_value_fields=changed_paths)
 
         return changed_paths
 
-    def _registered_ancestors(self) -> tuple[ObjectState, ...]:
-        """The other states this state's resolved values are computed from.
+    def _resolution_sources(
+        self, *, sync_delegates: bool = False
+    ) -> tuple[ResolutionSources, ResolutionSources]:
+        """What this state's fields are resolved from today, live then saved (so the
+        pair is indexed by ``use_saved``): the global config stored for the running
+        thread and the objects of the other states registered above.
 
-        This state is left out: registering it adds no value it does not hold.
+        This state's own object is left out (its own parameters are not an outside
+        source), and so are global config objects of ancestors, for which
+        ``build_context_stack`` enters the global config itself.
         """
-        return tuple(
-            state
-            for _, state in ObjectStateRegistry.registered_ancestors(self.scope_id)
-            if state is not self
+        from objectstate.config import get_base_config_type
+        from objectstate.global_config import get_live_global_config, get_saved_global_config
+
+        live: list[tuple[str, Any]] = []
+        saved: list[tuple[str, Any]] = []
+        for scope, state in ObjectStateRegistry.registered_ancestors(self.scope_id):
+            if state is self:
+                continue
+            saved_object = state.object_for_resolution(use_saved=True)
+            if is_global_config_type(type(saved_object)):
+                continue
+            saved.append((scope, saved_object))
+            live.append(
+                (scope, state.object_for_resolution(sync_delegate=sync_delegates))
+            )
+        thread = threading.current_thread()
+        global_config_type = get_base_config_type()
+        return (
+            ResolutionSources(thread, get_live_global_config(global_config_type), tuple(live)),
+            ResolutionSources(thread, get_saved_global_config(global_config_type), tuple(saved)),
         )
 
-    def _resolved_from_registered_ancestors(self) -> bool:
-        """Whether both resolved snapshots were computed from today's ancestors."""
-        ancestors = self._registered_ancestors()
-        return all(
-            self._ancestors_resolved_from.get(use_saved) == ancestors
-            for use_saved in (False, True)
-        )
+    def object_for_resolution(self, use_saved: bool = False, sync_delegate: bool = False) -> Any:
+        """The object a state below this one enters as a context layer.
 
-    def _resolve_again_from_registered_ancestors(self, *, notify: bool) -> set[str]:
-        """Resolve the live and saved snapshots in full; return the changed live paths."""
-        previous = self._live_resolved or {}
-        self._live_resolved = self._compute_resolved_snapshot()
-        self._invalid_fields.clear()
-        self._saved_resolved = self._compute_resolved_snapshot(use_saved=True)
-        changed_values = {
-            path: (previous.get(path), value)
-            for path, value in self._live_resolved.items()
-            if previous.get(path) != value
+        Saved: the object as last saved, without delegate sync or reconstruction.
+        Live: rebuilt from the current parameters when they changed since the last
+        call; ``sync_delegate`` decides whether a replaced delegate is taken over
+        first, which must not happen while a snapshot is being recomputed.
+        """
+        if use_saved:
+            return self._extraction_target
+        if self._cached_object is not None and not sync_delegate:
+            return self._cached_object
+        return self.to_object(update_delegate=False, sync_delegate=sync_delegate)
+
+    def _fields_with_other_sources(
+        self, sources: ResolutionSources, *, use_saved: bool
+    ) -> set[str] | None:
+        """Fields of one snapshot that ``sources`` may resolve differently.
+
+        These are the fields this state leaves unset whose config type inherits a
+        ``(config type, field)`` that an ancestor or the global config stores
+        differently than when the snapshot was computed. A field this state sets
+        itself has no outside source. ``None`` means every field.
+        """
+        resolved_from = self._resolved_from.get(use_saved)
+        if sources.same_objects_as(resolved_from):
+            return set()
+        differing = sources.fields_that_differ(resolved_from)
+        if differing is None:
+            return None
+        own_values = self._saved_parameters if use_saved else self.parameters
+        return {
+            path
+            for config_type, field_name in differing
+            for path in self.inheritance_field_paths(config_type, field_name)
+            if own_values.get(path) is None
         }
-        if changed_values:
-            self._set_last_changed_values(changed_values)
-        changed_paths = self.notification_fields_for_value_changes(changed_values)
-        self._sync_materialized_state(
-            changed_value_fields=changed_paths, emit_notifications=notify
-        )
-        return changed_paths
 
-    def resolve_again_if_ancestors_changed(self) -> None:
-        """Resolve again when other states are registered above this one than before.
+    def _resolve_saved_again_if_sources_changed(self, sources: ResolutionSources) -> bool:
+        """Resolve the saved snapshot again when its sources changed; say whether it was.
+
+        The saved sources change when an ancestor is saved, restored or replaced and
+        when the saved global config is replaced, not while values are edited, so the
+        snapshot is resolved in full.
+        """
+        stale = self._fields_with_other_sources(sources, use_saved=True)
+        if stale is not None and not stale:
+            self._resolved_from[True] = sources.recorded_after(self._resolved_from.get(True))
+            return False
+        self._saved_resolved = self._compute_resolved_snapshot(use_saved=True)
+        return True
+
+    def resolve_again_if_sources_changed(self) -> None:
+        """Resolve again now, and tell subscribers, if this state's sources changed.
 
         Every resolved read makes this check itself. ``ObjectStateRegistry`` calls it
         when registration changes so subscribers are told at once.
@@ -816,9 +879,9 @@ class ObjectState:
             self._ensure_live_resolved()
 
     def _ensure_saved_resolved(self) -> None:
-        """Make ``_saved_resolved`` hold every field, resolved from today's ancestors."""
-        if self._live_resolved is not None and not self._resolved_from_registered_ancestors():
-            self._resolve_again_from_registered_ancestors(notify=True)
+        """Make ``_saved_resolved`` hold every field, resolved from today's sources."""
+        if self._live_resolved is not None:
+            self._ensure_live_resolved()
         elif not self._saved_resolved:
             self._saved_resolved = self._compute_resolved_snapshot(use_saved=True)
 
@@ -1046,7 +1109,7 @@ class ObjectState:
         )
         # Establish the pre-mutation resolved authority even for a state that
         # has not yet been displayed. Raw edits can preserve the resolved value.
-        self._ensure_live_resolved(notify_flash=False)
+        changed_before_the_edit = self._ensure_live_resolved(notify_flash=False)
         ObjectStateRegistry.ensure_baseline_snapshot()
 
         # Update state directly (no type conversion - that's VIEW responsibility)
@@ -1114,7 +1177,7 @@ class ObjectState:
 
         # Materialize the origin once after its live context is authoritative,
         # then cascade only to descendants.
-        changed_paths = self._ensure_live_resolved(notify_flash=False)
+        changed_paths = self._ensure_live_resolved(notify_flash=False) | changed_before_the_edit
         for changed_param in changed_semantic_params:
             # SCOPE + TYPE + FIELD AWARE INVALIDATION:
             # Get the CONTAINER type for this field (e.g., PartitionFilterConfig for
@@ -1790,8 +1853,8 @@ class ObjectState:
             f"Updated ObjectState(scope={self.scope_id!r}) to new instance of type {type(new_instance).__name__}"
         )
 
-    def _recompute_invalid_fields(self) -> set[str]:
-        """Recompute only the invalid fields, not the entire snapshot.
+    def _recompute_invalid_fields(self, sources: ResolutionSources) -> set[str]:
+        """Recompute only the invalid fields of the live snapshot, from ``sources``.
 
         PERFORMANCE: For explicitly set values, use parameters directly.
         Only build context stack for inherited (None) values.
@@ -1845,14 +1908,6 @@ class ObjectState:
             from objectstate.dual_axis_resolver import resolve_with_provenance
             from objectstate.lazy_factory import has_lazy_resolution
 
-            # Get ancestor objects for context stack building
-            # CRITICAL: Skip delegate sync to avoid re-entrant invalidate_cache() calls
-            # that would destroy _live_resolved while we're computing it.
-            ancestor_objects_with_scopes = ObjectStateRegistry.get_ancestor_objects_with_scopes(
-                self.scope_id,
-                skip_delegate_sync=True
-            )
-
             # ARCHITECTURAL FIX: Reconstruct current object from parameters for real-time MRO.
             # Using object_instance (original saved state) gives stale values, breaking inheritance.
             # Calling to_object() with sync_delegate=False reconstructs from CURRENT parameters
@@ -1861,7 +1916,7 @@ class ObjectState:
 
             with build_context_stack(
                 object_instance=current_obj,
-                ancestor_objects_with_scopes=ancestor_objects_with_scopes,
+                ancestor_objects_with_scopes=sources.ancestors,
                 current_scope_id=self.scope_id,
             ):
                 # For each inherited field, resolve using dual-axis resolution with provenance
@@ -2152,10 +2207,8 @@ class ObjectState:
             raise TypeError("ObjectState.parameters must remain a canonical flat dictionary.")
         if not isinstance(self._saved_parameters, dict):
             raise TypeError("ObjectState._saved_parameters must remain a canonical flat dictionary.")
-        self._ancestors_resolved_from[use_saved] = self._registered_ancestors()
-        ancestors = ObjectStateRegistry.get_ancestor_objects_with_scopes(
-            self.scope_id, use_saved=use_saved
-        )
+        sources = self._resolution_sources(sync_delegates=True)[use_saved]
+        self._resolved_from[use_saved] = sources
         current_obj = (
             self.saved_object if use_saved else self.to_object(update_delegate=False)
         )
@@ -2166,7 +2219,7 @@ class ObjectState:
             self._parameter_structure,
             current_obj,
             self.scope_id,
-            ancestors,
+            sources.ancestors,
             use_saved=use_saved,
         )
         if not use_saved:

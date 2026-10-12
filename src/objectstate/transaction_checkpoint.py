@@ -39,6 +39,7 @@ class ObjectStateTransactionCheckpoint:
     cached_object: Any
     cached_object_applied: bool
     invalid_fields: frozenset[str]
+    resolved_from: dict[bool, Any]
     raw_dirty: bool
     dirty_fields: frozenset[str]
     signature_diff_fields: frozenset[str]
@@ -83,6 +84,7 @@ class ObjectStateTransactionCheckpoint:
             cached_object=state._cached_object,
             cached_object_applied=state._cached_object_applied,
             invalid_fields=frozenset(state._invalid_fields),
+            resolved_from=dict(state._resolved_from),
             raw_dirty=state._raw_dirty,
             dirty_fields=frozenset(state._dirty_fields),
             signature_diff_fields=frozenset(state._signature_diff_fields),
@@ -134,6 +136,7 @@ class ObjectStateTransactionCheckpoint:
         state._cached_object = self.cached_object
         state._cached_object_applied = self.cached_object_applied
         state._invalid_fields = set(self.invalid_fields)
+        state._resolved_from = dict(self.resolved_from)
         state._raw_dirty = self.raw_dirty
         state._dirty_fields = set(self.dirty_fields)
         state._signature_diff_fields = set(self.signature_diff_fields)
