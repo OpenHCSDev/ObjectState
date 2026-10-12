@@ -1783,13 +1783,11 @@ class ObjectState:
             # without triggering delegate sync that would invalidate our cache mid-computation.
             current_obj = self.to_object(update_delegate=False, sync_delegate=False)
 
-            stack = build_context_stack(
+            with build_context_stack(
                 object_instance=current_obj,
                 ancestor_objects_with_scopes=ancestor_objects_with_scopes,
                 current_scope_id=self.scope_id,
-            )
-
-            with stack:
+            ):
                 # For each inherited field, resolve using dual-axis resolution with provenance
                 for dotted_path in inherited_fields:
                     container_type = self._path_to_type.get(dotted_path)
@@ -2115,19 +2113,17 @@ class ObjectState:
         from objectstate.dual_axis_resolver import resolve_with_provenance
         from objectstate.lazy_factory import has_lazy_resolution
 
-        stack = build_context_stack(
-            object_instance=current_obj,
-            ancestor_objects_with_scopes=ancestor_objects_with_scopes,
-            current_scope_id=scope_id,
-            use_live=not use_saved,
-        )
-
         snapshot: dict[str, Any] = {}
         provenance: dict[str, tuple[str | None, type | None]] = {}
 
         # UNIFIED: Resolve ALL fields in single context stack
         # For each path, check if it has a lazy dataclass container type
-        with stack:
+        with build_context_stack(
+            object_instance=current_obj,
+            ancestor_objects_with_scopes=ancestor_objects_with_scopes,
+            current_scope_id=scope_id,
+            use_live=not use_saved,
+        ):
             for dotted_path in parameters.keys():
                 raw_value = values.get(dotted_path)
                 container_type = structure.owner_paths.get(dotted_path)

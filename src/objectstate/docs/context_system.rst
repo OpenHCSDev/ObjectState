@@ -249,66 +249,28 @@ No manual cleanup needed - Python's context manager protocol handles it.
 Framework-Agnostic Context Stack Building
 -----------------------------------------
 
-For UI placeholder resolution, the ``build_context_stack()`` function provides a
-framework-agnostic way to build complete context stacks:
+``build_context_stack()`` is a context manager that enters every layer needed to
+resolve one object, and leaves them again when the block ends:
 
 .. code-block:: python
 
-   from objectstate import build_context_stack
+   from objectstate import ObjectStateRegistry, build_context_stack
 
-   # Build context stack for placeholder resolution
-   stack = build_context_stack(
-       context_obj=parent_config,             # Parent context
-       overlay=current_parameters,            # Current form values
-       dataclass_type=config_type,            # Type being edited
-       live_context=live_context_dict,        # Live values from other forms
-       root_form_values=root_values,          # Root form's values (for sibling inheritance)
-       root_form_type=root_type,              # Root form's dataclass type
-   )
+   ancestors = ObjectStateRegistry.get_ancestor_objects_with_scopes(scope_id)
 
-   with stack:
-       # Context layers are active
+   with build_context_stack(
+       object_instance=current_object,
+       ancestor_objects_with_scopes=ancestors,   # (scope_id, object), least specific first
+       current_scope_id=scope_id,
+   ):
        placeholder = resolve_placeholder(field_name)
 
-The stack builds layers in order:
+Layers are entered outermost first:
 
-1. **Global context layer** - Thread-local global config or live editor values
-2. **Intermediate layers** - Ancestors from ``get_types_before_in_stack()``
-3. **Parent context** - The ``context_obj`` parameter
-4. **Root form layer** - For sibling inheritance (see below)
-5. **Overlay** - Current form values
+1. **Global layer** - the global config, under scope ``""``
+2. **Ancestors** - each under its own scope id
+3. **Current object** - under ``current_scope_id``
 
-Sibling Inheritance via Root Form
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-When nested configs need to inherit from siblings, the root form's values enable this:
-
-.. code-block:: python
-
-   # Root form contains both sibling configs
-   root_values = {
-       'base_config': LazyBaseConfig(shared_value=123),
-       'child_config': LazyChildConfig(shared_value=None),  # Inherits from base
-       # Additional sibling configs may follow.
-   }
-
-   # When resolving child_config.shared_value:
-   # 1. stack includes root_values
-   # 2. LazyChildConfig.shared_value resolution walks MRO
-   # 3. Finds BaseConfig (superclass) in context
-   # 4. Uses base_config.shared_value = 123
-
-For non-dataclass roots, the function wraps values in ``SimpleNamespace`` to maintain a unified code path:
-
-.. code-block:: python
-
-   if root_form_type and is_dataclass(root_form_type):
-       root_instance = root_form_type(**root_form_values)
-   else:
-       # Non-dataclass root - wrap in SimpleNamespace
-       from types import SimpleNamespace
-       root_instance = SimpleNamespace(**root_form_values)
-
-   stack.enter_context(config_context(root_instance))
-
-This enables sibling inheritance for any root type.
+Every layer carries a scope id, so ``resolve_with_provenance()`` can name the scope
+that supplied a value. Nothing is set until the ``with`` block is entered. A layer
+that cannot be built raises; the block never runs with a layer missing.

@@ -13,7 +13,6 @@ Key features:
 Key components:
 - current_temp_global: ContextVar holding current merged global config
 - config_context(): Context manager for creating context scopes
-- extract_config_overrides(): Extract config values from any object type
 - merge_configs(): Merge overrides into base config
 """
 
@@ -21,12 +20,17 @@ import contextvars
 import functools
 import logging
 import threading
-from contextlib import contextmanager
-from typing import Any, Dict, get_type_hints
+from contextlib import ExitStack, contextmanager
+from typing import Any, Dict, Sequence, get_type_hints
 from dataclasses import fields, is_dataclass
 from python_introspect import resolve_annotated, resolve_optional
 
 logger = logging.getLogger(__name__)
+
+
+class NoActiveContextError(RuntimeError):
+    """A field was resolved against the active context while no context was active."""
+
 
 # Core contextvar for current merged global config
 # This holds the current context state that resolution functions can access
@@ -215,16 +219,10 @@ def config_context(obj, mask_with_none: bool = False, use_live_global: bool = Tr
     # Create merged config if we have overrides
     # Use replace_raw to preserve None values (dataclasses.replace triggers lazy resolution)
     if overrides:
-        try:
-            from objectstate.lazy_factory import replace_raw
-            merged_config = replace_raw(base_config, **overrides)
-            logger.debug(f"Creating config context with {len(overrides)} field overrides from {type(obj).__name__}")
-        except Exception as e:
-            logger.warning(f"Failed to merge config overrides from {type(obj).__name__}: {e}")
-            merged_config = base_config
+        from objectstate.lazy_factory import replace_raw
+        merged_config = replace_raw(base_config, **overrides)
     else:
         merged_config = base_config
-        logger.debug(f"Creating config context with no overrides from {type(obj).__name__}")
 
     # Track the type in the context type stack
     current_types = context_type_stack.get()
@@ -533,348 +531,73 @@ def is_same_type_in_context(type_a, type_b):
 # ============================================================================
 
 
-def _inject_context_layer(
-    stack,
-    t: type | None,
-    values: dict | None,
-    stored: object | None,
-) -> None:
-    """
-    Inject a context layer into the stack.
-
-    Handles dataclass instantiation with SimpleNamespace fallback.
-    For types that can't be reconstructed from editable values alone,
-    injects stored object + SimpleNamespace so type tracking works and live values win.
-
-    Args:
-        stack: ExitStack to inject into
-        t: Type to instantiate (None = use SimpleNamespace)
-        values: Dict of values to use (None = use stored only)
-        stored: Stored object to fall back to (None = no fallback)
-    """
-    from types import SimpleNamespace
-
-    if values is None:
-        if stored is not None:
-            stack.enter_context(config_context(stored))
-        return
-
-    # Have values - try to instantiate as dataclass, fall back to SimpleNamespace
-    if t is not None and is_dataclass(t):
-        try:
-            stack.enter_context(config_context(t(**values)))
-            return
-        except Exception:
-            # Dataclass ctor failed (e.g., missing required args not in form)
-            # Inject stored (for type tracking) + SimpleNamespace (for values)
-            if stored is not None:
-                stack.enter_context(config_context(stored))
-            stack.enter_context(config_context(SimpleNamespace(**values)))
-            return
-
-    # Non-dataclass or no type - use SimpleNamespace
-    stack.enter_context(config_context(SimpleNamespace(**values)))
-
-
+@contextmanager
 def build_context_stack(
     object_instance: object,
-    ancestor_objects: list[object] | None = None,
-    ancestor_objects_with_scopes: list[tuple[str, object]] | None = None,
+    ancestor_objects_with_scopes: Sequence[tuple[str, object]] = (),
     current_scope_id: str | None = None,
     use_live: bool = True,
 ):
     """
-    Build a complete context stack for placeholder resolution.
+    Enter every context layer needed to resolve ``object_instance``; leave them on exit.
 
-    SINGLE SOURCE OF TRUTH: Uses ancestor_objects from ObjectStateRegistry as the
-    sole mechanism for parent hierarchy. No separate context_obj parameter.
+    Layers, outermost first:
+    1. The global layer, under scope ``""``. When ``object_instance`` is itself a global
+       config, this is a fresh instance of its type holding the declared defaults.
+    2. Each ancestor, under its own scope id. Global-config ancestors are left out
+       because layer 1 already stands for them.
+    3. ``object_instance``, under ``current_scope_id``.
 
-    Layer order (innermost to outermost when entered):
-    1. Global context layer (from ancestors or thread-local)
-    2. Ancestor objects (from ObjectStateRegistry.get_ancestor_objects())
-    3. Current object_instance
+    Nothing is set until the ``with`` block is entered. Any layer that cannot be
+    built raises, and the layers entered before it are left again.
 
     Args:
-        object_instance: The object being edited (type used to infer global editing mode)
-        ancestor_objects: List of ancestor objects from least→most specific (from ObjectStateRegistry).
-                         This is the SINGLE SOURCE OF TRUTH for parent hierarchy.
-                         DEPRECATED: Use ancestor_objects_with_scopes for provenance tracking.
-        ancestor_objects_with_scopes: List of (scope_id, object) tuples from least→most specific.
-                                      Enables provenance tracking via context_layer_stack.
-        current_scope_id: Scope ID for the current object_instance. Used for provenance tracking.
-
-    Returns:
-        ExitStack with all context layers entered. Caller must manage the stack lifecycle.
+        object_instance: The object whose fields are being resolved.
+        ancestor_objects_with_scopes: ``(scope_id, object)`` pairs, least specific first.
+        current_scope_id: Scope id of ``object_instance``.
+        use_live: Read the live global config (True) or the saved one (False).
     """
-    from contextlib import ExitStack
     from objectstate.lazy_factory import GlobalConfigBase
 
-    stack = ExitStack()
-    obj_type = type(object_instance)
-
-    # Infer global editing mode from object_instance type
-    is_global_config_editing = isinstance(object_instance, GlobalConfigBase)
-
-    obj_type_name = obj_type.__name__
-
-    # PERFORMANCE: Only build ancestor list for logging when DEBUG is enabled
-    if logger.isEnabledFor(logging.DEBUG):
-        if ancestor_objects_with_scopes:
-            ancestor_types = [type(o).__name__ for _, o in ancestor_objects_with_scopes]
-        elif ancestor_objects:
-            ancestor_types = [type(o).__name__ for o in ancestor_objects]
+    with ExitStack() as stack:
+        if isinstance(object_instance, GlobalConfigBase):
+            declared_defaults = type(object_instance)()
+            stack.enter_context(
+                config_context(declared_defaults, mask_with_none=True, scope_id="")
+            )
         else:
-            ancestor_types = []
-        logger.debug(f"🔧 build_context_stack: obj={obj_type_name}, ancestors={ancestor_types}")
+            global_layer = get_base_global_config(use_live=use_live)
+            if global_layer:
+                stack.enter_context(config_context(global_layer, scope_id=""))
 
-    # 1. Global context layer (least specific)
-    # ALWAYS use LIVE thread-local for global config - it's the SINGLE SOURCE OF TRUTH
-    # Don't use ancestor_objects for GlobalConfigBase since that comes from to_object()
-    # which can be stale relative to the LIVE thread-local we just updated.
-    if is_global_config_editing:
-        try:
-            global_layer = obj_type()  # Fresh instance with static defaults
-            stack.enter_context(config_context(global_layer, mask_with_none=True, scope_id=""))
-        except Exception:
-            pass  # Couldn't create global layer
-    else:
-        # Use LIVE or SAVED thread-local based on use_live parameter
-        global_layer = get_base_global_config(use_live=use_live)
-        if global_layer:
-            stack.enter_context(config_context(global_layer, scope_id=""))
-
-    # 2. Ancestor objects (intermediate layers, excluding GlobalConfigBase already handled)
-    if ancestor_objects_with_scopes:
-        # New format with scope_ids for provenance tracking
         for scope_id, ancestor_obj in ancestor_objects_with_scopes:
             if isinstance(ancestor_obj, GlobalConfigBase):
                 continue
             stack.enter_context(config_context(ancestor_obj, scope_id=scope_id))
-    elif ancestor_objects:
-        # Legacy format without scope_ids
-        for ancestor_obj in ancestor_objects:
-            if isinstance(ancestor_obj, GlobalConfigBase):
-                continue
-            stack.enter_context(config_context(ancestor_obj))
 
-    # 3. Current object overlay (most specific)
-    stack.enter_context(config_context(object_instance, scope_id=current_scope_id))
-
-    return stack
-
-
-def _get_global_context_layer(
-    live_context: dict | None,
-    is_global_config_editing: bool,
-    global_config_type: type | None,
-) -> object | None:
-    """
-    Get the global context layer for the stack.
-
-    Priority:
-    1. If editing global config, use static defaults (mask_with_none will mask thread-local)
-    2. If live_context has a global config, use that (from another open editor)
-    3. Fall back to thread-local global config
-
-    PERFORMANCE OPTIMIZATION: Within a dispatch cycle, the GLOBAL layer is cached
-    since it's the same for all sibling refreshes.
-
-    Args:
-        live_context: Dict mapping types to their live values
-        is_global_config_editing: True if editing a global config
-        global_config_type: The global config type
-
-    Returns:
-        Global config instance to use, or None if not available
-    """
-    layer = None
-
-    # 1) Global config editing → fresh instance (mask thread-local when entering)
-    if is_global_config_editing and global_config_type is not None:
-        try:
-            layer = global_config_type()
-        except Exception:
-            layer = None
-
-    # 2) Live global from other window
-    if layer is None:
-        layer = _find_live_global(live_context)
-
-    # 3) Fallback to thread-local base
-    if layer is None:
-        layer = get_base_global_config()
-
-    return layer
-
-
-def _find_live_global(live_context: dict | None) -> object | None:
-    """Find and instantiate a global config from live_context if present."""
-    if not live_context:
-        return None
-
-    from objectstate.lazy_factory import is_global_config_type
-
-    for config_type, config_values in live_context.items():
-        if is_global_config_type(config_type):
-            try:
-                return config_type(**config_values)
-            except Exception:
-                continue
-    return None
-
-
-
-
-
-def _find_live_values_for_type(target_type: type, live_context: dict) -> dict | None:
-    """
-    Find live values for a target type in live_context.
-
-    Handles type normalization (lazy vs base types) AND inheritance.
-    For sibling inheritance, a StepPartitionFilterConfig's values should be
-    usable when resolving PartitionFilterConfig's placeholders.
-
-    IMPORTANT: Prefers subclass matches over exact matches.
-    This ensures StepPartitionFilterConfig values (with concrete value) are used
-    for PartitionFilterConfig resolution, not PartitionFilterConfig values (with None).
-
-    Args:
-        target_type: The type to find values for
-        live_context: Dict mapping types to their live values
-
-    Returns:
-        Dict of field values, or None if not found
-    """
-    target_base = _normalize_type(target_type)
-    logger.debug(f"_find_live_values_for_type: target={target_type.__name__} -> base={target_base.__name__}")
-    logger.debug(f"_find_live_values_for_type: live_context has {len(live_context)} types")
-
-    # Pass 0: exact type match without normalization (prefer most specific)
-    for config_type, config_values in live_context.items():
-        if config_type == target_type:
-            logger.debug(f"_find_live_values_for_type: ✅ exact type match for {config_type.__name__}")
-            return config_values
-
-    # First pass: look for subclass match (more specific wins) after normalization
-    # e.g., StepPartitionFilterConfig values for PartitionFilterConfig resolution
-    for config_type, config_values in live_context.items():
-        config_base = _normalize_type(config_type)
-        try:
-            if config_base != target_base and issubclass(config_base, target_base):
-                logger.debug(f"_find_live_values_for_type: ✅ using {config_base.__name__} values for {target_base.__name__} (subclass)")
-                return config_values
-        except TypeError:
-            pass  # Not a class
-
-    # Second pass: exact type match (after normalization)
-    for config_type, config_values in live_context.items():
-        config_base = _normalize_type(config_type)
-        if config_base == target_base:
-            logger.debug(f"_find_live_values_for_type: ✅ exact match for {target_base.__name__}")
-            return config_values
-
-    logger.debug(f"_find_live_values_for_type: ❌ no match for {target_base.__name__}")
-    return None
-
-
-# Removed: extract_config_overrides - no longer needed with field matching approach
-
-
-def extract_from_dataclass_fields(obj) -> Dict[str, Any]:
-    """
-    Get non-None fields as config overrides.
-    
-    This extracts concrete values from dataclass instances, ignoring None values
-    which represent fields that should inherit from context.
-    
-    Args:
-        obj: Dataclass instance to extract field values from
-        
-    Returns:
-        Dict of field_name -> value for non-None fields
-    """
-    if not is_dataclass(obj):
-        return {}
-        
-    overrides = {}
-    
-    for field in fields(obj):
-        value = getattr(obj, field.name)
-        if value is not None:
-            overrides[field.name] = value
-            
-    logger.debug(f"Extracted {len(overrides)} overrides from dataclass {type(obj).__name__}")
-    return overrides
-
-
-def extract_from_object_attributes(obj) -> Dict[str, Any]:
-    """
-    Extract config attributes from step/pipeline objects.
-    
-    This handles orchestrators, steps, and other objects that have *_config attributes.
-    It flattens the config hierarchy into a single dict of field overrides.
-    
-    Args:
-        obj: Object to extract config attributes from
-        
-    Returns:
-        Dict of field_name -> value for all non-None config fields
-    """
-    overrides = {}
-    
-    try:
-        for attr_name in dir(obj):
-            if attr_name.endswith('_config'):
-                attr_value = getattr(obj, attr_name)
-                if attr_value is not None and is_dataclass(attr_value):
-                    # Extract all non-None fields from this config
-                    config_overrides = extract_from_dataclass_fields(attr_value)
-                    overrides.update(config_overrides)
-                    
-        logger.debug(f"Extracted {len(overrides)} overrides from object {type(obj).__name__}")
-        
-    except Exception as e:
-        logger.debug(f"Error extracting from object {obj}: {e}")
-        
-    return overrides
+        stack.enter_context(config_context(object_instance, scope_id=current_scope_id))
+        yield
 
 
 def merge_configs(base, overrides: Dict[str, Any]):
     """
     Merge overrides into base config, creating new immutable instance.
-    
-    This creates a new config instance with override values merged in,
-    preserving immutability of the original base config.
-    
+
+    A ``None`` override is kept: it means "inherit this field from the parent context".
+    Raises whatever the config's constructor raises when the overrides are not accepted.
+
     Args:
         base: Base config instance (base config type)
         overrides: Dict of field_name -> value to override
-        
+
     Returns:
         New config instance with overrides applied
     """
     if not base or not overrides:
         return base
 
-    try:
-        # CRITICAL: Do NOT filter out None values!
-        # None can be a semantic value such as "inherit from parent context".
-        # When an override dict contains None, it means "reset this field to None"
-        # which should override the base value with None for lazy resolution.
-
-        if not overrides:
-            return base
-
-        # Use replace_raw to preserve None values (dataclasses.replace triggers lazy resolution)
-        from objectstate.lazy_factory import replace_raw
-        merged = replace_raw(base, **overrides)
-
-        logger.debug(f"Merged {len(overrides)} overrides into {type(base).__name__}")
-        return merged
-        
-    except Exception as e:
-        logger.warning(f"Failed to merge configs: {e}")
-        return base
+    from objectstate.lazy_factory import replace_raw
+    return replace_raw(base, **overrides)
 
 
 def get_base_global_config(use_live: bool = True):

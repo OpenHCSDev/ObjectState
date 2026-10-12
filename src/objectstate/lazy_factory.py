@@ -608,21 +608,20 @@ class LazyMethodBindings:
     def create_resolver() -> Callable[[Any, str], Any]:
         """Create field resolver method using new pure function interface."""
         from objectstate.dual_axis_resolver import resolve_field_inheritance
-        from objectstate.context_manager import current_temp_global, extract_all_configs
+        from objectstate.context_manager import (
+            NoActiveContextError,
+            extract_all_configs,
+            get_current_temp_global,
+        )
 
         def _resolve_field_value(self, field_name: str) -> Any:
-            # Get current context from contextvars
-            try:
-                current_context = current_temp_global.get()
-                # Extract available configs from current context
-                available_configs = extract_all_configs(current_context)
-
-                # Use pure function for resolution
-                return resolve_field_inheritance(self, field_name, available_configs)
-            except LookupError:
-                # No context available - return None (fail-loud approach)
-                logger.debug(f"No context available for resolving {type(self).__name__}.{field_name}")
-                return None
+            current_context = get_current_temp_global()
+            if current_context is None:
+                raise NoActiveContextError(
+                    f"Cannot resolve {type(self).__name__}.{field_name}: no config context is active."
+                )
+            available_configs = extract_all_configs(current_context)
+            return resolve_field_inheritance(self, field_name, available_configs)
 
         return _resolve_field_value
 
