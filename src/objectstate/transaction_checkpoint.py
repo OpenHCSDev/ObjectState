@@ -73,7 +73,7 @@ class ObjectStateTransactionCheckpoint:
             object_instance=state.object_instance,
             construction=state.construction_binding(),
             parent_state=state._parent_state,
-            structure=state._parameter_structure.clone(),
+            structure=state.parameter_structure.clone(),
             preserve_value_identity=preserve_value_identity,
             parameters=copied["parameters"],
             saved_parameters=copied["saved_parameters"],
@@ -122,7 +122,7 @@ class ObjectStateTransactionCheckpoint:
         self.construction.attach(state)
         state._parent_state = self.parent_state
         state._parent_field_name = self.construction.parent_field
-        state._parameter_structure = self.structure.clone()
+        state.parameter_structure = self.structure.clone()
         state.parameters = copied["parameters"]
         state._index_parameter_paths()
         state._saved_parameters = copied["saved_parameters"]

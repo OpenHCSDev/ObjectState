@@ -148,7 +148,7 @@ def test_same_scope_callable_owner_and_schema_restore_without_replacing_state():
         assert state.object_instance is function
         assert set(state.parameters) == parameters
         for name in parameters:
-            state.signature_default(name)
+            state.parameter_structure.declarations[name].default_value
         assert set(state._path_to_type) == parameters
 
 

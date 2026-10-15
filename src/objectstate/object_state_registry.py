@@ -877,7 +877,7 @@ class ObjectStateRegistry:
         # DEBUG: Log entry into type matching
         if _debug:
             logger.debug(f"🔍 _invalidate_field_in_matching_states: state_scope={state.scope_id}, target_base_type={target_base_type.__name__}, field_name={field_name}")
-            logger.debug(f"🔍   state._path_to_type has {len(state._path_to_type)} entries")
+            logger.debug(f"🔍   state.parameter_structure.owner_paths has {len(state.parameter_structure.owner_paths)} entries")
 
         for dotted_path in state.inheritance_field_paths(
             target_base_type,
