@@ -76,12 +76,10 @@ class DottedFieldPath:
         """Return the direct dotted child field owned by this path, when one exists."""
 
         candidate_value = candidate.value if isinstance(candidate, DottedFieldPath) else candidate
-        if candidate_value == self.value or not self.contains_path(candidate_value):
+        prefix = f"{self.value}." if self.value else ""
+        if not candidate_value.startswith(prefix):
             return None
-        remainder = candidate_value[len(self.value):]
-        if not remainder.startswith("."):
-            return None
-        child_remainder = remainder[1:]
+        child_remainder = candidate_value[len(prefix):]
         child_name = child_remainder.split(".", 1)[0].split("[", 1)[0]
         return child_name or None
 

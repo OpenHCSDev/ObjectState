@@ -53,6 +53,25 @@ def test_dotted_path_owns_parent_lineage_and_leaf_name(value, parent, lineage, f
     assert path.parent.child(path.field_name) == path
 
 
+@pytest.mark.parametrize(
+    ("owner", "candidate", "child"),
+    [
+        ("", "", None),
+        ("", "value", "value"),
+        ("", "source_bindings.source_filters[0].match_type", "source_bindings"),
+        ("processing_config", "processing_config.variable_components[1]", "variable_components"),
+        ("processing_config", "processing_config", None),
+        ("processing_config", "processing_config[0].value", None),
+        ("processing_config", "unrelated.value", None),
+        ("processing_config", "processing_config_extra.value", None),
+    ],
+)
+def test_dotted_path_owns_direct_child_selection(owner, candidate, child) -> None:
+    path = DottedFieldPath(owner)
+    assert path.direct_child_name(candidate) == child
+    assert path.direct_child_name(DottedFieldPath(candidate)) == child
+
+
 def test_raw_value_reads_regular_dataclass_field() -> None:
     config = RegularConfig(child=NestedConfig())
 
