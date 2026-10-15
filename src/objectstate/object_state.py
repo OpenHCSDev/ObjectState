@@ -1119,7 +1119,7 @@ class ObjectState:
         local_invalidations = set(changed_semantic_params)
         for changed_param in changed_semantic_params:
             container_type = self.parameter_structure.owner_paths.get(changed_param, type(self.object_instance))
-            leaf_field_name = changed_param.split('.')[-1] if '.' in changed_param else changed_param
+            leaf_field_name = DottedFieldPath(changed_param).field_name
             local_invalidations.update(
                 self.inheritance_field_paths(container_type, leaf_field_name)
             )
@@ -1140,7 +1140,7 @@ class ObjectState:
             container_type = self.parameter_structure.owner_paths.get(changed_param, type(self.object_instance))
 
             # Extract leaf field name for invalidation matching
-            leaf_field_name = changed_param.split('.')[-1] if '.' in changed_param else changed_param
+            leaf_field_name = DottedFieldPath(changed_param).field_name
 
 
             ObjectStateRegistry.invalidate_by_type_and_scope(
@@ -1731,7 +1731,7 @@ class ObjectState:
 
         for path in changed_paths:
             container_type = self.parameter_structure.owner_paths.get(path, type(self.object_instance))
-            leaf_field_name = path.split(".")[-1]
+            leaf_field_name = DottedFieldPath(path).field_name
             ObjectStateRegistry.invalidate_by_type_and_scope(
                 scope_id=self.scope_id,
                 changed_type=container_type,
@@ -1832,8 +1832,7 @@ class ObjectState:
                             changed_values[dotted_path] = (old_val, raw_val)
                         self._live_resolved[dotted_path] = raw_val
                         continue
-                    parts = dotted_path.split('.')
-                    field_name = parts[-1]
+                    field_name = DottedFieldPath(dotted_path).field_name
 
                     # Use resolve_with_provenance for SINGLE walk that gets both value AND source
                     value, source_scope_id, source_type = resolve_with_provenance(container_type, field_name)
@@ -2145,7 +2144,6 @@ class ObjectState:
             for dotted_path in parameters.keys():
                 raw_value = values.get(dotted_path)
                 container_type = structure.owner_paths.get(dotted_path)
-                parts = dotted_path.split('.')
 
                 # Check if this path is a CONTAINER entry (value is a nested dataclass)
                 # vs a LEAF field (value is primitive, even if container_type is a dataclass)
@@ -2167,9 +2165,9 @@ class ObjectState:
                     # CRITICAL: Only resolve for lazy dataclasses! Non-lazy dataclasses with None
                     # defaults should keep None as-is, not trigger inheritance resolution.
                     # This handles both:
-                    # - Nested fields (processing_config.group_by) where parts > 1
-                    # - Top-level fields on root (num_workers on PipelineConfig) where parts == 1
-                    field_name = parts[-1]
+                    # - Nested fields (processing_config.group_by)
+                    # - Top-level fields on root (num_workers on PipelineConfig)
+                    field_name = DottedFieldPath(dotted_path).field_name
 
                     if raw_value is None:
                         # Field needs resolution - use combined resolve + provenance walk
@@ -2273,7 +2271,7 @@ class ObjectState:
         logger.debug(f"🔧 mark_saved: Starting invalidation for changed_params={changed_params}, scope={self.scope_id!r}")
         for param_name in changed_params:
             container_type = self.parameter_structure.owner_paths.get(param_name, type(self.object_instance))
-            leaf_field_name = param_name.split('.')[-1] if '.' in param_name else param_name
+            leaf_field_name = DottedFieldPath(param_name).field_name
             logger.debug(f"🔧 mark_saved: Invalidating param={param_name}, container_type={container_type.__name__ if hasattr(container_type, '__name__') else type(container_type).__name__}, leaf_field={leaf_field_name}")
 
             ObjectStateRegistry.invalidate_by_type_and_scope(
@@ -2382,7 +2380,7 @@ class ObjectState:
                 raise
             if current_value != saved_value:
                 container_type = self.parameter_structure.owner_paths.get(param_name, type(self.object_instance))
-                leaf_field_name = param_name.split('.')[-1] if '.' in param_name else param_name
+                leaf_field_name = DottedFieldPath(param_name).field_name
                 changed_params_with_types.append((param_name, container_type, leaf_field_name))
 
         # Clear and re-extract from the saved baseline
@@ -2828,7 +2826,7 @@ class ObjectState:
 
             if old_value != new_value:
                 container_type = self.parameter_structure.owner_paths.get(param_name, type(self.object_instance))
-                leaf_field_name = param_name.split('.')[-1] if '.' in param_name else param_name
+                leaf_field_name = DottedFieldPath(param_name).field_name
                 changed_params.append((param_name, container_type, leaf_field_name))
 
         return changed_params

@@ -97,7 +97,7 @@ class FieldInspection:
                 provenance = FieldProvenance(
                     source_scope_id=source_scope_id,
                     source_type=source_type,
-                    field_name=field_path.rsplit(".", 1)[-1],
+                    field_name=DottedFieldPath(field_path).field_name,
                 )
         return cls(
             state=state,
@@ -142,7 +142,7 @@ class FieldInspection:
 
     @property
     def field_name(self) -> str:
-        return self.field_path.rsplit(".", 1)[-1]
+        return DottedFieldPath(self.field_path).field_name
 
     @property
     def container_path(self) -> str:
