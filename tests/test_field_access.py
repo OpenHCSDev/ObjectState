@@ -35,6 +35,23 @@ class SlottedAbstractConfig(AbstractFieldConfig):
     value: int = 11
 
 
+@pytest.mark.parametrize(
+    ("value", "parent", "lineage"),
+    [
+        ("", "", ()),
+        ("name", "", ("name",)),
+        ("child.value", "child", ("child.value", "child")),
+        ("outer.child.value", "outer.child", ("outer.child.value", "outer.child", "outer")),
+    ],
+)
+def test_dotted_path_owns_parent_and_nearest_first_lineage(value, parent, lineage) -> None:
+    path = DottedFieldPath(value)
+
+    assert path.parent == DottedFieldPath(parent)
+    assert tuple(step.value for step in path.lineage) == lineage
+    assert path.parent.child(path.field_name) == path
+
+
 def test_raw_value_reads_regular_dataclass_field() -> None:
     config = RegularConfig(child=NestedConfig())
 

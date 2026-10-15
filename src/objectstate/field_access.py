@@ -29,6 +29,23 @@ class DottedFieldPath:
 
         return self.parts[-1] if self.parts else ""
 
+    @property
+    def parent(self) -> "DottedFieldPath":
+        """The immediate container; a root field and the root both have an empty parent."""
+
+        return DottedFieldPath(self.value.rpartition(".")[0])
+
+    @property
+    def lineage(self) -> tuple["DottedFieldPath", ...]:
+        """This field followed by its parents, nearest first, excluding the empty root."""
+
+        paths = []
+        path = self
+        while path.value:
+            paths.append(path)
+            path = path.parent
+        return tuple(paths)
+
     def child(self, field_name: str) -> "DottedFieldPath":
         if self.value == "":
             return DottedFieldPath(field_name)

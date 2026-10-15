@@ -974,13 +974,9 @@ class ObjectState:
     ) -> dict[str, Any]:
         """Rebuild dataclass container parameters that own a changed child path."""
 
-        if "." not in param_name:
-            return {}
-
         updates: dict[str, Any] = {}
-        path_parts = param_name.split(".")
-        for part_count in range(len(path_parts) - 1, 0, -1):
-            prefix = ".".join(path_parts[:part_count])
+        for path in DottedFieldPath(param_name).parent.lineage:
+            prefix = path.value
             if prefix not in parameters:
                 continue
             prefix_type = self.parameter_structure.owner_paths.get(prefix)
@@ -2598,12 +2594,8 @@ class ObjectState:
 
         paths_by_owner: dict[DottedFieldPath, list[DottedFieldPath]] = {}
         for dotted_path in self.parameters:
-            owner_path, separator, _field_name = dotted_path.rpartition(".")
-            if not separator:
-                owner_path = ""
-            paths_by_owner.setdefault(DottedFieldPath(owner_path), []).append(
-                DottedFieldPath(dotted_path)
-            )
+            path = DottedFieldPath(dotted_path)
+            paths_by_owner.setdefault(path.parent, []).append(path)
         self.parameter_structure.direct_paths = {
             owner_path: tuple(parameter_paths)
             for owner_path, parameter_paths in paths_by_owner.items()

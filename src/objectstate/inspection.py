@@ -6,6 +6,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from objectstate.field_access import DottedFieldPath
 from objectstate.object_state import ObjectState
 from objectstate.object_state_registry import ObjectStateRegistry
 
@@ -145,7 +146,7 @@ class FieldInspection:
 
     @property
     def container_path(self) -> str:
-        return self.field_path.rsplit(".", 1)[0] if "." in self.field_path else ""
+        return DottedFieldPath(self.field_path).parent.value
 
     @property
     def raw_value_type(self) -> str:

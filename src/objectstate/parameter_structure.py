@@ -40,8 +40,8 @@ class ParameterStructure:
     def path(self, name: str) -> DottedFieldPath:
         """Resolve a name to its admitted path, without analyzing declarations."""
 
-        parent, _, _ = name.rpartition(".")
-        for path in self.direct_paths.get(DottedFieldPath(parent), ()):
+        requested = DottedFieldPath(name)
+        for path in self.direct_paths.get(requested.parent, ()):
             if path.value == name:
                 return path
         raise KeyError(f"ObjectState path is not registered: {name!r}")
@@ -49,10 +49,7 @@ class ParameterStructure:
     def ancestors(self, path: DottedFieldPath) -> tuple[DottedFieldPath, ...]:
         """The admitted fields down to this one, itself last."""
 
-        return tuple(
-            self.path(".".join(path.parts[:count]))
-            for count in range(1, len(path.parts) + 1)
-        )
+        return tuple(self.path(step.value) for step in reversed(path.lineage))
 
     def leaf_paths(self, parent: str = "") -> Iterator[DottedFieldPath]:
         """Enumerate leaves through the extracted topology, never the source type."""
