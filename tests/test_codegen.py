@@ -67,9 +67,13 @@ def test_source_loads_back_with_equal_raw_values(value, clean_mode):
     assert _raw(loaded) == _raw(value)
 
 
-def test_clean_source_omits_inherited_fields_and_empty_nested_configs():
-    source, _ = _load(LazyOuter(name="b", inner=LazyInner(depth=None)), clean_mode=True)
+def test_clean_source_preserves_literal_null_and_explicit_empty_nested_configs():
+    source, loaded = _load(LazyOuter(name="b", inner=LazyInner(depth=None)), clean_mode=True)
     assert "name='b'" in source
+    assert "depth=None" in source
+    assert DataclassFieldAccess.raw_value(DataclassFieldAccess.raw_value(loaded, "inner"), "depth") is None
+
+    source, _ = _load(LazyOuter(name="b", inner=LazyInner()), clean_mode=True)
     assert "inner=LazyInner()" in source
     assert "depth" not in source
 
@@ -79,7 +83,7 @@ def test_clean_source_omits_inherited_fields_and_empty_nested_configs():
 
 def test_full_source_writes_every_raw_field():
     source, _ = _load(LazyInner(mode=Speed.Mode.SLOW), clean_mode=False)
-    assert "depth=None" in source
+    assert "depth=Inherit()" in source
     assert "mode=Speed.Mode.SLOW" in source
 
 
@@ -95,7 +99,7 @@ def test_field_needs_source_compares_lazy_raw_values():
 
 @dataclass
 class Inheriting(LazyResolutionDataclass):
-    """A base config whose None fields resolve elsewhere."""
+    """A custom accessor transforms null; source still owns the stored datum."""
 
     mode: str | None = None
     size: int = 4

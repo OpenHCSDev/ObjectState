@@ -30,12 +30,10 @@ class ObjectStateEditSession(Generic[EditedObjectT]):
     def state(self) -> ObjectState | None:
         return self.state_provider()
 
-    def require_state(self, parameter_name: str) -> ObjectState:
+    def require_state(self) -> ObjectState:
         state = self.state
         if state is None:
-            raise KeyError(
-                f"ObjectStateEditSession has no state for parameter {parameter_name!r}"
-            )
+            raise RuntimeError("ObjectStateEditSession has no editing state")
         return state
 
     def to_object(self, *, update_delegate: bool = False) -> EditedObjectT:
@@ -53,19 +51,3 @@ class ObjectStateEditSession(Generic[EditedObjectT]):
                 f"{type(value).__name__}; expected {self.expected_type.__name__}"
             )
         return cast(EditedObjectT, value)
-
-    def has_parameter(self, parameter_name: str) -> bool:
-        state = self.state
-        return state is not None and parameter_name in state.parameters
-
-    def parameter_value(self, parameter_name: str):
-        state = self.require_state(parameter_name)
-        if parameter_name not in state.parameters:
-            raise KeyError(f"ObjectState parameter does not exist: {parameter_name!r}")
-        return state.parameters[parameter_name]
-
-    def update_parameter(self, parameter_name: str, value) -> None:
-        state = self.require_state(parameter_name)
-        if parameter_name not in state.parameters:
-            raise KeyError(f"ObjectState parameter does not exist: {parameter_name!r}")
-        state.update_parameter(parameter_name, value)

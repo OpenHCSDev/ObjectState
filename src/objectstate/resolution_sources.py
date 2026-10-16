@@ -20,8 +20,9 @@ a pair is kept and computed once per edit.
 """
 
 from collections import OrderedDict
-from dataclasses import fields, is_dataclass
 from typing import Any, NamedTuple
+
+from objectstate.field_value import FieldValue, Unset
 
 FieldKey = tuple[type, str]
 
@@ -101,58 +102,28 @@ def _compare_layer_objects(before: Any, now: Any) -> set[FieldKey]:
 
     configs_before = extract_all_configs(before)
     configs_now = extract_all_configs(now)
-    held_before = {id(config) for config in configs_before.values()}
-    held_now = {id(config) for config in configs_now.values()}
+    held_before = {id(config.stored) for config in configs_before.values()}
+    held_now = {id(config.stored) for config in configs_now.values()}
     differing: set[FieldKey] = set()
     for config_type in configs_before.keys() | configs_now.keys():
-        config_before = configs_before.get(config_type)
-        config_now = configs_now.get(config_type)
-        if config_before is config_now:
+        config_before = configs_before.get(config_type, Unset())
+        config_now = configs_now.get(config_type, Unset())
+        if config_before.stored is config_now.stored:
             continue
         names = {
-            f.name for config in (config_before, config_now) if config is not None
-            for f in fields(config)
+            field.name for config in (config_before, config_now)
+            for field in config.declared_fields()
         }
-        if config_before is None or config_now is None:
+        if not config_before.available() or not config_now.available():
             # A layer that starts or stops holding a config type changes where an
             # unset field is reported to live, whatever the values are.
             differing.update((config_type, name) for name in names)
             continue
         for name in names:
-            value_before = _stored(config_before, name)
-            value_now = _stored(config_now, name)
-            if id(value_before) in held_before and id(value_now) in held_now:
+            value_before = config_before.read_raw(name)
+            value_now = config_now.read_raw(name)
+            if id(value_before.stored) in held_before and id(value_now.stored) in held_now:
                 continue  # a nested config on both sides: compared under its own type
-            if not _same_stored_value(value_before, value_now):
+            if type(value_before.stored) is not type(value_now.stored) or value_before != value_now:
                 differing.add((config_type, name))
     return differing
-
-
-def _stored(config: Any, name: str) -> Any:
-    """The raw field of a config, without lazy resolution; ``None`` when absent."""
-    if config is None:
-        return None
-    try:
-        return object.__getattribute__(config, name)
-    except AttributeError:
-        return None
-
-
-def _same_stored_value(a: Any, b: Any) -> bool:
-    """Equality of two stored values that never resolves a lazy field.
-
-    Dataclass instances are compared field by field on their stored values: their
-    own ``__eq__`` reads attributes, which resolves lazy fields in the caller's
-    context. A value whose comparison fails or is not a plain truth value counts
-    as different.
-    """
-    if a is b:
-        return True
-    if type(a) is not type(b):
-        return False
-    if is_dataclass(a) and not isinstance(a, type):
-        return all(_same_stored_value(_stored(a, f.name), _stored(b, f.name)) for f in fields(a))
-    try:
-        return bool(a == b)
-    except Exception:
-        return False

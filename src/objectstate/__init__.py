@@ -56,10 +56,8 @@ from objectstate.lazy_factory import (
     LazyDataclassFactory,
     auto_create_decorator,
     register_lazy_type_mapping,
-    get_base_type_for_lazy,
     get_lazy_type_for_base,
     # Constructor patching for code execution
-    patch_lazy_constructors,
     # Global config type checking
     GlobalConfigBase,
     GlobalConfigMeta,
@@ -131,8 +129,6 @@ from objectstate.token_cache import TokenCache, SingleValueTokenCache, CacheKey
 from objectstate.field_access import DataclassFieldAccess, DottedFieldPath, FieldAccessError
 from objectstate.parameter_owner import ParameterOwner
 from objectstate.subfield_semantics import (
-    MISSING,
-    MissingValue,
     ObjectStateSubfieldSemantic,
     ObjectStateSubfieldSemanticIndex,
     StructuralFieldPath,
@@ -149,10 +145,11 @@ __all__ = [
     'LazyDataclassFactory',
     'auto_create_decorator',
     'register_lazy_type_mapping',
-    'get_base_type_for_lazy',
     'get_lazy_type_for_base',
-    # Constructor patching for code execution
-    'patch_lazy_constructors',
+    # Stored field meaning
+    'FieldValue',
+    'Inherit',
+    'Unset',
     # Global config type checking
     'GlobalConfigBase',
     'GlobalConfigMeta',
@@ -194,8 +191,6 @@ __all__ = [
     'DottedFieldPath',
     'FieldAccessError',
     'ParameterOwner',
-    'MISSING',
-    'MissingValue',
     'ObjectStateSubfieldSemantic',
     'ObjectStateSubfieldSemanticIndex',
     'StructuralFieldPath',
@@ -214,7 +209,7 @@ __description__ = 'Generic configuration framework for lazy dataclass resolution
 # Object state management
 from objectstate.object_state_registry import ObjectStateRegistry
 from objectstate.scope_key import ScopeKey
-from objectstate.object_state import ObjectState
+from objectstate.object_state import FieldProxy, ObjectState
 from objectstate.object_state_metadata import (
     ObjectStateMetadataContract,
     ObjectStateMetadataContractRegistry,
@@ -249,6 +244,7 @@ from objectstate.reified_generics import List, Dict, Set, Tuple, Optional
 __all__ += [
     # Object state
     'ObjectState',
+    'FieldProxy',
     'ObjectStateRegistry',
     'ScopeKey',
     'retain_only_authored_paths',
@@ -281,3 +277,5 @@ __all__ += [
     'Tuple',
     'Optional',
 ]
+
+from objectstate.field_value import FieldValue, Inherit, Unset

@@ -1,22 +1,22 @@
 """Python source for lazily resolved dataclasses, through pycodify.
 
-Importing this module registers two formatters. Both write raw field values,
-never resolved ones: a ``None`` field inherits from context and stays ``None``
-in the source.
+Importing this module registers the field formatters. Both write raw field values,
+never resolved ones. ``None`` remains literal data; ``Inherit`` and ``Unset``
+retain their distinct meanings in the source.
 
 - :class:`LazyResolutionFormatter` (any :class:`LazyResolutionDataclass`):
   clean mode writes the fields whose raw value differs from the field default.
 - :class:`LazyDataclassFormatter` (factory-made :class:`LazyDataclass`): clean
   mode writes a field when it was passed to the constructor or holds a concrete
-  value; an inherited ``None`` is omitted, and so is a nested lazy dataclass
-  that carries nothing.
+  value. Inherited fields may be omitted; an empty nested configuration is
+  still an object, not a literal None.
 
 Full mode writes every field.
 """
 
 from __future__ import annotations
 
-from dataclasses import MISSING, Field, fields, is_dataclass
+from dataclasses import MISSING, Field, fields
 
 from pycodify import (
     FormatContext,
@@ -27,6 +27,7 @@ from pycodify import (
 )
 
 from objectstate.field_access import DataclassFieldAccess
+from objectstate.field_value import FieldValue
 from objectstate.lazy_factory import LazyDataclass, LazyResolutionDataclass
 
 
@@ -34,34 +35,12 @@ def _set_field_names(value: LazyDataclass) -> frozenset[str]:
     return frozenset(object.__getattribute__(value, "_explicitly_set_fields"))
 
 
-def lazy_dataclass_carries_values(value: LazyDataclass) -> bool:
-    """Whether a lazy dataclass has a constructor-set field or a concrete value."""
-
-    return bool(_set_field_names(value)) or any(
-        DataclassFieldAccess.raw_value(value, field.name) is not None
-        for field in fields(value)
-    )
-
-
-def _is_instance_of_dataclass(value: object) -> bool:
-    return is_dataclass(value) and not isinstance(value, type)
 
 
 def raw_values_equal(left: object, right: object) -> bool:
     """Whether two values are equal, comparing dataclasses by raw field values."""
 
-    if _is_instance_of_dataclass(left) and _is_instance_of_dataclass(right):
-        if type(left) is not type(right):
-            return False
-        return all(
-            raw_values_equal(
-                DataclassFieldAccess.raw_value(left, field.name),
-                DataclassFieldAccess.raw_value(right, field.name),
-            )
-            for field in fields(left)
-            if field.init
-        )
-    return left == right
+    return FieldValue.of(left).source_equals(FieldValue.of(right))
 
 
 def field_needs_source(current: object, default: object, context: FormatContext) -> bool:
@@ -75,11 +54,7 @@ def field_needs_source(current: object, default: object, context: FormatContext)
 
     if not context.clean_mode:
         return True
-    if isinstance(current, LazyDataclass):
-        if not lazy_dataclass_carries_values(current):
-            return False
-        return not raw_values_equal(current, default)
-    return current != default
+    return not raw_values_equal(current, default)
 
 
 def _field_default(field: Field) -> object:
@@ -128,10 +103,22 @@ class LazyDataclassFormatter(LazyResolutionFormatter):
     formats = LazyDataclass
 
     def clean_field_needs_source(self, value: object, field: Field, current: object) -> bool:
-        if current is None:
+        if FieldValue.is_inherited(current):
             return False
         if field.name in _set_field_names(value):
             return True
         if isinstance(current, LazyDataclass):
-            return lazy_dataclass_carries_values(current)
+            return not raw_values_equal(current, _field_default(field))
         return True
+
+
+class FieldValueFormatter(SourceFormatter):
+    """Field states render their declared constructor, never a None stand-in."""
+    priority = 38
+    formats = FieldValue
+
+    def can_format(self, value: object) -> bool:
+        return isinstance(value, self.formats)
+
+    def format(self, value: FieldValue, context: FormatContext) -> SourceFragment:
+        return value.source(context)

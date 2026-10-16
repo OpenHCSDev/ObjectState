@@ -12,7 +12,8 @@ This service is completely generic and UI-agnostic:
 """
 
 import logging
-from dataclasses import is_dataclass
+from objectstate.field_value import FieldValue
+from objectstate.construction_binding import admit_target
 from typing import Any
 
 from objectstate.context_manager import config_context
@@ -107,9 +108,6 @@ class LiveContextResolver:
         self._answers_token = None
         self._answers_by_attr = {}
 
-    def reconstruct_live_values(self, live_values: dict[str, Any]) -> dict[str, Any]:
-        """Return live values unchanged."""
-        return live_values if live_values else {}
 
     def _resolve_uncached(
         self,
@@ -149,27 +147,11 @@ class LiveContextResolver:
         return resolve_in_context(merged_contexts)
 
     def _merge_live_values(self, base_obj: object, live_values: dict[str, Any] | None) -> object:
-        """Merge live values into base object.
+        """Merge stored live values without resolving or changing their meaning.
 
-        CRITICAL: Passes None values through to dataclasses.replace(). When a field is reset
-        to None in a form, the None value should override the saved concrete value in the
-        base object. This allows the lazy resolution system to walk up the MRO to find the
-        inherited value from parent context.
-
-        Example: PipelineConfig form resets partition_filter_config.enabled to None
-        → dataclasses.replace(saved_pipeline_config,
-            partition_filter_config=LazyPartitionFilterConfig(enabled=None))
-        → When resolving enabled, the None triggers MRO walk to GlobalPipelineConfig
+        Literal null overrides saved data. Only Inherit requests context/MRO
+        selection; neither directive is a nested configuration container.
         """
-        if live_values is None or not is_dataclass(base_obj):
-            return base_obj
-
-        # Reconstruct nested dataclasses recursively
-        reconstructed_values = self.reconstruct_live_values(live_values)
-
-        # Merge into base object (including None values to override saved concrete values)
-        # Use replace_raw to preserve None values (dataclasses.replace triggers lazy resolution)
-        if reconstructed_values:
-            return replace_raw(base_obj, **reconstructed_values)
-        else:
-            return base_obj
+        member = admit_target(base_obj)
+        updates = {name: member.declaration.field_types[name].admit(value) for name, value in (live_values or {}).items()}
+        return member.overlay_fields(updates).stored

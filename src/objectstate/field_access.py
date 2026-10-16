@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, fields
 from types import GetSetDescriptorType, MemberDescriptorType
 from typing import Iterable, Iterator
 
@@ -28,6 +28,14 @@ class DottedFieldPath:
         """Return the declared leaf name represented by this path."""
 
         return self.parts[-1] if self.parts else ""
+
+    def bind(self, state):
+        """Admit a decoded external address as a declaration-bound field."""
+        return state._field_at(self.value)
+
+    @property
+    def parent(self) -> "DottedFieldPath":
+        return DottedFieldPath(".".join(self.parts[:-1]))
 
     def child(self, field_name: str) -> "DottedFieldPath":
         if self.value == "":
@@ -76,23 +84,11 @@ class DataclassFieldAccess:
 
     @staticmethod
     def field_names(instance_or_type) -> frozenset[str]:
-        dataclass_type = instance_or_type if isinstance(instance_or_type, type) else type(instance_or_type)
-        if not is_dataclass(dataclass_type):
-            raise TypeError(
-                "DataclassFieldAccess requires a dataclass instance or type; "
-                f"got {dataclass_type!r}."
-            )
-        return frozenset(field.name for field in fields(dataclass_type))
+        return frozenset(field.name for field in fields(instance_or_type))
 
     @staticmethod
     def init_field_names(instance_or_type) -> tuple[str, ...]:
-        dataclass_type = instance_or_type if isinstance(instance_or_type, type) else type(instance_or_type)
-        if not is_dataclass(dataclass_type):
-            raise TypeError(
-                "DataclassFieldAccess requires a dataclass instance or type; "
-                f"got {dataclass_type!r}."
-            )
-        return tuple(field.name for field in fields(dataclass_type) if field.init)
+        return tuple(field.name for field in fields(instance_or_type) if field.init)
 
     @classmethod
     def has_field(cls, instance_or_type, field_name: str) -> bool:

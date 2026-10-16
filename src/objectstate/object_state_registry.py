@@ -5,7 +5,8 @@ Replaces LiveContextService._active_form_managers as the single source of truth.
 
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from dataclasses import dataclass, is_dataclass, replace
+from dataclasses import dataclass, replace
+from objectstate.field_access import DataclassFieldAccess
 import logging
 from typing import (
     Any,
@@ -25,10 +26,12 @@ import copy
 from objectstate.object_state_metadata import ObjectStateMetadataStore
 from objectstate.construction_binding import StateConstructionBinding
 from objectstate.scope_key import ScopeKey
+from objectstate.field_value import Unset
 from objectstate.parameter_owner import ParameterOwner
 from objectstate.snapshot_model import Snapshot, StateSnapshot, Timeline
 from objectstate.time_travel_profile import TimeTravelProfiler
 from objectstate.transaction_checkpoint import ObjectStateTransactionCheckpoint
+from python_introspect import resolve_declared_type
 
 if TYPE_CHECKING:
     from objectstate.object_state import ObjectState
@@ -451,7 +454,7 @@ class ObjectStateRegistry:
         where it was not registered) ends that at once.
         """
         state = cls._states.get("")
-        if state is not None and type(state._extraction_target) is config_type:
+        if state is not None and type(state._target.stored) is config_type:
             return state
         return None
 
@@ -820,12 +823,11 @@ class ObjectStateRegistry:
         include_origin: bool = True,
     ) -> None:
         """Immediate implementation for scope/type/field-aware invalidation."""
-        from objectstate.lazy_factory import get_base_type_for_lazy
         changed_scope = cls._normalize_scope_id(scope_id)
 
         # Normalize to base type for comparison (LazyX → X)
         if isinstance(changed_type, type):
-            base_changed_type = get_base_type_for_lazy(changed_type) or changed_type
+            base_changed_type = resolve_declared_type(changed_type)
         else:
             base_changed_type = changed_type
 
@@ -853,7 +855,7 @@ class ObjectStateRegistry:
     ) -> None:
         """Find fields in state that could inherit from target_base_type and invalidate them.
 
-        With flat storage, we scan _path_to_type to find all dotted paths whose
+        The declaration structure selects field addresses whose declaring
         container type matches or inherits from target_base_type.
 
         A field should be invalidated if:
@@ -877,7 +879,7 @@ class ObjectStateRegistry:
         # DEBUG: Log entry into type matching
         if _debug:
             logger.debug(f"🔍 _invalidate_field_in_matching_states: state_scope={state.scope_id}, target_base_type={target_base_type.__name__}, field_name={field_name}")
-            logger.debug(f"🔍   state._path_to_type has {len(state._path_to_type)} entries")
+            logger.debug(f"🔍   state._parameter_structure.owner_paths has {len(state._parameter_structure.owner_paths)} entries")
 
         for dotted_path in state.inheritance_field_paths(
             target_base_type,
@@ -942,7 +944,7 @@ class ObjectStateRegistry:
                 # Register step ObjectState
                 ObjectStateRegistry.register(step_state)
                 # Update pipeline's step_scope_ids
-                pipeline_state.update_parameter("step_scope_ids", new_ids)
+                pipeline_state.fields.step_scope_ids.write(new_ids)
                 # Register function ObjectState
                 ObjectStateRegistry.register(func_state)
             # Single snapshot recorded here with label "add step"
@@ -1053,7 +1055,7 @@ class ObjectStateRegistry:
         )
         for key, state in sorted(cls._states.items()):
             parameters, saved_parameters = state.copy_parameter_pair_preserving_callable_identity(
-                state.parameters,
+                state._parameters,
                 state._saved_parameters,
             )
             entries.append(
@@ -1252,7 +1254,7 @@ class ObjectStateRegistry:
             key: StateSnapshot(
                 saved_resolved=state._saved_resolved,
                 live_resolved=state._live_resolved,
-                parameters=state.parameters,
+                parameters=state._parameters,
                 saved_parameters=state._saved_parameters,
                 provenance=state._live_provenance,
                 construction=state.construction_binding(),
@@ -1506,7 +1508,7 @@ class ObjectStateRegistry:
                 )
                 cls._apply_time_travel_snapshot_state(schema, state_snapshot, materialize=False)
                 binding.validate_scope_membership(schema, values.keys())
-                schema._raw_dirty = schema.parameters != schema._saved_parameters
+                schema._raw_dirty = schema._parameters != schema._saved_parameters
                 schema._dirty_fields = schema._compute_dirty_fields()
                 schema._signature_diff_fields = schema._compute_signature_diff_fields()
                 prepared[scope] = PreparedStateRestore(
@@ -1547,7 +1549,7 @@ class ObjectStateRegistry:
 
         return replace(
             snapshot,
-            parameters=reconcile(schema.parameters, snapshot.parameters),
+            parameters=reconcile(schema._parameters, snapshot.parameters),
             saved_parameters=reconcile(
                 schema._saved_parameters,
                 snapshot.saved_parameters,
@@ -1641,7 +1643,7 @@ class ObjectStateRegistry:
                 state, state_snap,
                 materialize=(diff.requires_snapshot_apply or was_restored_from_limbo or construction_changed),
             )
-        is_concrete_dirty = state.parameters != state._saved_parameters
+        is_concrete_dirty = state._parameters != state._saved_parameters
         if is_concrete_dirty:
             cls._log_time_travel_concrete_dirty(scope_key, state)
 
@@ -1659,7 +1661,7 @@ class ObjectStateRegistry:
         state: 'ObjectState',
         state_snap: StateSnapshot,
     ) -> TimeTravelStateDiff:
-        current_params = state.parameters.copy() if state.parameters else {}
+        current_params = state._parameters.copy() if state._parameters else {}
         current_live = state._live_resolved.copy() if state._live_resolved else {}
 
         live_changed_paths = cls._time_travel_changed_paths(
@@ -1715,12 +1717,9 @@ class ObjectStateRegistry:
     ) -> Dict[str, Tuple[Any, Any]]:
         changed: Dict[str, Tuple[Any, Any]] = {}
         for param_key in set(target_params.keys()) | set(current_params.keys()):
-            before = current_params.get(param_key)
-            after = target_params.get(param_key)
-            if is_dataclass(before) or is_dataclass(after):
-                continue
-            if before != after:
-                changed[param_key] = (before, after)
+            before = current_params.get(param_key, Unset())
+            after = target_params.get(param_key, Unset())
+            changed.update(after.history_changes(before, param_key))
         return changed
 
     @staticmethod
@@ -1732,8 +1731,8 @@ class ObjectStateRegistry:
     ) -> Dict[str, Tuple[Any, Any]]:
         return {
             path: (
-                current_live.get(path),
-                target_live.get(path),
+                current_live.get(path, Unset()),
+                target_live.get(path, Unset()),
             )
             for path in changed_paths
         }
@@ -1843,7 +1842,7 @@ class ObjectStateRegistry:
         state._saved_resolved = state_snap.saved_resolved
         state._live_resolved = state_snap.live_resolved
         state._live_provenance = state_snap.provenance
-        state.parameters = state_snap.parameters
+        state._parameters = state_snap.parameters
         state._index_parameter_paths()
         state._saved_parameters = state_snap.saved_parameters
         state._cached_object = None
@@ -1857,8 +1856,8 @@ class ObjectStateRegistry:
 
     @staticmethod
     def _log_time_travel_concrete_dirty(scope_key: str, state: "ObjectState") -> None:
-        for param_key in set(state.parameters.keys()) | set(state._saved_parameters.keys()):
-            parameter_value = state.parameters.get(param_key)
+        for param_key in set(state._parameters.keys()) | set(state._saved_parameters.keys()):
+            parameter_value = state._parameters.get(param_key)
             saved_value = state._saved_parameters.get(param_key)
             if parameter_value != saved_value:
                 logger.debug(
