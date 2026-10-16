@@ -106,7 +106,7 @@ def test_value_set_on_the_field_wins_and_has_no_inherited_source(state):
 def test_inspection_shows_the_inherited_value_with_its_source(state):
     state.fields.well_filter_config.well_filter.write(7)
     inspection = FieldInspection.of(state.fields.path_planning_config.well_filter)
-    assert isinstance(inspection.raw_value, Inherit)
+    assert isinstance(inspection.raw, Inherit)
     assert inspection.resolved == Value(7)
     assert inspection.provenance is not None
     assert inspection.provenance.source_scope_id == state.scope_id

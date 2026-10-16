@@ -1,7 +1,7 @@
 """Read-only inspection of registered ObjectStates and their fields."""
 
 from __future__ import annotations
-from objectstate.field_value import FieldValue, Value
+from objectstate.field_value import FieldValue
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -65,7 +65,7 @@ class FieldInspection:
     """One field of one ObjectState: raw and resolved value, edit state and provenance."""
 
     field: FieldProxy
-    raw_value: object
+    raw: FieldValue
     resolved: FieldValue
     provenance: FieldProvenance | None
 
@@ -83,7 +83,7 @@ class FieldInspection:
                 )
         return cls(
             field=field,
-            raw_value=field.raw,
+            raw=FieldValue.of(field.raw),
             resolved=resolved,
             provenance=provenance,
         )
@@ -102,21 +102,13 @@ class FieldInspection:
 
     @property
     def raw_value_is_inherited(self) -> bool:
-        return FieldValue.is_inherited(self.raw_value)
-
-    @property
-    def raw_value_is_none(self) -> bool:
-        return self.raw_value is None
-
-    @property
-    def resolved_value_is_none(self) -> bool:
-        return self.resolved == Value(None)
+        return self.raw.inherits()
 
     @property
     def inherited_value(self) -> bool:
         """The field holds no value of its own and inherits a resolved one."""
 
-        return FieldValue.of(self.raw_value).inherited_from(self.resolved)
+        return self.raw.inherited_from(self.resolved)
 
     @property
     def semantic_markers(self) -> tuple[str, ...]:
@@ -137,7 +129,7 @@ class FieldInspection:
 
     @property
     def raw_value_type(self) -> str:
-        return type_name(self.raw_value)
+        return self.raw.project(type_name)
 
     @property
     def resolved_value_type(self) -> str | None:

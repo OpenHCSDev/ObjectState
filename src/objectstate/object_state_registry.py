@@ -5,7 +5,8 @@ Replaces LiveContextService._active_form_managers as the single source of truth.
 
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from dataclasses import dataclass, is_dataclass, replace
+from dataclasses import dataclass, replace
+from objectstate.field_access import DataclassFieldAccess
 import logging
 from typing import (
     Any,
@@ -1717,7 +1718,7 @@ class ObjectStateRegistry:
         for param_key in set(target_params.keys()) | set(current_params.keys()):
             before = current_params.get(param_key)
             after = target_params.get(param_key)
-            if is_dataclass(before) or is_dataclass(after):
+            if DataclassFieldAccess.is_container(before) or DataclassFieldAccess.is_container(after):
                 continue
             if before != after:
                 changed[param_key] = (before, after)

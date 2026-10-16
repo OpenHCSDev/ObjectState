@@ -103,7 +103,7 @@ def _merge_nested_dataclass(base, override):
 
 
 def _merge_concrete_dataclass(base, override):
-    if not is_dataclass(base) or not is_dataclass(override):
+    if not DataclassFieldAccess.is_container(base) or not DataclassFieldAccess.is_container(override):
         return override
     from objectstate.lazy_factory import get_base_type_for_lazy, replace_raw
     base_type = get_base_type_for_lazy(type(base)) or type(base)
@@ -129,7 +129,7 @@ def config_context(obj, use_live_global: bool = True, scope_id: str | None = Non
     base = current if current is not None else get_base_global_config(use_live=use_live_global)
     overrides = {}
     if obj is not None:
-        read = DataclassFieldAccess.raw_value if is_dataclass(type(obj)) else getattr
+        read = DataclassFieldAccess.raw_value if DataclassFieldAccess.is_container(obj) else getattr
         for declaration in fields(get_base_config_type()):
             try:
                 value = read(obj, declaration.name)
@@ -581,11 +581,11 @@ def extract_all_configs(context_obj) -> Dict[type, Any]:
     configs: Dict[type, Any] = {}
 
     # Include the context object itself if it's a dataclass
-    if is_dataclass(context_obj):
+    if DataclassFieldAccess.is_container(context_obj):
         _record_config_instance(configs, context_obj, source="context object")
 
     # Type-driven extraction: Use dataclass field annotations to find config fields
-    if is_dataclass(type(context_obj)):
+    if DataclassFieldAccess.is_container(context_obj):
         for field_name, declared_type in _declared_config_fields(type(context_obj)):
             # Only concrete values contribute instances. Inherit/Unset do not
             # recursively ask the context whose membership is being collected.
@@ -650,7 +650,7 @@ def _extract_from_object_attributes_typed(obj, configs: Dict[type, Any]) -> None
             attr_value = getattr(obj, attr_name)
         except (AttributeError, TypeError):
             continue
-        if attr_value is not None and is_dataclass(attr_value):
+        if DataclassFieldAccess.is_container(attr_value):
             _record_config_instance(
                 configs,
                 attr_value,

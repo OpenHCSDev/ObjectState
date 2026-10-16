@@ -17,6 +17,13 @@ layer comparison use stored reads rather than implicit effective reads.
 The resolver owns context/MRO selection and provenance: an inherited value
 continues that selection; concrete None stops it.
 
+Inspection retains `raw` and `resolved` as `FieldValue` members. The family is
+dataclass-declared, so the existing declaration-aware JSON codec preserves
+`Value(None)`, `Inherit()` and `Unset()` with distinct member tags. Consumers
+invoke member behavior rather than transporting a value plus presence flags.
+`DataclassFieldAccess.is_container` and `is_config_type` distinguish domain
+configuration structure from these meaning members.
+
 Lazy constructor defaults are `Inherit()` without changing whether the domain
 annotation permits None. Required parameters without a value use `Unset()`.
 Reset restores the declaration default; saved values are a separate baseline.

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields as dataclass_fields, is_dataclass
+from dataclasses import dataclass, fields as dataclass_fields
 from enum import Enum
 from typing import Generic, TypeVar
 
@@ -311,7 +311,7 @@ def _leaf_values(value) -> dict:
 
 
 def _iter_leaf_values(value, path: StructuralValuePath):
-    if _is_dataclass_instance(value):
+    if DataclassFieldAccess.is_container(value):
         for dataclass_field in dataclass_fields(type(value)):
             child_path = path.child_field(dataclass_field.name)
             child_value = DataclassFieldAccess.raw_value(value, dataclass_field.name)
@@ -335,7 +335,3 @@ def _ordered_paths(*leaf_sets: dict) -> tuple[StructuralValuePath, ...]:
                 seen.add(path)
                 ordered.append(path)
     return tuple(ordered)
-
-
-def _is_dataclass_instance(value) -> bool:
-    return is_dataclass(value) and not isinstance(value, type)

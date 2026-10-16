@@ -7,6 +7,7 @@ using contextvars-based context management.
 
 from typing import Any, Optional
 import dataclasses
+from objectstate.field_access import DataclassFieldAccess
 import logging
 
 from objectstate.lazy_factory import has_lazy_resolution
@@ -137,7 +138,7 @@ class LazyDefaultPlaceholderService:
                     formatted_value = f"{type(value).__name__}.{value.name}"
                 elif isinstance(value, str) and len(value) > 20:  # Long strings
                     formatted_value = f"{value[:17]}..."
-                elif dataclasses.is_dataclass(value):  # Nested dataclass
+                elif DataclassFieldAccess.is_container(value):
                     formatted_value = f"{value.__class__.__name__}(...)"
                 else:
                     formatted_value = str(value)

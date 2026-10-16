@@ -16,7 +16,7 @@ Full mode writes every field.
 
 from __future__ import annotations
 
-from dataclasses import MISSING, Field, fields, is_dataclass
+from dataclasses import MISSING, Field, fields
 
 from pycodify import (
     FormatContext,
@@ -37,14 +37,10 @@ def _set_field_names(value: LazyDataclass) -> frozenset[str]:
 
 
 
-def _is_instance_of_dataclass(value: object) -> bool:
-    return is_dataclass(value) and not isinstance(value, type)
-
-
 def raw_values_equal(left: object, right: object) -> bool:
     """Whether two values are equal, comparing dataclasses by raw field values."""
 
-    if _is_instance_of_dataclass(left) and _is_instance_of_dataclass(right):
+    if DataclassFieldAccess.is_container(left) and DataclassFieldAccess.is_container(right):
         if type(left) is not type(right):
             return False
         return all(

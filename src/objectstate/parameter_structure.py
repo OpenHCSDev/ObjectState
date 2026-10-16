@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass, field, fields, is_dataclass, replace
+from dataclasses import dataclass, field, fields, replace
 from typing import Any
 
 from python_introspect import ParameterInfo
 
-from objectstate.field_access import DottedFieldPath
+from objectstate.field_access import DataclassFieldAccess, DottedFieldPath
 from objectstate.field_value import Unset
 from objectstate.parameter_owner import ParameterOwner
 
@@ -42,7 +42,7 @@ class ParameterStructure:
     def container_types(self, values: dict[str, Any]):
         """Nominal payload types come from the projection, not declaration owners."""
         for path, value in values.items():
-            if is_dataclass(value):
+            if DataclassFieldAccess.is_container(value):
                 yield path, type(value)
 
     def affected_paths(self, changed):
@@ -73,7 +73,7 @@ class ParameterStructure:
     ) -> bool:
         """Identify a nested dataclass entry from its actual extracted children."""
 
-        if value is None or not is_dataclass(type(value)):
+        if not DataclassFieldAccess.is_container(value):
             return False
         prefix = f"{name}."
         return any(path.startswith(prefix) for path in parameters)
@@ -111,11 +111,10 @@ class ParameterStructure:
         editor retains child drafts. Nominal type comes from that payload, never
         from the declaration-owner index. Live and saved projections share this.
         """
-        from objectstate.field_access import DataclassFieldAccess
         from objectstate.lazy_factory import get_base_type_for_lazy, replace_raw
 
         prototype = values.get(prefix, Unset()) if prefix else target
-        if prefix and not is_dataclass(prototype):
+        if prefix and not DataclassFieldAccess.is_container(prototype):
             return prototype
         prefix_dot = f"{prefix}." if prefix else ""
         direct = {}
@@ -127,11 +126,11 @@ class ParameterStructure:
                 continue
             direct[remainder] = (
                 self.reconstruct(path, values, target, resolved=resolved)
-                if is_dataclass(value) else value
+                if DataclassFieldAccess.is_container(value) else value
             )
         if not prefix:
             direct.update(self.excluded_values)
-        if is_dataclass(prototype):
+        if DataclassFieldAccess.is_container(prototype):
             if not resolved:
                 return replace_raw(prototype, **direct)
             constructor = get_base_type_for_lazy(type(prototype)) or type(prototype)

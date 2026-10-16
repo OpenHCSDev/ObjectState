@@ -40,7 +40,7 @@ def test_field_inspection_reports_value_edit_state_and_types():
     state.fields.label.write("y")
     label = state.fields.label.inspect()
     count = state.fields.count.inspect()
-    assert (label.raw_value, label.resolved) == ("y", Value("y"))
+    assert (label.raw, label.resolved) == (Value("y"), Value("y"))
     assert label.resolved.available()
     assert label.dirty and label.last_changed and label.semantic_markers[0] == DIRTY_MARKER
     assert count.signature_diff and not count.dirty
@@ -56,9 +56,9 @@ def test_resolved_meaning_is_one_member_and_retains_literal_null(raw, expected):
     set_global_config(Inspected, Inspected(label="global"))
     lazy = LazyDataclassFactory.make_lazy_simple(Inspected)
     inspected = ObjectState(lazy(label=raw)).fields.label.inspect()
-    assert inspected.raw_value == raw
+    from objectstate.field_value import FieldValue
+    assert inspected.raw == FieldValue.of(raw)
     assert inspected.resolved == expected
-    assert inspected.resolved_value_is_none == (expected == Value(None))
     assert inspected.inherited_value == isinstance(raw, Inherit)
 
 

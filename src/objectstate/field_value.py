@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any, Callable
 
 
+@dataclass(eq=False, repr=False)
 class FieldValue(ABC):
     """Interpret a stored value once; consumers invoke its field operations."""
 
@@ -69,6 +71,7 @@ class FieldValue(ABC):
         return SourceFragment(f"{reference.code}()", reference.imports)
 
 
+@dataclass(eq=False, repr=False)
 class Inherit(FieldValue):
     """Continue the existing context/MRO lookup instead of supplying a value."""
 
@@ -87,6 +90,7 @@ class Inherit(FieldValue):
         return base
 
 
+@dataclass(eq=False, repr=False)
 class Unset(FieldValue):
     """No value is available. This is neither None nor an inheritance request."""
 
@@ -99,10 +103,12 @@ class Unset(FieldValue):
         return self
 
 
+@dataclass(eq=False, repr=False)
 class Value(FieldValue):
     """A concrete domain value, including an explicitly stored None."""
 
     __slots__ = ('value',)
+    value: Any
 
     def __init__(self, value: Any):
         self.value = value

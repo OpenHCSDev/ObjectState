@@ -83,6 +83,18 @@ class DataclassFieldAccess:
     _SLOT_DESCRIPTOR_TYPES = (MemberDescriptorType, GetSetDescriptorType)
 
     @staticmethod
+    def is_config_type(value_type) -> bool:
+        """A dataclass declaration for domain data, not for stored meaning."""
+        from objectstate.field_value import FieldValue
+
+        return isinstance(value_type, type) and is_dataclass(value_type) and not issubclass(value_type, FieldValue)
+
+    @classmethod
+    def is_container(cls, value) -> bool:
+        """A domain configuration instance, never a class or a meaning member."""
+        return not isinstance(value, type) and cls.is_config_type(type(value))
+
+    @staticmethod
     def field_names(instance_or_type) -> frozenset[str]:
         dataclass_type = instance_or_type if isinstance(instance_or_type, type) else type(instance_or_type)
         if not is_dataclass(dataclass_type):

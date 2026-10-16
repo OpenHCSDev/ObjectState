@@ -1045,7 +1045,7 @@ class ObjectState:
 
     def _dataclass_parameter_updates(self, prefix: str, value: Any) -> dict[str, Any]:
         """Flatten a dataclass container update into registered child parameters."""
-        if value is None or not is_dataclass(type(value)):
+        if not DataclassFieldAccess.is_container(value):
             return {}
 
         prefix_dot = f"{prefix}."
@@ -1999,7 +1999,7 @@ class ObjectState:
                     # Read the effective parent, never retained drafts under a
                     # null, absent or inherited container. Its own nominal type
                     # supplies inherited defaults for this source's child.
-                    if is_dataclass(parent):
+                    if DataclassFieldAccess.is_container(parent):
                         raw = DataclassFieldAccess.raw_value(parent, address.field_name)
                         owner = type(parent)
                     else:
@@ -2360,12 +2360,12 @@ class ObjectState:
                 try:
                     current_value = (
                         DataclassFieldAccess.raw_value(obj, param_name)
-                        if is_dataclass(type(obj)) else getattr(obj, param_name)
+                        if DataclassFieldAccess.is_container(obj) else getattr(obj, param_name)
                     )
                 except AttributeError:
                     current_value = info.default_value
 
-            if is_dataclass(type(current_value)):
+            if DataclassFieldAccess.is_container(current_value):
                 # Store the nested dataclass instance in parameters (needed for UI rendering)
                 parameters[dotted_path] = current_value
 
@@ -2481,7 +2481,7 @@ class ObjectState:
             for field_name, field_value in field_updates.items():
                 setattr(target, field_name, field_value)
             reconstructed = target
-        elif is_dataclass(target):
+        elif DataclassFieldAccess.is_container(target):
             # CRITICAL: Use replace_raw to preserve raw None values!
             # dataclasses.replace triggers lazy resolution via __getattribute__,
             # which resolves None -> concrete defaults and breaks inheritance.
