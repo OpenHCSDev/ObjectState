@@ -148,7 +148,10 @@ __all__ = [
     'register_lazy_type_mapping',
     'get_base_type_for_lazy',
     'get_lazy_type_for_base',
-    # Constructor patching for code execution
+    # Stored field meaning
+    'FieldValue',
+    'Inherit',
+    'Unset',
     # Global config type checking
     'GlobalConfigBase',
     'GlobalConfigMeta',
