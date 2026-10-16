@@ -183,8 +183,8 @@ class ObjectState:
             self._extraction_target = object_instance
             self._delegate_attr = None
 
-        # === Flat Storage (NEW - for flattened architecture) ===
-        self._parameter_structure = ParameterStructure()
+        # Canonical declarations/topology, supplied by the extraction below.
+        self.parameter_structure: ParameterStructure
         self._cached_object: Any | None = None  # Cached result of to_object()
         self._cached_object_applied: bool = False  # True if cached delegate was applied to object_instance
 
@@ -473,7 +473,7 @@ class ObjectState:
         self._ensure_live_resolved()
         assert self._live_resolved is not None
         return self._reconstruct_from_resolved(
-            "", self._live_resolved, self._extraction_target, self._parameter_structure
+            "", self._live_resolved, self._extraction_target, self.parameter_structure
         )
 
     def to_saved_resolved_object(self) -> Any:
@@ -481,7 +481,7 @@ class ObjectState:
         self._check_and_sync_delegate()
         self._ensure_saved_resolved()
         return self._reconstruct_from_resolved(
-            "", self._saved_resolved, self._extraction_target, self._parameter_structure
+            "", self._saved_resolved, self._extraction_target, self.parameter_structure
         )
 
     @classmethod
@@ -532,7 +532,7 @@ class ObjectState:
             Dictionary mapping dotted parameter paths to their descriptions (value may be None).
             E.g., {'partition_filter_config.partition_filter': 'Filter partitions by...'}
         """
-        return self._parameter_structure.descriptions
+        return self.parameter_structure.descriptions
 
     def type_for_path(self, field_path: str) -> ParameterOwner:
         """Return the ObjectState-recorded type for a dotted field path.
@@ -541,9 +541,9 @@ class ObjectState:
         field. Nested dataclass paths return the nested dataclass type itself.
         """
         if field_path == "":
-            return type(self.object_instance)
+            return type(self._extraction_target)
         try:
-            return self._path_to_type[field_path]
+            return self.parameter_structure.owner_paths[field_path]
         except KeyError as exc:
             raise KeyError(
                 f"ObjectState path is not registered: {field_path!r}"
@@ -560,7 +560,7 @@ class ObjectState:
         never cached in this projection.
         """
 
-        return self._direct_parameter_paths.get(DottedFieldPath(field_path), ())
+        return self.parameter_structure.direct_paths.get(DottedFieldPath(field_path), ())
 
     def has_parameter_descendants(self, field_path: str) -> bool:
         """Return whether an authoritative flat parameter owns child paths."""
@@ -974,16 +974,12 @@ class ObjectState:
     ) -> dict[str, Any]:
         """Rebuild dataclass container parameters that own a changed child path."""
 
-        if "." not in param_name:
-            return {}
-
         updates: dict[str, Any] = {}
-        path_parts = param_name.split(".")
-        for part_count in range(len(path_parts) - 1, 0, -1):
-            prefix = ".".join(path_parts[:part_count])
+        for path in DottedFieldPath(param_name).parent.lineage:
+            prefix = path.value
             if prefix not in parameters:
                 continue
-            prefix_type = self._path_to_type.get(prefix)
+            prefix_type = self.parameter_structure.owner_paths.get(prefix)
             if not (isinstance(prefix_type, type) and is_dataclass(prefix_type)):
                 continue
 
@@ -1012,7 +1008,7 @@ class ObjectState:
             target_base_type = target_type
 
         paths: list[str] = []
-        for dotted_path, container_type in self._path_to_type.items():
+        for dotted_path, container_type in self.parameter_structure.owner_paths.items():
             if dotted_path not in self.parameters:
                 continue
             if not (dotted_path.endswith(f".{field_name}") or dotted_path == field_name):
@@ -1122,8 +1118,8 @@ class ObjectState:
         # SELF-INVALIDATION: Mark changed fields and same-state inherited siblings.
         local_invalidations = set(changed_semantic_params)
         for changed_param in changed_semantic_params:
-            container_type = self._path_to_type.get(changed_param, type(self.object_instance))
-            leaf_field_name = changed_param.split('.')[-1] if '.' in changed_param else changed_param
+            container_type = self.parameter_structure.owner_paths.get(changed_param, type(self.object_instance))
+            leaf_field_name = DottedFieldPath(changed_param).field_name
             local_invalidations.update(
                 self.inheritance_field_paths(container_type, leaf_field_name)
             )
@@ -1141,10 +1137,10 @@ class ObjectState:
             # This is critical for sibling inheritance: when
             # PartitionFilterConfig.partition_filter changes, we need to invalidate
             # PathPlanningConfig.partition_filter (which inherits from PartitionFilterConfig)
-            container_type = self._path_to_type.get(changed_param, type(self.object_instance))
+            container_type = self.parameter_structure.owner_paths.get(changed_param, type(self.object_instance))
 
             # Extract leaf field name for invalidation matching
-            leaf_field_name = changed_param.split('.')[-1] if '.' in changed_param else changed_param
+            leaf_field_name = DottedFieldPath(changed_param).field_name
 
 
             ObjectStateRegistry.invalidate_by_type_and_scope(
@@ -1207,10 +1203,10 @@ class ObjectState:
 
         if has_subfields:
             # This is a container field - reconstruct's dataclass from live resolved values
-            field_type = self._path_to_type.get(param_name)
+            field_type = self.parameter_structure.owner_paths.get(param_name)
             if field_type is not None and is_dataclass(field_type):
                 return self._reconstruct_from_resolved(
-                    param_name, self._live_resolved, self._extraction_target, self._parameter_structure
+                    param_name, self._live_resolved, self._extraction_target, self.parameter_structure
                 )
 
         result = self._live_resolved.get(param_name)
@@ -1247,10 +1243,10 @@ class ObjectState:
 
         if has_subfields:
             # This is a container field - reconstruct's dataclass from saved resolved values
-            field_type = self._path_to_type.get(param_name)
+            field_type = self.parameter_structure.owner_paths.get(param_name)
             if field_type is not None and is_dataclass(field_type):
                 return self._reconstruct_from_resolved(
-                    param_name, self._saved_resolved, self._extraction_target, self._parameter_structure
+                    param_name, self._saved_resolved, self._extraction_target, self.parameter_structure
                 )
 
         # Return the simple value (or None if not found)
@@ -1276,7 +1272,7 @@ class ObjectState:
         raw_value = self.parameters.get(path.value, MISSING)
         resolved_value = self.get_resolved_value(path.value)
         saved_resolved_value = self.get_saved_resolved_value(path.value)
-        declaration = self._parameter_structure.declarations.get(path.value)
+        declaration = self.parameter_structure.declarations.get(path.value)
         signature_default_value = (
             declaration.default_value if declaration is not None else MISSING
         )
@@ -1432,7 +1428,7 @@ class ObjectState:
 
         # Look for paths where the TYPE matches (normalized comparison)
         # The path for a nested config is the one WITHOUT a dot suffix that has the type
-        for path, typ in self._path_to_type.items():
+        for path, typ in self.parameter_structure.owner_paths.items():
             typ_base = get_base_type_for_lazy(typ) or typ
             if not isinstance(typ_base, type):
                 continue
@@ -1461,7 +1457,7 @@ class ObjectState:
             return None
 
         field_path = f"{path_prefix}.{field_name}" if path_prefix else field_name
-        if field_path not in self._path_to_type and field_path not in self.parameters:
+        if field_path not in self.parameter_structure.owner_paths and field_path not in self.parameters:
             return None
         return field_path
 
@@ -1471,7 +1467,7 @@ class ObjectState:
         from objectstate.ui_visibility import UIVisibilityRegistry
 
         hidden_base = get_base_type_for_lazy(hidden_type) or hidden_type
-        for path, typ in self._path_to_type.items():
+        for path, typ in self.parameter_structure.owner_paths.items():
             if "." in path:
                 continue
 
@@ -1484,7 +1480,7 @@ class ObjectState:
                 continue
 
             field_path = f"{path}.{field_name}"
-            if field_path in self._path_to_type or field_path in self.parameters:
+            if field_path in self.parameter_structure.owner_paths or field_path in self.parameters:
                 return field_path
 
         return None
@@ -1584,7 +1580,7 @@ class ObjectState:
 
         fields: set[str] = set()
         for param_path, (old_value, new_value) in changed_values.items():
-            if self._parameter_structure.is_container_parameter(param_path, new_value, self.parameters):
+            if self.parameter_structure.is_container_parameter(param_path, new_value, self.parameters):
                 continue
             fields.add(param_path)
             fields.update(
@@ -1615,40 +1611,6 @@ class ObjectState:
             result.add(field_path.value)
         return result
 
-    @property
-    def _path_to_type(self) -> dict[str, ParameterOwner]:
-        return self._parameter_structure.owner_paths
-
-    @_path_to_type.setter
-    def _path_to_type(self, value: dict[str, ParameterOwner]) -> None:
-        self._parameter_structure.owner_paths = value
-
-    @property
-    def _direct_parameter_paths(self) -> dict[DottedFieldPath, tuple[DottedFieldPath, ...]]:
-        return self._parameter_structure.direct_paths
-
-    @_direct_parameter_paths.setter
-    def _direct_parameter_paths(
-        self, value: dict[DottedFieldPath, tuple[DottedFieldPath, ...]]
-    ) -> None:
-        self._parameter_structure.direct_paths = value
-
-    @property
-    def _exclude_param_names(self) -> list[str]:
-        return self._parameter_structure.exclusions
-
-    @_exclude_param_names.setter
-    def _exclude_param_names(self, value: list[str]) -> None:
-        self._parameter_structure.exclusions = value
-
-    @property
-    def _excluded_params(self) -> dict[str, Any]:
-        return self._parameter_structure.excluded_values
-
-    @_excluded_params.setter
-    def _excluded_params(self, value: dict[str, Any]) -> None:
-        self._parameter_structure.excluded_values = value
-
     def construction_binding(self) -> StateConstructionBinding:
         """Capture construction from this state, not a parallel factory registry."""
 
@@ -1658,7 +1620,7 @@ class ObjectState:
             parent_scope=(
                 self._parent_state.scope_id or "" if self._parent_state is not None else None
             ),
-            exclusions=tuple(self._exclude_param_names),
+            exclusions=tuple(self.parameter_structure.exclusions),
             parent_field=self._parent_field_name,
         )
         if self._delegate_attr is not None:
@@ -1680,7 +1642,7 @@ class ObjectState:
         binding.attach(self)
         self._parent_state = parent
         self._parent_field_name = binding.parent_field
-        self._parameter_structure = prepared._parameter_structure.clone()
+        self.parameter_structure = prepared.parameter_structure.clone()
         self._cached_object = None
         self._cached_object_applied = False
         self._invalid_fields.clear()
@@ -1721,7 +1683,7 @@ class ObjectState:
         # Re-extract parameters from new instance
         self._replace_parameter_structure(
             new_instance,
-            exclude_params=self._exclude_param_names
+            exclude_params=self.parameter_structure.exclusions
         )
 
         # Update saved parameters to match
@@ -1768,8 +1730,8 @@ class ObjectState:
         self._sync_materialized_state()
 
         for path in changed_paths:
-            container_type = self._path_to_type.get(path, type(self.object_instance))
-            leaf_field_name = path.split(".")[-1]
+            container_type = self.parameter_structure.owner_paths.get(path, type(self.object_instance))
+            leaf_field_name = DottedFieldPath(path).field_name
             ObjectStateRegistry.invalidate_by_type_and_scope(
                 scope_id=self.scope_id,
                 changed_type=container_type,
@@ -1813,7 +1775,7 @@ class ObjectState:
             # Safety check: skip any container entries that might have leaked in
             # (containers should NOT be in parameters — only leaf fields are tracked)
             raw_value = self.parameters[name]
-            if self._parameter_structure.is_container_parameter(name, raw_value, self.parameters):
+            if self.parameter_structure.is_container_parameter(name, raw_value, self.parameters):
                 continue
             if raw_value is not None:
                 explicit_fields.append(name)
@@ -1854,7 +1816,7 @@ class ObjectState:
             ):
                 # For each inherited field, resolve using dual-axis resolution with provenance
                 for dotted_path in inherited_fields:
-                    container_type = self._path_to_type.get(dotted_path)
+                    container_type = self.parameter_structure.owner_paths.get(dotted_path)
                     if container_type is None:
                         logger.debug(f"⚠️ _recompute: {dotted_path} has no container_type in _path_to_type")
                         continue
@@ -1870,8 +1832,7 @@ class ObjectState:
                             changed_values[dotted_path] = (old_val, raw_val)
                         self._live_resolved[dotted_path] = raw_val
                         continue
-                    parts = dotted_path.split('.')
-                    field_name = parts[-1]
+                    field_name = DottedFieldPath(dotted_path).field_name
 
                     # Use resolve_with_provenance for SINGLE walk that gets both value AND source
                     value, source_scope_id, source_type = resolve_with_provenance(container_type, field_name)
@@ -1920,17 +1881,9 @@ class ObjectState:
 
         # Use signature defaults (CLASS defaults), not instance values
         # This ensures reset goes back to None for lazy fields, not saved concrete values
-        declaration = self._parameter_structure.declarations.get(param_name)
+        declaration = self.parameter_structure.declarations.get(param_name)
         default_value = declaration.default_value if declaration is not None else None
         self.update_parameter(param_name, default_value)
-
-    def signature_default(self, param_name: str) -> Any:
-        """Return the signature default recorded for one flat parameter path."""
-        if param_name not in self._parameter_structure.declarations:
-            raise KeyError(
-                f"No signature default recorded for parameter {param_name!r}."
-            )
-        return self._parameter_structure.declarations[param_name].default_value
 
     def get_current_values(self) -> dict[str, Any]:
         """
@@ -1965,7 +1918,7 @@ class ObjectState:
         }
 
         for param_name in top_level_params:
-            param_type = self._path_to_type.get(param_name)
+            param_type = self.parameter_structure.owner_paths.get(param_name)
             nested_dataclass = (
                 param_type is not None
                 and is_dataclass(param_type)
@@ -2048,8 +2001,8 @@ class ObjectState:
         """
         result = set()
         for k, v in self.parameters.items():
-            if k in self._parameter_structure.declarations:
-                sig_default = self._parameter_structure.declarations[k].default_value
+            if k in self.parameter_structure.declarations:
+                sig_default = self.parameter_structure.declarations[k].default_value
                 is_diff = v != sig_default
                 if is_diff:
                     result.add(k)
@@ -2150,7 +2103,7 @@ class ObjectState:
         snapshot, provenance = self._resolve_parameter_snapshot(
             self.parameters,
             parameters,
-            self._parameter_structure,
+            self.parameter_structure,
             current_obj,
             self.scope_id,
             sources.ancestors,
@@ -2191,7 +2144,6 @@ class ObjectState:
             for dotted_path in parameters.keys():
                 raw_value = values.get(dotted_path)
                 container_type = structure.owner_paths.get(dotted_path)
-                parts = dotted_path.split('.')
 
                 # Check if this path is a CONTAINER entry (value is a nested dataclass)
                 # vs a LEAF field (value is primitive, even if container_type is a dataclass)
@@ -2213,9 +2165,9 @@ class ObjectState:
                     # CRITICAL: Only resolve for lazy dataclasses! Non-lazy dataclasses with None
                     # defaults should keep None as-is, not trigger inheritance resolution.
                     # This handles both:
-                    # - Nested fields (processing_config.group_by) where parts > 1
-                    # - Top-level fields on root (num_workers on PipelineConfig) where parts == 1
-                    field_name = parts[-1]
+                    # - Nested fields (processing_config.group_by)
+                    # - Top-level fields on root (num_workers on PipelineConfig)
+                    field_name = DottedFieldPath(dotted_path).field_name
 
                     if raw_value is None:
                         # Field needs resolution - use combined resolve + provenance walk
@@ -2267,7 +2219,7 @@ class ObjectState:
                 # Skip container entries (nested dataclass instances)
                 if param_name in self.parameters:
                     raw_value = self.parameters.get(param_name)
-                    if self._parameter_structure.is_container_parameter(param_name, raw_value, self.parameters):
+                    if self.parameter_structure.is_container_parameter(param_name, raw_value, self.parameters):
                         continue
 
                 # Get the old value by navigating dotted path on the extraction target
@@ -2289,7 +2241,7 @@ class ObjectState:
         for param_name in self.parameters.keys():
             # Skip container entries
             raw_value = self.parameters.get(param_name)
-            if self._parameter_structure.is_container_parameter(param_name, raw_value, self.parameters):
+            if self.parameter_structure.is_container_parameter(param_name, raw_value, self.parameters):
                 continue
 
             old_value = old_instance_values.get(param_name)
@@ -2318,8 +2270,8 @@ class ObjectState:
         # CRITICAL: Also invalidate saved_resolved cache so descendants recompute their saved baseline
         logger.debug(f"🔧 mark_saved: Starting invalidation for changed_params={changed_params}, scope={self.scope_id!r}")
         for param_name in changed_params:
-            container_type = self._path_to_type.get(param_name, type(self.object_instance))
-            leaf_field_name = param_name.split('.')[-1] if '.' in param_name else param_name
+            container_type = self.parameter_structure.owner_paths.get(param_name, type(self.object_instance))
+            leaf_field_name = DottedFieldPath(param_name).field_name
             logger.debug(f"🔧 mark_saved: Invalidating param={param_name}, container_type={container_type.__name__ if hasattr(container_type, '__name__') else type(container_type).__name__}, leaf_field={leaf_field_name}")
 
             ObjectStateRegistry.invalidate_by_type_and_scope(
@@ -2427,8 +2379,8 @@ class ObjectState:
                 logger.error(f"🐛 restore_saved: ERROR accessing _saved_parameters.get({param_name!r})! _saved_parameters type={type(self._saved_parameters).__name__}, is None={self._saved_parameters is None}, scope={self.scope_id!r}")
                 raise
             if current_value != saved_value:
-                container_type = self._path_to_type.get(param_name, type(self.object_instance))
-                leaf_field_name = param_name.split('.')[-1] if '.' in param_name else param_name
+                container_type = self.parameter_structure.owner_paths.get(param_name, type(self.object_instance))
+                leaf_field_name = DottedFieldPath(param_name).field_name
                 changed_params_with_types.append((param_name, container_type, leaf_field_name))
 
         # Clear and re-extract from the saved baseline
@@ -2445,7 +2397,7 @@ class ObjectState:
                 extraction_target = self._extraction_target
         self._replace_parameter_structure(
             extraction_target,
-            exclude_params=self._exclude_param_names,
+            exclude_params=self.parameter_structure.exclusions,
         )
 
         # CRITICAL: Also restore _saved_parameters to match current parameters
@@ -2619,11 +2571,11 @@ class ObjectState:
         """Extract one canonical flat parameter structure and index it once."""
 
         self.parameters.clear()
-        self._parameter_structure = ParameterStructure.for_target(obj, exclude_params)
+        self.parameter_structure = ParameterStructure.for_target(obj, exclude_params)
         self._extract_all_parameters_flat(
             obj,
             self.parameters,
-            self._parameter_structure,
+            self.parameter_structure,
             prefix="",
             exclude_params=exclude_params,
         )
@@ -2640,13 +2592,9 @@ class ObjectState:
 
         paths_by_owner: dict[DottedFieldPath, list[DottedFieldPath]] = {}
         for dotted_path in self.parameters:
-            owner_path, separator, _field_name = dotted_path.rpartition(".")
-            if not separator:
-                owner_path = ""
-            paths_by_owner.setdefault(DottedFieldPath(owner_path), []).append(
-                DottedFieldPath(dotted_path)
-            )
-        self._direct_parameter_paths = {
+            path = DottedFieldPath(dotted_path)
+            paths_by_owner.setdefault(path.parent, []).append(path)
+        self.parameter_structure.direct_paths = {
             owner_path: tuple(parameter_paths)
             for owner_path, parameter_paths in paths_by_owner.items()
         }
@@ -2703,13 +2651,13 @@ class ObjectState:
         # This includes both primitive fields AND nested dataclass fields
         field_updates = {}
         root_type = type(target)
-        for field_name in self._path_to_type:
+        for field_name in self.parameter_structure.owner_paths:
             if '.' not in field_name:
                 # Check if this field's TYPE is a dataclass (not the instance value)
                 # We need to check the TYPE because the instance value might be stale
                 # (e.g., self.parameters['partition_filter_config'] might have partition_filter=2
                 # even though self.parameters['partition_filter_config.partition_filter'] = None)
-                field_type = self._path_to_type.get(field_name)
+                field_type = self.parameter_structure.owner_paths.get(field_name)
                 # CRITICAL FIX: _path_to_type stores CONTAINER type for leaf fields,
                 # but FIELD type for nested dataclass fields. We must distinguish:
                 # - If field_type == root_type, it's a leaf field (container type stored)
@@ -2810,7 +2758,7 @@ class ObjectState:
             obj_type = type(self._extraction_target)
         else:
             # Nested level - look up type from _path_to_type
-            obj_type = self._path_to_type.get(prefix)
+            obj_type = self.parameter_structure.owner_paths.get(prefix)
             if obj_type is None:
                 raise ValueError(f"No type mapping for prefix: {prefix}")
 
@@ -2852,7 +2800,7 @@ class ObjectState:
 
         # At root level, include constructor params excluded from editing.
         if not prefix:
-            direct_fields.update(self._excluded_params)
+            direct_fields.update(self.parameter_structure.excluded_values)
 
 
         # Instantiate the dataclass with ALL fields including None values
@@ -2877,8 +2825,8 @@ class ObjectState:
             new_value = self._get_param_value_from_target(new_target, param_name)
 
             if old_value != new_value:
-                container_type = self._path_to_type.get(param_name, type(self.object_instance))
-                leaf_field_name = param_name.split('.')[-1] if '.' in param_name else param_name
+                container_type = self.parameter_structure.owner_paths.get(param_name, type(self.object_instance))
+                leaf_field_name = DottedFieldPath(param_name).field_name
                 changed_params.append((param_name, container_type, leaf_field_name))
 
         return changed_params

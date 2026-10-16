@@ -170,6 +170,17 @@ def test_direct_parameter_paths_project_canonical_flat_topology_without_values()
     assert state.direct_parameter_paths("nested.threshold") == ()
     assert state.has_parameter_descendants("nested") is True
     assert state.has_parameter_descendants("nested.threshold") is False
+    structure = state.parameter_structure
+    nested = state.direct_parameter_paths()[1]
+    threshold = state.direct_parameter_paths("nested")[0]
+    assert structure.path("nested.threshold") is threshold
+    assert structure.ancestors(threshold) == (nested, threshold)
+    assert structure.ancestors(DottedFieldPath("")) == ()
+    assert tuple(structure.leaf_paths()) == (
+        DottedFieldPath("enabled"), threshold, DottedFieldPath("nested.label")
+    )
+    with pytest.raises(KeyError, match="not registered"):
+        structure.path("nested.unknown")
 
     state.update_parameter("nested.threshold", 7)
 
@@ -178,6 +189,7 @@ def test_direct_parameter_paths_project_canonical_flat_topology_without_values()
         DottedFieldPath("nested.label"),
     )
     assert state.parameters["nested.threshold"] == 7
+    assert state.parameters["nested"].threshold == 7
 
 
 def test_resolved_snapshot_rejects_partial_parameter_state_without_recovery():

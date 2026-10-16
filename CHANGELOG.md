@@ -1,5 +1,14 @@
 # Changelog
 
+## 5.0.0
+
+Field addresses own their structure (#61). `DottedFieldPath` gains `parent` and
+`lineage`; `ParameterStructure` gains `path`, `leaf_paths` and `ancestors`.
+Readers that split dotted strings for the parent or leaf name now use these.
+
+Removed: `ObjectState.signature_default`. Read the default from the admitted
+declaration in `parameter_structure.declarations` instead.
+
 ## 4.0.1
 
 Requires `python-introspect>=0.3.0,<0.4` (was `<0.3`). ObjectState does not call

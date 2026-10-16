@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Iterator
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from typing import Any
 
@@ -35,6 +36,29 @@ class ParameterStructure:
         """Request presentation help only when a consumer reads it."""
 
         return {path: info.description for path, info in self.declarations.items()}
+
+    def path(self, name: str) -> DottedFieldPath:
+        """Resolve a name to its admitted path, without analyzing declarations."""
+
+        requested = DottedFieldPath(name)
+        for path in self.direct_paths.get(requested.parent, ()):
+            if path.value == name:
+                return path
+        raise KeyError(f"ObjectState path is not registered: {name!r}")
+
+    def ancestors(self, path: DottedFieldPath) -> tuple[DottedFieldPath, ...]:
+        """The admitted fields down to this one, itself last."""
+
+        return tuple(self.path(step.value) for step in reversed(path.lineage))
+
+    def leaf_paths(self, parent: str = "") -> Iterator[DottedFieldPath]:
+        """Enumerate leaves through the extracted topology, never the source type."""
+
+        for path in self.direct_paths.get(DottedFieldPath(parent), ()):
+            if self.direct_paths.get(path):
+                yield from self.leaf_paths(path.value)
+            else:
+                yield path
 
     def is_container_parameter(
         self, name: str, value: Any, parameters: dict[str, Any]

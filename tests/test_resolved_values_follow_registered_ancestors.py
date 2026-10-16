@@ -52,6 +52,7 @@ from objectstate import (
 )
 
 from objectstate.context_manager import get_context_layer_stack
+from objectstate.inspection import FieldInspection
 
 
 @dataclass
@@ -175,6 +176,9 @@ def step_and_plate(request):
 def test_ancestor_registered_after_the_descendant_was_built_supplies_the_value(step_and_plate):
     step, _ = step_and_plate
     assert _reads(step) == _inherited("plate", PLATE)
+    inspection = FieldInspection.of(step, PATH)
+    assert inspection.field_name == "value"
+    assert inspection.provenance.field_name == "value"
 
 
 def test_both_orders_of_building_give_the_same_reads(step_and_plate):

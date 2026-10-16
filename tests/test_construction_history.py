@@ -121,7 +121,7 @@ def test_fresh_load_constructs_absent_scopes_and_exact_parent_exclusions(
     restored_parent = ObjectStateRegistry.get_by_scope("z-parent")
     restored_child = ObjectStateRegistry.get_by_scope("a-child")
     assert restored_child._parent_state is restored_parent
-    assert restored_child._exclude_param_names == ["excluded"]
+    assert restored_child.parameter_structure.exclusions == ["excluded"]
     assert restored_child.to_object().excluded == child.to_object().excluded
     assert restored_child.parameters["value"] is None
     assert restored_child._saved_parameters["value"] is None
@@ -148,8 +148,8 @@ def test_same_scope_callable_owner_and_schema_restore_without_replacing_state():
         assert state.object_instance is function
         assert set(state.parameters) == parameters
         for name in parameters:
-            state.signature_default(name)
-        assert set(state._path_to_type) == parameters
+            state.parameter_structure.declarations[name].default_value
+        assert set(state.parameter_structure.owner_paths) == parameters
 
 
 def test_equal_signature_owner_change_records_and_notifies_without_fake_value_changes():

@@ -6,6 +6,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from objectstate.field_access import DottedFieldPath
 from objectstate.object_state import ObjectState
 from objectstate.object_state_registry import ObjectStateRegistry
 
@@ -96,7 +97,7 @@ class FieldInspection:
                 provenance = FieldProvenance(
                     source_scope_id=source_scope_id,
                     source_type=source_type,
-                    field_name=field_path.rsplit(".", 1)[-1],
+                    field_name=DottedFieldPath(field_path).field_name,
                 )
         return cls(
             state=state,
@@ -141,11 +142,11 @@ class FieldInspection:
 
     @property
     def field_name(self) -> str:
-        return self.field_path.rsplit(".", 1)[-1]
+        return DottedFieldPath(self.field_path).field_name
 
     @property
     def container_path(self) -> str:
-        return self.field_path.rsplit(".", 1)[0] if "." in self.field_path else ""
+        return DottedFieldPath(self.field_path).parent.value
 
     @property
     def raw_value_type(self) -> str:

@@ -93,7 +93,7 @@ def test_initial_values_flatten_nested_dataclass_overrides():
     assert state.parameters["options.threshold"] == 7.0
     assert state.parameters["options.bounds"] == options.bounds
     assert state.parameters["options.bounds.minimum"] == 2.0
-    assert state.signature_default("options") == NestedOptions()
+    assert state.parameter_structure.declarations["options"].default_value == NestedOptions()
     assert state.reconstruct_top_level_parameters() == {
         "image": None,
         "options": options,
