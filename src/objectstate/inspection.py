@@ -76,13 +76,15 @@ class FieldInspection:
     provenance: FieldProvenance | None
 
     @classmethod
-    def of(cls, state: ObjectState, field_path: str):
-        """Inspect ``field_path``; a value that fails to resolve is reported unavailable."""
+    def of(cls, field):
+        """Capture one admitted field, never look up a caller-spelled path."""
+        state = field.state
+        field_path = field._path
 
         resolved_value = Unset()
         resolved_value_available = False
         try:
-            resolved_value = state.get_resolved_value(field_path)
+            resolved_value = field.value
             resolved_value_available = FieldValue.of(resolved_value).has_value
         except Exception:
             logger.debug(
@@ -102,7 +104,7 @@ class FieldInspection:
         return cls(
             state=state,
             field_path=field_path,
-            raw_value=state.parameters[field_path],
+            raw_value=field.raw,
             resolved_value=resolved_value,
             resolved_value_available=resolved_value_available,
             provenance=provenance,

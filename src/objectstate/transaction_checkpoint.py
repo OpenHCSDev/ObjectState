@@ -59,7 +59,7 @@ class ObjectStateTransactionCheckpoint:
         copied = cls._checkpoint_mappings(
             state,
             {
-                "parameters": state.parameters,
+                "parameters": state._parameters,
                 "saved_parameters": state._saved_parameters,
                 "live_resolved": state._live_resolved,
                 "saved_resolved": state._saved_resolved,
@@ -123,7 +123,7 @@ class ObjectStateTransactionCheckpoint:
         state._parent_state = self.parent_state
         state._parent_field_name = self.construction.parent_field
         state._parameter_structure = self.structure.clone()
-        state.parameters = copied["parameters"]
+        state._parameters = copied["parameters"]
         state._index_parameter_paths()
         state._saved_parameters = copied["saved_parameters"]
         state._live_resolved = copied["live_resolved"]
@@ -158,7 +158,7 @@ class ObjectStateTransactionCheckpoint:
         fields: set[str] = set()
         missing = object()
         for current, target in (
-            (state.parameters, self.parameters),
+            (state._parameters, self.parameters),
             (state._saved_parameters, self.saved_parameters),
             (state._live_resolved or {}, self.live_resolved or {}),
             (state._saved_resolved, self.saved_resolved),

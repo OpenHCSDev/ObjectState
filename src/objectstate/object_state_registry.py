@@ -942,7 +942,7 @@ class ObjectStateRegistry:
                 # Register step ObjectState
                 ObjectStateRegistry.register(step_state)
                 # Update pipeline's step_scope_ids
-                pipeline_state.update_parameter("step_scope_ids", new_ids)
+                pipeline_state.fields.step_scope_ids.write(new_ids)
                 # Register function ObjectState
                 ObjectStateRegistry.register(func_state)
             # Single snapshot recorded here with label "add step"
@@ -1053,7 +1053,7 @@ class ObjectStateRegistry:
         )
         for key, state in sorted(cls._states.items()):
             parameters, saved_parameters = state.copy_parameter_pair_preserving_callable_identity(
-                state.parameters,
+                state._parameters,
                 state._saved_parameters,
             )
             entries.append(
@@ -1252,7 +1252,7 @@ class ObjectStateRegistry:
             key: StateSnapshot(
                 saved_resolved=state._saved_resolved,
                 live_resolved=state._live_resolved,
-                parameters=state.parameters,
+                parameters=state._parameters,
                 saved_parameters=state._saved_parameters,
                 provenance=state._live_provenance,
                 construction=state.construction_binding(),
@@ -1506,7 +1506,7 @@ class ObjectStateRegistry:
                 )
                 cls._apply_time_travel_snapshot_state(schema, state_snapshot, materialize=False)
                 binding.validate_scope_membership(schema, values.keys())
-                schema._raw_dirty = schema.parameters != schema._saved_parameters
+                schema._raw_dirty = schema._parameters != schema._saved_parameters
                 schema._dirty_fields = schema._compute_dirty_fields()
                 schema._signature_diff_fields = schema._compute_signature_diff_fields()
                 prepared[scope] = PreparedStateRestore(
@@ -1547,7 +1547,7 @@ class ObjectStateRegistry:
 
         return replace(
             snapshot,
-            parameters=reconcile(schema.parameters, snapshot.parameters),
+            parameters=reconcile(schema._parameters, snapshot.parameters),
             saved_parameters=reconcile(
                 schema._saved_parameters,
                 snapshot.saved_parameters,
@@ -1641,7 +1641,7 @@ class ObjectStateRegistry:
                 state, state_snap,
                 materialize=(diff.requires_snapshot_apply or was_restored_from_limbo or construction_changed),
             )
-        is_concrete_dirty = state.parameters != state._saved_parameters
+        is_concrete_dirty = state._parameters != state._saved_parameters
         if is_concrete_dirty:
             cls._log_time_travel_concrete_dirty(scope_key, state)
 
@@ -1659,7 +1659,7 @@ class ObjectStateRegistry:
         state: 'ObjectState',
         state_snap: StateSnapshot,
     ) -> TimeTravelStateDiff:
-        current_params = state.parameters.copy() if state.parameters else {}
+        current_params = state._parameters.copy() if state._parameters else {}
         current_live = state._live_resolved.copy() if state._live_resolved else {}
 
         live_changed_paths = cls._time_travel_changed_paths(
@@ -1843,7 +1843,7 @@ class ObjectStateRegistry:
         state._saved_resolved = state_snap.saved_resolved
         state._live_resolved = state_snap.live_resolved
         state._live_provenance = state_snap.provenance
-        state.parameters = state_snap.parameters
+        state._parameters = state_snap.parameters
         state._index_parameter_paths()
         state._saved_parameters = state_snap.saved_parameters
         state._cached_object = None
@@ -1857,8 +1857,8 @@ class ObjectStateRegistry:
 
     @staticmethod
     def _log_time_travel_concrete_dirty(scope_key: str, state: "ObjectState") -> None:
-        for param_key in set(state.parameters.keys()) | set(state._saved_parameters.keys()):
-            parameter_value = state.parameters.get(param_key)
+        for param_key in set(state._parameters.keys()) | set(state._saved_parameters.keys()):
+            parameter_value = state._parameters.get(param_key)
             saved_value = state._saved_parameters.get(param_key)
             if parameter_value != saved_value:
                 logger.debug(
