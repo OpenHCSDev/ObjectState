@@ -56,9 +56,10 @@ native keystrokes commit through the existing debounce; the view disposes.
 Source generation round-trips None/Inherit/Unset/zero. Installed pycodify lacks
 `imported_name`, so this is paired-source evidence, not installed acceptance.
 Nested/inline controls, all callers, legacy saved-source migration and installed
-acceptance are unfinished. The no-config form-manager constructor also still
-fails because its color scheme defaults to None; the real application supplies
-a ColorScheme. Doctrine owns follow-through on that discovered default defect.
+acceptance are unfinished. That checkpoint also exposed the default manager's
+color-scheme failure. PyQt `ef7243c` fixes its actual cause: DerivationContext
+copied an unused None over ParameterFormConfig's resolved scheme. The competing
+slot is deleted. Default and explicitly configured schemes pass the real builder.
 
 The following #46 producer prototype is deliberately unready for installation:
 
@@ -102,9 +103,21 @@ The following #46 producer prototype is deliberately unready for installation:
   retain their metadata. Twenty-four form/settings tests pass. A real source-
   paired Textual journey covers native clicks/keystrokes, null, empty/string
   'None', open refresh, registered undo and unmount release.
-- Dirty/path metadata APIs and Qt/OpenHCS/Core consumer ports remain unfinished.
-  Qt/OpenHCS companion branches still target the preceding #32 producer
-  checkpoint; do not combine those with the unready #46 producer head.
+- PyQt `ef7243c` consumes handles in the real form manager and mutation pipeline.
+  FieldWriteEvent and FieldResetEvent own their distinct operations; the common
+  stage invokes one mutation. Deleted per-widget reset copies, duplicate root-
+  path assembly, the duplicate native-input pipeline, and the unused initial-
+  values mirror. Enabled paint and ancestor effects derive from backend fields,
+  not checkbox paint or None-to-True fallback. One owner traverses the subtree;
+  its last-painted effective state includes ancestor changes. Scope-owned
+  observer releases and nested signal-block restoration are exercised.
+  Six focused Qt cases pass, including real default-manager construction,
+  native typing/reset clicks, one hook/publication, nullable and absent values,
+  stale checkbox paint, open/nested backend enable changes and disposal.
+- Dirty/path metadata APIs and full Qt/OpenHCS/Core ports remain unfinished.
+  Qt window/list/bridge callers still need migration; OpenHCS still targets the
+  preceding #32 producer checkpoint. Do not install the current branch heads as
+  a finished paired stack.
 
 Evidence is owned by doctrine-segment under
 `/home/ts/.cache/agent-scratch/objectstate-declared-fields/`:
@@ -114,7 +127,11 @@ Evidence is owned by doctrine-segment under
 `form-manager-owner-journey.txt`, `reconstruction-live.txt`, and
 `source-state-roundtrip-paired.txt`. Latest namespace/Toad receipts are
 `namespace-admission-final-tests.txt`, `toad-nullable-annotation-final-tests.txt`
-and `toad-nullable-annotation-final-journey.txt`. Bridge verification additionally pairs the
+and `toad-nullable-annotation-final-journey.txt`. Qt receipts are
+`qt-handle-mutation-owner-journey.txt` and `qt-field-reset-enabled-final-tests.txt`;
+`qt-handle-consumers.txt` records the original selected caller census, and the
+NRA transformations remain under the producer checkout's owned `.scratch/`.
+Bridge verification additionally pairs the
 existing zmqruntime source because the installed package lacks execution.config.
 AST coverage is lexical; dynamic bindings are not claimed resolved.
 
