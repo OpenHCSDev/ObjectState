@@ -83,7 +83,7 @@ class FieldInspection:
         resolved_value_available = False
         try:
             resolved_value = state.get_resolved_value(field_path)
-            resolved_value_available = True
+            resolved_value_available = FieldValue.of(resolved_value).has_value
         except Exception:
             logger.debug(
                 "Failed to resolve ObjectState field %s on scope %r.",
@@ -136,7 +136,7 @@ class FieldInspection:
     def inherited_value(self) -> bool:
         """The field holds no value of its own and inherits a resolved one."""
 
-        return FieldValue.is_inherited(self.raw_value) and self.resolved_value_available and FieldValue.of(self.resolved_value).has_value
+        return FieldValue.is_inherited(self.raw_value) and self.resolved_value_available
 
     @property
     def semantic_markers(self) -> tuple[str, ...]:

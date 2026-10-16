@@ -472,17 +472,13 @@ class ObjectState:
         self._check_and_sync_delegate()
         self._ensure_live_resolved()
         assert self._live_resolved is not None
-        return self._reconstruct_from_resolved(
-            "", self._live_resolved, self._extraction_target, self._parameter_structure
-        )
+        return self._parameter_structure.reconstruct('', self._live_resolved, self._extraction_target, resolved=True)
 
     def to_saved_resolved_object(self) -> Any:
         """Reconstruct this state as an object with saved resolved values."""
         self._check_and_sync_delegate()
         self._ensure_saved_resolved()
-        return self._reconstruct_from_resolved(
-            "", self._saved_resolved, self._extraction_target, self._parameter_structure
-        )
+        return self._parameter_structure.reconstruct('', self._saved_resolved, self._extraction_target, resolved=True)
 
     @classmethod
     def resolve_saved_object(
@@ -521,7 +517,7 @@ class ObjectState:
         # A compilation capture owns inherited mutable values too. The editor's
         # saved-object API intentionally keeps its existing ancestor lifetime.
         snapshot = cls._copy_parameters_for_saved_baseline(snapshot)
-        concrete = cls._reconstruct_from_resolved("", snapshot, target, structure)
+        concrete = structure.reconstruct('', snapshot, target, resolved=True)
         return concrete, provenance
 
     @property
@@ -987,10 +983,7 @@ class ObjectState:
             if not (isinstance(prefix_type, type) and is_dataclass(prefix_type)):
                 continue
 
-            rebuilt_value = self._reconstruct_from_parameter_snapshot(
-                prefix,
-                parameters,
-            )
+            rebuilt_value = self._parameter_structure.reconstruct(prefix, parameters, self._extraction_target)
             if parameters.get(prefix) != rebuilt_value:
                 updates[prefix] = rebuilt_value
                 parameters[prefix] = rebuilt_value
@@ -1209,9 +1202,7 @@ class ObjectState:
             # This is a container field - reconstruct's dataclass from live resolved values
             field_type = self._path_to_type.get(param_name)
             if field_type is not None and is_dataclass(field_type):
-                return self._reconstruct_from_resolved(
-                    param_name, self._live_resolved, self._extraction_target, self._parameter_structure
-                )
+                return self._parameter_structure.reconstruct(param_name, self._live_resolved, self._extraction_target, resolved=True)
 
         result = self._live_resolved.get(param_name)
 
@@ -1249,9 +1240,7 @@ class ObjectState:
             # This is a container field - reconstruct's dataclass from saved resolved values
             field_type = self._path_to_type.get(param_name)
             if field_type is not None and is_dataclass(field_type):
-                return self._reconstruct_from_resolved(
-                    param_name, self._saved_resolved, self._extraction_target, self._parameter_structure
-                )
+                return self._parameter_structure.reconstruct(param_name, self._saved_resolved, self._extraction_target, resolved=True)
 
         # Return the simple value (or None if not found)
         return self._saved_resolved.get(param_name)
@@ -1292,71 +1281,6 @@ class ObjectState:
         )
 
 
-    @classmethod
-    def _reconstruct_from_resolved(
-        cls,
-        prefix: str,
-        resolved_snapshot: dict[str, Any],
-        target: Any,
-        structure: ParameterStructure,
-    ) -> Any:
-        """Reconstruct the nominal object and nested dataclasses from a snapshot.
-
-        Unified method for both live and saved resolved values. The only difference
-        is which snapshot dict is passed in (_live_resolved or _saved_resolved).
-
-        Args:
-            prefix: Current path prefix (e.g., 'analysis_consolidation_config')
-            resolved_snapshot: The snapshot dict to reconstruct from (_live_resolved or _saved_resolved)
-
-        Returns:
-            Reconstructed dataclass instance with resolved values
-        """
-        from objectstate.lazy_factory import get_base_type_for_lazy
-
-        # Determine the type to reconstruct
-        if not prefix:
-            obj_type = type(target)
-        else:
-            obj_type = structure.owner_paths.get(prefix)
-            if obj_type is None:
-                raise ValueError(f"No type mapping for prefix: {prefix}")
-
-        # Normalize to base type for lazy dataclasses
-        obj_type = get_base_type_for_lazy(obj_type) or obj_type
-
-        prefix_dot = f'{prefix}.' if prefix else ''
-
-        # Collect direct fields and nested prefixes from resolved snapshot
-        direct_fields = {}
-        nested_prefixes = set()
-
-        for path, value in resolved_snapshot.items():
-            if not path.startswith(prefix_dot):
-                continue
-
-            remainder = path[len(prefix_dot):]
-
-            if '.' in remainder:
-                # This is a nested field - collect the first component
-                first_component = remainder.split('.')[0]
-                nested_prefixes.add(first_component)
-            else:
-                # Direct field of this object
-                direct_fields[remainder] = value
-
-        # Reconstruct nested dataclasses first
-        for nested_name in nested_prefixes:
-            nested_path = f'{prefix_dot}{nested_name}'
-            nested_obj = cls._reconstruct_from_resolved(
-                nested_path, resolved_snapshot, target, structure
-            )
-            direct_fields[nested_name] = nested_obj
-
-        # Instantiate the dataclass with all resolved fields
-        result = obj_type(**direct_fields)
-
-        return result
 
     def get_provenance(self, param_name: str) -> tuple[str | None, type] | None:
         """Get the source scope_id and type for an inherited field value.
@@ -1972,7 +1896,7 @@ class ObjectState:
                 and param_type != root_type
             )
             if nested_dataclass:
-                values[param_name] = self._reconstruct_from_prefix(param_name)
+                values[param_name] = self._parameter_structure.reconstruct(param_name, self.parameters, self._extraction_target)
             else:
                 values[param_name] = self.parameters[param_name]
 
@@ -2727,7 +2651,7 @@ class ObjectState:
                     # This ensures we pick up changes to nested fields like
                     # 'partition_filter_config.partition_filter'
                     logger.debug(f"🔧 to_object: Reconstructing nested dataclass '{field_name}' from flat storage")
-                    reconstructed = self._reconstruct_from_prefix(field_name)
+                    reconstructed = self._parameter_structure.reconstruct(field_name, self.parameters, self._extraction_target)
                     logger.debug(f"🔧 to_object: Reconstructed '{field_name}' type={type(reconstructed).__name__}")
                     # Log some field values for debugging
                     if hasattr(reconstructed, 'enabled'):
@@ -2790,79 +2714,7 @@ class ObjectState:
 
         return self._cached_object
 
-    def _reconstruct_from_prefix(self, prefix: str) -> Any:
-        """Recursively reconstruct dataclass from flat parameters.
 
-        Args:
-            prefix: Current path prefix (e.g., 'partition_filter_config')
-
-        Returns:
-            Reconstructed dataclass instance
-        """
-        return self._reconstruct_from_parameter_snapshot(prefix, self.parameters)
-
-    def _reconstruct_from_parameter_snapshot(
-        self,
-        prefix: str,
-        parameters: dict[str, Any],
-    ) -> Any:
-        """Recursively reconstruct dataclass from a flat parameter snapshot."""
-        # Determine the type to reconstruct
-        if not prefix:
-            # Root level - use extraction target type (handles delegation)
-            obj_type = type(self._extraction_target)
-        else:
-            # Nested level - look up type from _path_to_type
-            obj_type = self._path_to_type.get(prefix)
-            if obj_type is None:
-                raise ValueError(f"No type mapping for prefix: {prefix}")
-
-        prefix_dot = f'{prefix}.' if prefix else ''
-
-        # Collect direct fields and nested prefixes
-        direct_fields = {}
-        nested_prefixes = set()
-
-        for path, value in parameters.items():
-            if not path.startswith(prefix_dot):
-                continue
-
-            remainder = path[len(prefix_dot):]
-
-            if '.' in remainder:
-                # This is a nested field - collect the first component
-                first_component = remainder.split('.')[0]
-                nested_prefixes.add(first_component)
-            else:
-                # Direct field of this object
-                direct_fields[remainder] = value
-
-        # Reconstruct nested dataclasses first
-        for nested_name in nested_prefixes:
-            nested_path = f'{prefix_dot}{nested_name}'
-            nested_obj = self._reconstruct_from_parameter_snapshot(
-                nested_path,
-                parameters,
-            )
-            direct_fields[nested_name] = nested_obj
-
-        # CRITICAL: Do NOT filter out None values!
-        # None can be a semantic value, such as "inherit from parent context".
-        # When a user explicitly resets a field to None, we MUST pass that None
-        # to the dataclass constructor so lazy resolution can walk up the MRO.
-        # Filtering None would cause the dataclass to use its class-level default
-        # instead of the user's explicit None, breaking inheritance.
-
-        # At root level, include constructor params excluded from editing.
-        if not prefix:
-            direct_fields.update(self._excluded_params)
-
-
-        # Instantiate the dataclass with ALL fields including None values
-        result = obj_type(**direct_fields)
-
-
-        return result
 
     def _get_changed_params_with_types(
         self, old_target: Any, new_target: Any

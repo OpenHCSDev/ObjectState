@@ -78,3 +78,39 @@ class ParameterStructure:
             self,
             **{item.name: copy.copy(getattr(self, item.name)) for item in fields(self)},
         )
+
+    def reconstruct(self, prefix, values, target, *, resolved=False):
+        """Build one projection from its own payload, preserving scalar terminals.
+
+        A container's stored None/Inherit/Unset is authoritative even when an
+        editor retains child drafts. Nominal type comes from that payload, never
+        from the declaration-owner index. Live and saved projections share this.
+        """
+        from objectstate.field_access import DataclassFieldAccess
+        from objectstate.lazy_factory import get_base_type_for_lazy, replace_raw
+
+        prototype = values[prefix] if prefix else target
+        if prefix and not is_dataclass(prototype):
+            return prototype
+        prefix_dot = f"{prefix}." if prefix else ""
+        direct = {}
+        for path, value in values.items():
+            if not path.startswith(prefix_dot):
+                continue
+            remainder = path[len(prefix_dot):]
+            if "." in remainder:
+                continue
+            direct[remainder] = (
+                self.reconstruct(path, values, target, resolved=resolved)
+                if is_dataclass(value) else value
+            )
+        if not prefix:
+            direct.update(self.excluded_values)
+        if is_dataclass(prototype):
+            if not resolved:
+                return replace_raw(prototype, **direct)
+            constructor = get_base_type_for_lazy(type(prototype)) or type(prototype)
+            arguments = DataclassFieldAccess.raw_init_values(prototype, constructor)
+            arguments.update(direct)
+            return constructor(**arguments)
+        return type(prototype)(**direct)

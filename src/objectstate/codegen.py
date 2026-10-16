@@ -1,15 +1,15 @@
 """Python source for lazily resolved dataclasses, through pycodify.
 
-Importing this module registers two formatters. Both write raw field values,
-never resolved ones: a ``None`` field inherits from context and stays ``None``
-in the source.
+Importing this module registers the field formatters. Both write raw field values,
+never resolved ones. ``None`` remains literal data; ``Inherit`` and ``Unset``
+retain their distinct meanings in the source.
 
 - :class:`LazyResolutionFormatter` (any :class:`LazyResolutionDataclass`):
   clean mode writes the fields whose raw value differs from the field default.
 - :class:`LazyDataclassFormatter` (factory-made :class:`LazyDataclass`): clean
   mode writes a field when it was passed to the constructor or holds a concrete
-  value; an inherited ``None`` is omitted, and so is a nested lazy dataclass
-  that carries nothing.
+  value. Inherited fields may be omitted; an empty nested configuration is
+  still an object, not a literal None.
 
 Full mode writes every field.
 """
@@ -35,13 +35,6 @@ def _set_field_names(value: LazyDataclass) -> frozenset[str]:
     return frozenset(object.__getattribute__(value, "_explicitly_set_fields"))
 
 
-def lazy_dataclass_carries_values(value: LazyDataclass) -> bool:
-    """Whether a lazy dataclass has a constructor-set field or a concrete value."""
-
-    return bool(_set_field_names(value)) or any(
-        FieldValue.of(DataclassFieldAccess.raw_value(value, field.name)).has_value
-        for field in fields(value)
-    )
 
 
 def _is_instance_of_dataclass(value: object) -> bool:
@@ -76,11 +69,7 @@ def field_needs_source(current: object, default: object, context: FormatContext)
 
     if not context.clean_mode:
         return True
-    if isinstance(current, LazyDataclass):
-        if not lazy_dataclass_carries_values(current):
-            return False
-        return not raw_values_equal(current, default)
-    return current != default
+    return not raw_values_equal(current, default)
 
 
 def _field_default(field: Field) -> object:
@@ -134,7 +123,7 @@ class LazyDataclassFormatter(LazyResolutionFormatter):
         if field.name in _set_field_names(value):
             return True
         if isinstance(current, LazyDataclass):
-            return lazy_dataclass_carries_values(current)
+            return not raw_values_equal(current, _field_default(field))
         return True
 
 

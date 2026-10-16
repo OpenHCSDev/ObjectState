@@ -20,6 +20,10 @@ class FieldValue(ABC):
     def is_inherited(value: Any) -> bool:
         return isinstance(value, FieldValue) and value.inherited
 
+    def map(self, convert: Callable[[Any], Any]) -> Any:
+        """Convert domain data without converting an inheritance/absence directive."""
+        return self
+
     @abstractmethod
     def resolve(self, inherited: Callable[[], Any]) -> Any:
         """Read the effective value, requesting inheritance only when declared."""
@@ -85,6 +89,9 @@ class Value(FieldValue):
 
     def resolve(self, inherited: Callable[[], Any]) -> Any:
         return self.value
+
+    def map(self, convert: Callable[[Any], Any]) -> Any:
+        return convert(self.value)
 
     def overlay(self, base: Any, merge: Callable[[Any, Any], Any]) -> Any:
         return merge(base, self.value)
