@@ -1,6 +1,7 @@
 """Read-only inspection of registered ObjectStates and their fields."""
 
 from __future__ import annotations
+from objectstate.field_value import FieldValue, Unset
 
 import logging
 from collections.abc import Callable
@@ -78,7 +79,7 @@ class FieldInspection:
     def of(cls, state: ObjectState, field_path: str):
         """Inspect ``field_path``; a value that fails to resolve is reported unavailable."""
 
-        resolved_value = None
+        resolved_value = Unset()
         resolved_value_available = False
         try:
             resolved_value = state.get_resolved_value(field_path)
@@ -120,6 +121,10 @@ class FieldInspection:
         return self.field_path == self.state.last_changed_field
 
     @property
+    def raw_value_is_inherited(self) -> bool:
+        return FieldValue.is_inherited(self.raw_value)
+
+    @property
     def raw_value_is_none(self) -> bool:
         return self.raw_value is None
 
@@ -131,9 +136,7 @@ class FieldInspection:
     def inherited_value(self) -> bool:
         """The field holds no value of its own and inherits a resolved one."""
 
-        return self.raw_value is None and self.resolved_value_available and (
-            self.resolved_value is not None
-        )
+        return FieldValue.is_inherited(self.raw_value) and self.resolved_value_available and FieldValue.of(self.resolved_value).has_value
 
     @property
     def semantic_markers(self) -> tuple[str, ...]:

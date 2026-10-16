@@ -9,6 +9,7 @@ from typing import Any
 from python_introspect import ParameterInfo
 
 from objectstate.field_access import DottedFieldPath
+from objectstate.field_value import Unset
 from objectstate.parameter_owner import ParameterOwner
 
 
@@ -23,6 +24,12 @@ class ParameterStructure:
     declarations: dict[str, ParameterInfo] = field(default_factory=dict)
     exclusions: list[str] = field(default_factory=list)
     excluded_values: dict[str, Any] = field(default_factory=dict)
+
+    def declare(self, path: str, info: ParameterInfo) -> ParameterInfo:
+        """Admit external signature absence once, as Unset rather than None."""
+        declaration = info._replace(default_value=Unset()) if info.is_required else info
+        self.declarations[path] = declaration
+        return declaration
 
     @property
     def defaults(self) -> dict[str, Any]:

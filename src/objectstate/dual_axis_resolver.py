@@ -13,6 +13,9 @@ import logging
 from dataclasses import MISSING, fields, is_dataclass
 from typing import Any, NamedTuple
 
+from objectstate.field_access import DataclassFieldAccess
+from objectstate.field_value import FieldValue, Unset
+
 logger = logging.getLogger(__name__)
 
 
@@ -47,68 +50,42 @@ def _normalize_to_base(t: type) -> type:
     return get_base_type_for_lazy(t) or t
 
 
-def _direct_owner_field_default(config_type: type, field_name: str) -> tuple[bool, Any]:
-    """Return the default owned by config_type for field_name.
-
-    Lazy config resolution intentionally forces inherited dataclass fields to
-    None so they can inherit through context and MRO. Fields declared directly
-    on the concrete owner still have their semantic class defaults on the base
-    config type. Those defaults are load-bearing when no scope supplies a
-    concrete value.
-    """
+def _direct_owner_field_default(config_type: type, field_name: str):
+    """A declared own default, or Unset when this owner delegates the default."""
     if not is_dataclass(config_type):
-        return False, None
-
-    field_obj = config_type.__dataclass_fields__.get(field_name)
-    if field_obj is None:
-        return False, None
-
-    metadata = field_obj.metadata or {}
-    if "_inherited_default" in metadata or "_inherited_default_factory" in metadata:
-        return False, None
-
-    if field_obj.default is not MISSING:
-        return True, field_obj.default
-
-    if field_obj.default_factory is not MISSING:
-        return True, field_obj.default_factory()
-
-    return False, None
+        return Unset()
+    declaration = config_type.__dataclass_fields__.get(field_name)
+    if declaration is None or "_inherited_default" in declaration.metadata:
+        return Unset()
+    if declaration.default is not MISSING:
+        return declaration.default
+    if declaration.default_factory is not MISSING:
+        return declaration.default_factory()
+    return Unset()
 
 
 def declared_default(container_type: type, field_name: str) -> tuple[Any, type | None]:
-    """The value a field has when no context layer supplies one.
-
-    In order: the default the base type declares for the field itself, the first
-    concrete class attribute along the base type's MRO, then the default the field
-    had before it was rebuilt to inherit (kept in the field's metadata).
-
-    Returns the value and, when the base type declares a default for the field
-    itself, that base type; otherwise ``None`` in its place.
-    """
-    container_base = _normalize_to_base(container_type)
-    has_own_default, own_default = _direct_owner_field_default(container_base, field_name)
-    own_default_type = container_base if has_own_default else None
-    if own_default is not None:
-        return own_default, own_default_type
-
-    for mro_class in container_base.__mro__:
-        class_value = getattr(mro_class, field_name, None)
-        if class_value is not None:
-            return class_value, own_default_type
-
+    """Read the declared default, retaining an explicit None as a real value."""
+    base = _normalize_to_base(container_type)
+    own = _direct_owner_field_default(base, field_name)
+    own_type = base if FieldValue.of(own).has_value else None
+    if FieldValue.of(own).has_value:
+        return own, own_type
+    for owner in base.__mro__:
+        value = getattr(owner, field_name, Unset())
+        if FieldValue.of(value).has_value:
+            return value, own_type
     if is_dataclass(container_type):
-        for field_definition in fields(container_type):
-            if field_definition.name != field_name:
+        for declaration in fields(container_type):
+            if declaration.name != field_name:
                 continue
-            metadata = field_definition.metadata
-            inherited = metadata.get("_inherited_default", MISSING)
-            if inherited is not MISSING:
-                return inherited, own_default_type
-            factory = metadata.get("_inherited_default_factory", MISSING)
+            inherited = declaration.metadata.get("_inherited_default", MISSING)
+            if inherited is not MISSING and FieldValue.of(inherited).has_value:
+                return inherited, own_type
+            factory = declaration.metadata.get("_inherited_default_factory", MISSING)
             if factory is not MISSING:
-                return factory(), own_default_type
-    return None, own_default_type
+                return factory(), own_type
+    return Unset(), own_type
 
 
 def resolve_with_provenance(container_type: type, field_name: str) -> ResolvedField:
@@ -164,11 +141,7 @@ def _resolve_in_layers(layers: tuple, container_type: type, field_name: str) -> 
     """
     container_base = _normalize_to_base(container_type)
 
-    visible_layers = []
-    for layer in reversed(layers):
-        visible_layers.append(layer)
-        if layer.masks_outer_layers:
-            break
+    visible_layers = tuple(reversed(layers))
 
     # Where the field lives when every layer leaves it None: the outermost layer
     # holding the first MRO type that any layer holds.
@@ -190,10 +163,10 @@ def _resolve_in_layers(layers: tuple, container_type: type, field_name: str) -> 
             held_by_a_layer = True
             outermost_scope = layer.scope_id
             try:
-                value = object.__getattribute__(config_instance, field_name)
+                value = DataclassFieldAccess.raw_value(config_instance, field_name)
             except AttributeError:
                 continue
-            if value is not None:
+            if FieldValue.of(value).has_value:
                 return ResolvedField(value, layer.scope_id, mro_type)
 
         if held_by_a_layer and not unset_found:

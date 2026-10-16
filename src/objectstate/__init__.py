@@ -59,7 +59,6 @@ from objectstate.lazy_factory import (
     get_base_type_for_lazy,
     get_lazy_type_for_base,
     # Constructor patching for code execution
-    patch_lazy_constructors,
     # Global config type checking
     GlobalConfigBase,
     GlobalConfigMeta,
@@ -131,8 +130,6 @@ from objectstate.token_cache import TokenCache, SingleValueTokenCache, CacheKey
 from objectstate.field_access import DataclassFieldAccess, DottedFieldPath, FieldAccessError
 from objectstate.parameter_owner import ParameterOwner
 from objectstate.subfield_semantics import (
-    MISSING,
-    MissingValue,
     ObjectStateSubfieldSemantic,
     ObjectStateSubfieldSemanticIndex,
     StructuralFieldPath,
@@ -152,7 +149,6 @@ __all__ = [
     'get_base_type_for_lazy',
     'get_lazy_type_for_base',
     # Constructor patching for code execution
-    'patch_lazy_constructors',
     # Global config type checking
     'GlobalConfigBase',
     'GlobalConfigMeta',
@@ -194,8 +190,6 @@ __all__ = [
     'DottedFieldPath',
     'FieldAccessError',
     'ParameterOwner',
-    'MISSING',
-    'MissingValue',
     'ObjectStateSubfieldSemantic',
     'ObjectStateSubfieldSemanticIndex',
     'StructuralFieldPath',
@@ -281,3 +275,5 @@ __all__ += [
     'Tuple',
     'Optional',
 ]
+
+from objectstate.field_value import FieldValue, Inherit, Unset

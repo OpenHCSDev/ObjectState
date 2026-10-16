@@ -27,6 +27,7 @@ from pycodify import (
 )
 
 from objectstate.field_access import DataclassFieldAccess
+from objectstate.field_value import FieldValue
 from objectstate.lazy_factory import LazyDataclass, LazyResolutionDataclass
 
 
@@ -38,7 +39,7 @@ def lazy_dataclass_carries_values(value: LazyDataclass) -> bool:
     """Whether a lazy dataclass has a constructor-set field or a concrete value."""
 
     return bool(_set_field_names(value)) or any(
-        DataclassFieldAccess.raw_value(value, field.name) is not None
+        FieldValue.of(DataclassFieldAccess.raw_value(value, field.name)).has_value
         for field in fields(value)
     )
 
@@ -128,10 +129,22 @@ class LazyDataclassFormatter(LazyResolutionFormatter):
     formats = LazyDataclass
 
     def clean_field_needs_source(self, value: object, field: Field, current: object) -> bool:
-        if current is None:
+        if FieldValue.is_inherited(current):
             return False
         if field.name in _set_field_names(value):
             return True
         if isinstance(current, LazyDataclass):
             return lazy_dataclass_carries_values(current)
         return True
+
+
+class FieldValueFormatter(SourceFormatter):
+    """Field states render their declared constructor, never a None stand-in."""
+    priority = 38
+    formats = FieldValue
+
+    def can_format(self, value: object) -> bool:
+        return isinstance(value, self.formats)
+
+    def format(self, value: FieldValue, context: FormatContext) -> SourceFragment:
+        return value.source(context)

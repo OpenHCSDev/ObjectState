@@ -23,6 +23,9 @@ from collections import OrderedDict
 from dataclasses import fields, is_dataclass
 from typing import Any, NamedTuple
 
+from objectstate.field_access import DataclassFieldAccess
+from objectstate.field_value import Unset
+
 FieldKey = tuple[type, str]
 
 # How many (old object, new object) answers are kept. Each entry holds both
@@ -131,11 +134,11 @@ def _compare_layer_objects(before: Any, now: Any) -> set[FieldKey]:
 def _stored(config: Any, name: str) -> Any:
     """The raw field of a config, without lazy resolution; ``None`` when absent."""
     if config is None:
-        return None
+        return Unset()
     try:
-        return object.__getattribute__(config, name)
+        return DataclassFieldAccess.raw_value(config, name)
     except AttributeError:
-        return None
+        return Unset()
 
 
 def _same_stored_value(a: Any, b: Any) -> bool:

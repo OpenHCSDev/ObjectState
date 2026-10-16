@@ -9,6 +9,8 @@ import re
 import sys
 from abc import ABC
 from contextlib import contextmanager
+from objectstate.field_value import FieldValue, Inherit, Unset
+from objectstate.field_access import DataclassFieldAccess
 from dataclasses import MISSING, dataclass, field, fields, is_dataclass, make_dataclass
 from functools import lru_cache
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar, Union, get_type_hints
@@ -126,20 +128,20 @@ def _inherited_default_metadata(field_definition) -> dict:
     return metadata
 
 
-def rebuild_with_none_defaults(
+def rebuild_with_inherited_defaults(
     cls: Type,
-    field_names_to_none: Optional[set] = None,
+    inherited_field_names: Optional[set] = None,
     new_name: Optional[str] = None
 ) -> Type:
     """
     Rebuild a dataclass via make_dataclass with None defaults for specified fields.
 
-    This is the UNIFIED approach for both base classes (inherit_as_none) and lazy classes.
+    This is the UNIFIED approach for both base classes (inherit_fields) and lazy classes.
     Instead of patching Field objects after @dataclass, we rebuild with correct defaults.
 
     Args:
         cls: The dataclass to rebuild
-        field_names_to_none: Fields that should have default=None.
+        inherited_field_names: Fields that should have default=None.
                             If None, ALL fields get default=None (for lazy classes).
         new_name: Optional new class name (for lazy classes)
 
@@ -149,9 +151,9 @@ def rebuild_with_none_defaults(
     if not dataclasses.is_dataclass(cls):
         raise ValueError(f"{cls} is not a dataclass")
 
-    if field_names_to_none is None:
+    if inherited_field_names is None:
         # All fields get None (for lazy classes)
-        field_names_to_none = {f.name for f in fields(cls)}
+        inherited_field_names = {f.name for f in fields(cls)}
 
     annotations = _resolved_dataclass_annotations(cls)
 
@@ -159,15 +161,15 @@ def rebuild_with_none_defaults(
     field_defs = []
     for f in fields(cls):
         declared_type = annotations.get(f.name, f.type)
-        if f.name in field_names_to_none:
+        if f.name in inherited_field_names:
             # Force None default, but preserve original default in metadata for fallback
             # This allows standalone usage to fall back to parent's static default
             field_defs.append(
                 (
                     f.name,
-                    make_optional(declared_type),
+                    declared_type,
                     field(
-                        default=None,
+                        default=Inherit(),
                         metadata=_inherited_default_metadata(f),
                     ),
                 )
@@ -251,7 +253,7 @@ def replace_raw(instance, **changes):
             field_values[f.name] = changes[f.name]
         else:
             # Use object.__getattribute__ to get raw value (bypass lazy __getattribute__)
-            field_values[f.name] = object.__getattribute__(instance, f.name)
+            field_values[f.name] = DataclassFieldAccess.raw_value(instance, f.name)
 
     # Create new instance with raw values
     return type(instance)(**field_values)
@@ -565,27 +567,7 @@ LAZY_CLASS_NAME_PREFIX = "Lazy"
 
 
 # Functional fallback strategies
-def _get_raw_field_value(obj: Any, field_name: str) -> Any:
-    """
-    Get raw field value bypassing lazy property getters to prevent infinite recursion.
 
-    Uses object.__getattribute__() to access stored values directly without triggering
-    lazy resolution, which would create circular dependencies in the resolution chain.
-
-    Args:
-        obj: Object to get field from
-        field_name: Name of field to access
-
-    Returns:
-        Raw field value or None if field doesn't exist
-
-    Raises:
-        AttributeError: If field doesn't exist (fail-loud behavior)
-    """
-    try:
-        return object.__getattribute__(obj, field_name)
-    except AttributeError:
-        return None
 
 
 def bind_lazy_resolution_to_class(cls: Type) -> None:
@@ -630,7 +612,7 @@ class LazyMethodBindings:
         def __getattribute__(self: Any, name: str) -> Any:
             value = object.__getattribute__(self, name)
             # Fast path: non-None values never need resolution
-            if value is not None:
+            if not FieldValue.is_inherited(value):
                 return value
             # PERFORMANCE: Use pre-computed frozenset (O(1) lookup) instead of
             # rebuilding {f.name for f in fields(self.__class__)} (O(n)) on every access.
@@ -649,15 +631,7 @@ class LazyMethodBindings:
             stack = context_layer_stack.get()
             if not stack.layers:
                 return declared_default(_cls, name)[0]
-            resolved_value = resolve_in_stack(stack, _cls, name).value
-            if resolved_value is not None:
-                return resolved_value
-
-            # A nested dataclass field that nothing supplies reads as an empty instance.
-            field_obj = _cls.__dict__['_fields_by_name'].get(name)
-            if field_obj and is_dataclass(field_obj.type):
-                return field_obj.type()
-            return None
+            return value.resolve(lambda: resolve_in_stack(stack, _cls, name).value)
 
         return __getattribute__
 
@@ -674,7 +648,7 @@ class LazyMethodBindings:
             # causing resolution to use the wrong/stale context and losing the GlobalPipelineConfig base.
             # We must extract raw None values here, let config_context() merge them into the hierarchy,
             # and THEN resolution happens later with the properly built context.
-            field_values = {f.name: object.__getattribute__(self, f.name) for f in fields(self)}
+            field_values = {f.name: DataclassFieldAccess.raw_value(self, f.name) for f in fields(self)}
             return base_class(**field_values)
         return to_base_config
 
@@ -703,11 +677,8 @@ class LazyMethodBindings:
                 for field_definition in fields(base_class):
                     if not field_definition.init:
                         continue
-                    value = object.__getattribute__(config, field_definition.name)
-                    if inherited is not None and value == object.__getattribute__(
-                        inherited,
-                        field_definition.name,
-                    ):
+                    value = DataclassFieldAccess.raw_value(config, field_definition.name)
+                    if inherited is not None and value == DataclassFieldAccess.raw_value(inherited, field_definition.name):
                         continue
                     values[field_definition.name] = value
                 return cls(**values)
@@ -831,14 +802,14 @@ class LazyDataclassFactory:
                     ),
                 )
             else:
-                final_field_type = make_optional(field_type)
+                final_field_type = field_type
                 # CRITICAL FIX: For lazy configs, ALL non-dataclass fields should default to None
                 # This enables proper inheritance from parent configs and placeholder styling
                 field_def = (
                     field_definition.name,
                     final_field_type,
                     dataclasses.field(
-                        default=None,
+                        default=Inherit(),
                         metadata=_inherited_default_metadata(field_definition),
                     ),
                 )
@@ -1002,98 +973,7 @@ class LazyDataclassFactory:
 # Constructor Patching for Code Execution
 # =============================================================================
 
-@contextmanager
-def patch_lazy_constructors(types: Optional[List[Type]] = None):
-    """
-    Context manager that patches lazy dataclass constructors to preserve None vs concrete distinction.
 
-    This is critical for code editors that use exec() to create dataclass instances.
-    Without patching, lazy dataclasses would resolve None values to concrete defaults
-    during construction, making it impossible to distinguish between explicitly set
-    values and inherited values.
-
-    The patched constructor sets fields provided in kwargs and otherwise uses the
-    dataclass defaults/default_factory (or None if none exist). This preserves the
-    None vs concrete distinction while still instantiating nested lazy configs.
-
-    Args:
-        types: Optional list of lazy types to patch. If None, uses every type
-            in the authoritative lazy-to-base registry.
-
-    Usage:
-        # Patch during code execution
-        with patch_lazy_constructors():
-            exec(code_string, namespace)
-            # Lazy dataclasses created during exec() will preserve None values
-
-    Example:
-        # Without patching:
-        LazyZarrConfig(compression='gzip')  # All unspecified fields resolve to defaults
-
-        # With patching:
-        with patch_lazy_constructors():
-            LazyZarrConfig(compression='gzip')  # Only compression is set, rest are None
-    """
-    lazy_types = (
-        list(_lazy_type_registry)
-        if types is None
-        else list(types)
-    )
-
-    if not lazy_types:
-        # No types to patch - just yield
-        yield
-        return
-
-    # Store original constructors
-    original_constructors: Dict[Type, callable] = {}
-
-    # Patch all lazy types
-    for lazy_type in lazy_types:
-        # Store original constructor
-        original_constructors[lazy_type] = lazy_type.__init__
-
-        # Create patched constructor that uses raw values
-        def create_patched_init(dataclass_type, original_init):
-            def patched_init(self, **kwargs):
-                # Materialize the raw constructor payload without reading fields
-                # through lazy ``__getattribute__``.  The nominal constructor must
-                # still run: it owns dataclass ``__post_init__`` validation and any
-                # other declaration-level invariants.
-                raw_values = {}
-                for field_definition in dataclasses.fields(dataclass_type):
-                    if field_definition.name in kwargs:
-                        value = kwargs[field_definition.name]
-                    elif field_definition.default_factory is not dataclasses.MISSING:  # type: ignore
-                        value = field_definition.default_factory()
-                    elif field_definition.default is not dataclasses.MISSING:
-                        value = field_definition.default
-                    else:
-                        value = None
-
-                    raw_values[field_definition.name] = value
-
-                original_init(self, **raw_values)
-
-                # The generated lazy constructor tracks every received keyword.
-                # Restore the authored subset because the remaining raw values were
-                # supplied only to preserve inheritance during reconstruction.
-                object.__setattr__(self, '_explicitly_set_fields', set(kwargs.keys()))
-
-            return patched_init
-
-        # Apply the patch
-        lazy_type.__init__ = create_patched_init(
-            lazy_type,
-            original_constructors[lazy_type],
-        )
-
-    try:
-        yield
-    finally:
-        # Restore original constructors
-        for lazy_type, original_init in original_constructors.items():
-            lazy_type.__init__ = original_init
 
 
 # ContextProvider infrastructure removed - was dead code feeding broken frame.f_locals manipulation
@@ -1366,14 +1246,14 @@ def create_global_default_decorator(target_config_class: Type):
             'configs_to_inject': []
         }
 
-    def global_default_decorator(cls=None, *, optional: bool = False, inherit_as_none: bool = True, ui_hidden: bool = False, preview_label: Optional[str] = None, abbreviation: Optional[str] = None, field_abbreviations: Optional[Dict[str, str]] = None, always_viewable_fields: Optional[List[str]] = None):
+    def global_default_decorator(cls=None, *, optional: bool = False, inherit_fields: bool = True, ui_hidden: bool = False, preview_label: Optional[str] = None, abbreviation: Optional[str] = None, field_abbreviations: Optional[Dict[str, str]] = None, always_viewable_fields: Optional[List[str]] = None):
         """
         Decorator that can be used with or without parameters.
 
         Args:
             cls: The class being decorated (when used without parentheses)
             optional: Whether to wrap the field type with Optional (default: False)
-            inherit_as_none: Whether to set all inherited fields to None by default (default: True)
+            inherit_fields: Whether to set all inherited fields to None by default (default: True)
             ui_hidden: Whether to hide from UI (apply decorator but don't inject into global config) (default: False)
             preview_label: Short label for list item previews (e.g., "NAP", "FIJI", "MAT"). If set,
                           config will appear in preview when enabled. Registered in PREVIEW_LABEL_REGISTRY.
@@ -1387,12 +1267,12 @@ def create_global_default_decorator(target_config_class: Type):
         """
         def decorator(actual_cls):
             # UNIFIED NONE-FORCING: Single make_dataclass rebuild instead of old 3-stage approach
-            if inherit_as_none:
+            if inherit_fields:
                 # Rebuild class with None defaults for inherited fields
                 # This replaces the old pre-process setattr + post-process Field patching
                 inherited_fields = get_inherited_field_names(actual_cls)
                 if inherited_fields:
-                    actual_cls = rebuild_with_none_defaults(actual_cls, inherited_fields)
+                    actual_cls = rebuild_with_inherited_defaults(actual_cls, inherited_fields)
 
             field_name = _camel_to_snake(actual_cls.__name__)
 
@@ -1443,7 +1323,7 @@ def create_global_default_decorator(target_config_class: Type):
                     'config_class': actual_cls,
                     'field_name': field_name,
                     'optional': optional,  # Store the optional flag
-                    'inherit_as_none': inherit_as_none,  # Store the inherit_as_none flag
+                    'inherit_fields': inherit_fields,  # Store the inherit_fields flag
                     'ui_hidden': ui_hidden  # Store the ui_hidden flag for field metadata
                 })
 
@@ -1476,7 +1356,7 @@ def create_global_default_decorator(target_config_class: Type):
                 ALWAYS_VIEWABLE_FIELDS_REGISTRY[lazy_class] = always_viewable_fields
 
             # Note: No Stage 3 post-processing needed!
-            # - Base class: rebuilt via rebuild_with_none_defaults() above
+            # - Base class: rebuilt via rebuild_with_inherited_defaults() above
             # - Lazy class: _introspect_dataclass_fields() already sets None defaults
 
             return actual_cls
@@ -1518,7 +1398,7 @@ def _inject_multiple_fields_into_dataclass(target_class: Type, configs: List[Dic
 
     # Mathematical simplification: Unified field construction with algebraic common factors
     def create_field_definition(config):
-        """Create field definition with optional and inherit_as_none support."""
+        """Create field definition with optional and inherit_fields support."""
         field_type = config['config_class']
         is_optional = config.get('optional', False)
         is_ui_hidden = config.get('ui_hidden', False)

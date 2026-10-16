@@ -19,6 +19,7 @@ from types import FunctionType
 from typing import Any, Optional
 
 from objectstate.field_access import DataclassFieldAccess, DottedFieldPath
+from objectstate.field_value import FieldValue, Inherit, Unset
 from objectstate.construction_binding import (
     DelegatedStateBinding,
     DirectStateBinding,
@@ -36,7 +37,6 @@ from objectstate.parameter_structure import ParameterStructure
 from objectstate.resolution_sources import ResolutionSources
 from objectstate.lazy_factory import is_global_config_type
 from objectstate.subfield_semantics import (
-    MISSING,
     ObjectStateSubfieldSemanticIndex,
     build_subfield_semantic_index,
     changed_structural_leaf_paths,
@@ -852,7 +852,7 @@ class ObjectState:
             path
             for config_type, field_name in differing
             for path in self.inheritance_field_paths(config_type, field_name)
-            if own_values.get(path) is None
+            if FieldValue.is_inherited(own_values.get(path, Unset()))
         }
 
     def _resolve_saved_again_if_sources_changed(self, sources: ResolutionSources) -> bool:
@@ -1273,12 +1273,12 @@ class ObjectState:
         self._ensure_saved_resolved()
 
         path = owner_field_path
-        raw_value = self.parameters.get(path.value, MISSING)
+        raw_value = self.parameters.get(path.value, Unset())
         resolved_value = self.get_resolved_value(path.value)
         saved_resolved_value = self.get_saved_resolved_value(path.value)
         declaration = self._parameter_structure.declarations.get(path.value)
         signature_default_value = (
-            declaration.default_value if declaration is not None else MISSING
+            declaration.default_value if declaration is not None else Unset()
         )
 
         return build_subfield_semantic_index(
@@ -1815,7 +1815,7 @@ class ObjectState:
             raw_value = self.parameters[name]
             if self._parameter_structure.is_container_parameter(name, raw_value, self.parameters):
                 continue
-            if raw_value is not None:
+            if not FieldValue.is_inherited(raw_value):
                 explicit_fields.append(name)
             else:
                 inherited_fields.append(name)
@@ -1921,7 +1921,7 @@ class ObjectState:
         # Use signature defaults (CLASS defaults), not instance values
         # This ensures reset goes back to None for lazy fields, not saved concrete values
         declaration = self._parameter_structure.declarations.get(param_name)
-        default_value = declaration.default_value if declaration is not None else None
+        default_value = declaration.default_value if declaration is not None else Unset()
         self.update_parameter(param_name, default_value)
 
     def signature_default(self, param_name: str) -> Any:
@@ -2022,7 +2022,7 @@ class ObjectState:
                         normalized.append(item)
                         continue
                     if isinstance(item, tuple) and len(item) == 2 and callable(item[0]) and isinstance(item[1], dict):
-                        pruned_kwargs = {k: v for k, v in item[1].items() if v is not None}
+                        pruned_kwargs = {k: v for k, v in item[1].items() if FieldValue.of(v).has_value}
                         normalized.append(item[0] if not pruned_kwargs else (item[0], pruned_kwargs))
                 if len(normalized) == 1 and callable(normalized[0]):
                     return normalized[0]
@@ -2189,7 +2189,7 @@ class ObjectState:
             use_live=not use_saved,
         ):
             for dotted_path in parameters.keys():
-                raw_value = values.get(dotted_path)
+                raw_value = values.get(dotted_path, Unset())
                 container_type = structure.owner_paths.get(dotted_path)
                 parts = dotted_path.split('.')
 
@@ -2217,8 +2217,8 @@ class ObjectState:
                     # - Top-level fields on root (num_workers on PipelineConfig) where parts == 1
                     field_name = parts[-1]
 
-                    if raw_value is None:
-                        # Field needs resolution - use combined resolve + provenance walk
+                    if FieldValue.is_inherited(raw_value):
+                        # The declared inheritance state invokes the one resolver.
                         resolved_val, source_scope, source_type = resolve_with_provenance(container_type, field_name)
                         snapshot[dotted_path] = resolved_val
 
@@ -2568,6 +2568,8 @@ class ObjectState:
             # Build dotted path
             dotted_path = f'{prefix}.{param_name}' if prefix else param_name
 
+            info = structure.declare(dotted_path, info)
+
             # Get current value
             if is_function:
                 # For functions: use signature default from UnifiedParameterAnalyzer
@@ -2576,11 +2578,12 @@ class ObjectState:
             else:
                 # For class instances: bypass lazy resolution via object.__getattribute__
                 try:
-                    current_value = object.__getattribute__(obj, param_name)
+                    current_value = (
+                        DataclassFieldAccess.raw_value(obj, param_name)
+                        if is_dataclass(type(obj)) else getattr(obj, param_name)
+                    )
                 except AttributeError:
                     current_value = info.default_value
-
-            structure.declarations[dotted_path] = info
 
             # Check if this is a nested dataclass
             # First try from type annotation, then fall back to checking actual value
@@ -2592,7 +2595,7 @@ class ObjectState:
             if current_value is not None and is_dataclass(type(current_value)):
                 nested_type = type(current_value)
 
-            if nested_type is not None and current_value is not None:
+            if nested_type is not None and is_dataclass(type(current_value)):
                 # Store the nested config type reference at this path
                 structure.owner_paths[dotted_path] = nested_type
 

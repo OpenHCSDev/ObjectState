@@ -7,17 +7,10 @@ from enum import Enum
 from typing import Generic, TypeVar
 
 from objectstate.field_access import DataclassFieldAccess, DottedFieldPath
+from objectstate.field_value import FieldValue, Unset
 
 
 SubfieldValueT = TypeVar("SubfieldValueT")
-
-
-@dataclass(frozen=True, slots=True)
-class MissingValue:
-    """Nominal sentinel for an absent structural leaf."""
-
-
-MISSING = MissingValue()
 
 
 class StructuralSegmentKind(str, Enum):
@@ -226,10 +219,10 @@ def build_subfield_semantic_index(
         _build_leaf(
             owner_field_path=owner_field_path,
             relative_path=relative_path,
-            raw_value=raw_leaves.get(relative_path, MISSING),
-            resolved_value=resolved_leaves.get(relative_path, MISSING),
-            saved_resolved_value=saved_leaves.get(relative_path, MISSING),
-            signature_default_value=default_leaves.get(relative_path, MISSING),
+            raw_value=raw_leaves.get(relative_path, Unset()),
+            resolved_value=resolved_leaves.get(relative_path, Unset()),
+            saved_resolved_value=saved_leaves.get(relative_path, Unset()),
+            signature_default_value=default_leaves.get(relative_path, Unset()),
         )
         for relative_path in ordered_paths
     )
@@ -238,7 +231,7 @@ def build_subfield_semantic_index(
         owner_field_path=owner_field_path,
         owner_dirty=owner_dirty,
         owner_signature_diff=owner_signature_diff,
-        owner_inherited_value=raw_value is None and resolved_value is not None,
+        owner_inherited_value=FieldValue.is_inherited(raw_value) and FieldValue.of(resolved_value).has_value,
         leaves=leaves,
     )
 
@@ -257,8 +250,8 @@ def changed_structural_leaf_paths(
         relative_path
         for relative_path in _ordered_paths(old_leaves, new_leaves)
         if relative_path.segments
-        and old_leaves.get(relative_path, MISSING)
-        != new_leaves.get(relative_path, MISSING)
+        and old_leaves.get(relative_path, Unset())
+        != new_leaves.get(relative_path, Unset())
     )
     return tuple(
         f"{owner_field_path.value}{relative_path.display_suffix()}"
@@ -275,10 +268,10 @@ def _build_leaf(
     saved_resolved_value,
     signature_default_value,
 ) -> ObjectStateSubfieldSemantic:
-    raw_present = raw_value is not MISSING
-    resolved_present = resolved_value is not MISSING
-    saved_resolved_present = saved_resolved_value is not MISSING
-    signature_default_present = signature_default_value is not MISSING
+    raw_present = FieldValue.of(raw_value).has_value
+    resolved_present = FieldValue.of(resolved_value).has_value
+    saved_resolved_present = FieldValue.of(saved_resolved_value).has_value
+    signature_default_present = FieldValue.of(signature_default_value).has_value
     dirty = resolved_value != saved_resolved_value
     signature_diff = raw_value != signature_default_value
     inherited_value = not raw_present and resolved_present
@@ -289,7 +282,7 @@ def _build_leaf(
     if signature_diff or inherited_value:
         markers.append("_")
     value_type = resolved_value if resolved_present else raw_value
-    value_type_name = None if value_type is MISSING else type(value_type).__qualname__
+    value_type_name = type(value_type).__qualname__ if FieldValue.of(value_type).has_value else None
 
     return ObjectStateSubfieldSemantic(
         owner_field_path=owner_field_path,
@@ -312,7 +305,7 @@ def _build_leaf(
 
 
 def _leaf_values(value) -> dict:
-    if value is MISSING:
+    if not FieldValue.of(value).has_value:
         return {}
     return dict(_iter_leaf_values(value, StructuralValuePath()))
 
