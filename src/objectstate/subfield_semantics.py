@@ -231,7 +231,7 @@ def build_subfield_semantic_index(
         owner_field_path=owner_field_path,
         owner_dirty=owner_dirty,
         owner_signature_diff=owner_signature_diff,
-        owner_inherited_value=FieldValue.is_inherited(raw_value) and FieldValue.of(resolved_value).has_value,
+        owner_inherited_value=FieldValue.of(raw_value).inherited_from(FieldValue.of(resolved_value)),
         leaves=leaves,
     )
 
@@ -268,10 +268,10 @@ def _build_leaf(
     saved_resolved_value,
     signature_default_value,
 ) -> ObjectStateSubfieldSemantic:
-    raw_present = FieldValue.of(raw_value).has_value
-    resolved_present = FieldValue.of(resolved_value).has_value
-    saved_resolved_present = FieldValue.of(saved_resolved_value).has_value
-    signature_default_present = FieldValue.of(signature_default_value).has_value
+    raw_present = FieldValue.of(raw_value).available()
+    resolved_present = FieldValue.of(resolved_value).available()
+    saved_resolved_present = FieldValue.of(saved_resolved_value).available()
+    signature_default_present = FieldValue.of(signature_default_value).available()
     dirty = resolved_value != saved_resolved_value
     signature_diff = raw_value != signature_default_value
     inherited_value = not raw_present and resolved_present
@@ -282,7 +282,7 @@ def _build_leaf(
     if signature_diff or inherited_value:
         markers.append("_")
     value_type = resolved_value if resolved_present else raw_value
-    value_type_name = type(value_type).__qualname__ if FieldValue.of(value_type).has_value else None
+    value_type_name = type(value_type).__qualname__ if FieldValue.of(value_type).available() else None
 
     return ObjectStateSubfieldSemantic(
         owner_field_path=owner_field_path,
@@ -305,7 +305,7 @@ def _build_leaf(
 
 
 def _leaf_values(value) -> dict:
-    if not FieldValue.of(value).has_value:
+    if not FieldValue.of(value).available():
         return {}
     return dict(_iter_leaf_values(value, StructuralValuePath()))
 

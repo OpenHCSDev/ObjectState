@@ -1830,7 +1830,7 @@ class ObjectState:
                         normalized.append(item)
                         continue
                     if isinstance(item, tuple) and len(item) == 2 and callable(item[0]) and isinstance(item[1], dict):
-                        pruned_kwargs = {k: v for k, v in item[1].items() if FieldValue.of(v).has_value}
+                        pruned_kwargs = {k: v for k, v in item[1].items() if FieldValue.of(v).available()}
                         normalized.append(item[0] if not pruned_kwargs else (item[0], pruned_kwargs))
                 if len(normalized) == 1 and callable(normalized[0]):
                     return normalized[0]

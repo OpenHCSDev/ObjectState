@@ -68,19 +68,19 @@ def declared_default(container_type: type, field_name: str) -> tuple[Any, type |
     """Read the declared default, retaining an explicit None as a real value."""
     base = _normalize_to_base(container_type)
     own = _direct_owner_field_default(base, field_name)
-    own_type = base if FieldValue.of(own).has_value else None
-    if FieldValue.of(own).has_value:
+    own_type = base if FieldValue.of(own).available() else None
+    if FieldValue.of(own).available():
         return own, own_type
     for owner in base.__mro__:
         value = getattr(owner, field_name, Unset())
-        if FieldValue.of(value).has_value:
+        if FieldValue.of(value).available():
             return value, own_type
     if is_dataclass(container_type):
         for declaration in fields(container_type):
             if declaration.name != field_name:
                 continue
             inherited = declaration.metadata.get("_inherited_default", MISSING)
-            if inherited is not MISSING and FieldValue.of(inherited).has_value:
+            if inherited is not MISSING and FieldValue.of(inherited).available():
                 return inherited, own_type
             factory = declaration.metadata.get("_inherited_default_factory", MISSING)
             if factory is not MISSING:
@@ -166,7 +166,7 @@ def _resolve_in_layers(layers: tuple, container_type: type, field_name: str) -> 
                 value = DataclassFieldAccess.raw_value(config_instance, field_name)
             except AttributeError:
                 continue
-            if FieldValue.of(value).has_value:
+            if FieldValue.of(value).available():
                 return ResolvedField(value, layer.scope_id, mro_type)
 
         if held_by_a_layer and not unset_found:

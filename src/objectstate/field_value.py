@@ -9,8 +9,6 @@ class FieldValue(ABC):
     """Interpret a stored value once; consumers invoke its field operations."""
 
     __slots__ = ()
-    inherited = False
-    has_value = False
 
     @classmethod
     def of(cls, value: Any) -> FieldValue:
@@ -18,11 +16,29 @@ class FieldValue(ABC):
 
     @staticmethod
     def is_inherited(value: Any) -> bool:
-        return isinstance(value, FieldValue) and value.inherited
+        return FieldValue.of(value).inherits()
+
+    def available(self) -> bool:
+        """Whether this member supplies domain data, including literal None."""
+        return False
+
+    def inherits(self) -> bool:
+        return False
+
+    def inherited_from(self, resolved: FieldValue) -> bool:
+        return False
+
+    def present_to(self, display) -> None:
+        """Let a view paint this directive without inventing a datum."""
+        display.present_directive(self)
 
     def map(self, convert: Callable[[Any], Any]) -> Any:
         """Convert domain data without converting an inheritance/absence directive."""
         return self
+
+    def project(self, convert: Callable[[Any], Any]) -> Any:
+        """Pass the datum or directive itself to the view, without context lookup."""
+        return convert(self.resolve(lambda: self))
 
     @abstractmethod
     def resolve(self, inherited: Callable[[], Any]) -> Any:
@@ -57,7 +73,12 @@ class Inherit(FieldValue):
     """Continue the existing context/MRO lookup instead of supplying a value."""
 
     __slots__ = ()
-    inherited = True
+
+    def inherits(self) -> bool:
+        return True
+
+    def inherited_from(self, resolved: FieldValue) -> bool:
+        return resolved.available()
 
     def resolve(self, inherited: Callable[[], Any]) -> Any:
         return inherited()
@@ -82,10 +103,15 @@ class Value(FieldValue):
     """A concrete domain value, including an explicitly stored None."""
 
     __slots__ = ('value',)
-    has_value = True
 
     def __init__(self, value: Any):
         self.value = value
+
+    def available(self) -> bool:
+        return True
+
+    def present_to(self, display) -> None:
+        display.present_value(self.value)
 
     def resolve(self, inherited: Callable[[], Any]) -> Any:
         return self.value

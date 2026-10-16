@@ -1,16 +1,12 @@
 """Read-only inspection of registered ObjectStates and their fields."""
 
 from __future__ import annotations
-from objectstate.field_value import FieldValue, Unset
-
-import logging
+from objectstate.field_value import FieldValue, Value
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from objectstate.object_state import FieldProxy, ObjectState
 from objectstate.object_state_registry import ObjectStateRegistry
-
-logger = logging.getLogger(__name__)
 
 DIRTY_MARKER = "*"
 """Marks a field (or a group of fields) whose value differs from the saved value."""
@@ -70,41 +66,25 @@ class FieldInspection:
 
     field: FieldProxy
     raw_value: object
-    resolved_value: object
-    resolved_value_available: bool
+    resolved: FieldValue
     provenance: FieldProvenance | None
 
     @classmethod
     def of(cls, field):
         """Capture one admitted field, never look up a caller-spelled path."""
-        state = field.state
-        field_path = field._path
-
-        resolved_value = Unset()
-        resolved_value_available = False
-        try:
-            resolved_value = field.value
-            resolved_value_available = FieldValue.of(resolved_value).has_value
-        except Exception:
-            logger.debug(
-                "Failed to resolve ObjectState field %s on scope %r.",
-                field_path,
-                state.scope_id,
-                exc_info=True,
-            )
+        resolved = FieldValue.of(field.value)
         provenance = None
         match field.provenance:
             case (source_scope_id, source_type) if source_type is not None:
                 provenance = FieldProvenance(
                     source_scope_id=source_scope_id,
                     source_type=source_type,
-                    field_name=field_path.rsplit(".", 1)[-1],
+                    field_name=field.name,
                 )
         return cls(
             field=field,
             raw_value=field.raw,
-            resolved_value=resolved_value,
-            resolved_value_available=resolved_value_available,
+            resolved=resolved,
             provenance=provenance,
         )
 
@@ -130,13 +110,13 @@ class FieldInspection:
 
     @property
     def resolved_value_is_none(self) -> bool:
-        return self.resolved_value_available and self.resolved_value is None
+        return self.resolved == Value(None)
 
     @property
     def inherited_value(self) -> bool:
         """The field holds no value of its own and inherits a resolved one."""
 
-        return FieldValue.is_inherited(self.raw_value) and self.resolved_value_available
+        return FieldValue.of(self.raw_value).inherited_from(self.resolved)
 
     @property
     def semantic_markers(self) -> tuple[str, ...]:
@@ -161,7 +141,7 @@ class FieldInspection:
 
     @property
     def resolved_value_type(self) -> str | None:
-        return type_name(self.resolved_value) if self.resolved_value_available else None
+        return self.resolved.project(type_name)
 
     @property
     def declaring_type(self) -> str:

@@ -2,7 +2,9 @@ from dataclasses import dataclass
 
 import pytest
 
-from objectstate import ObjectState, ObjectStateRegistry, set_base_config_type
+from objectstate import Inherit, LazyDataclassFactory, ObjectState, ObjectStateRegistry, Unset, set_base_config_type, set_global_config
+from objectstate.field_value import Value
+from objectstate.object_state import FieldProxy
 from objectstate.inspection import (
     DIRTY_MARKER,
     SIGNATURE_DIFF_MARKER,
@@ -15,7 +17,7 @@ from objectstate.inspection import (
 @dataclass
 class Inspected:
     count: int = 1
-    label: str = "x"
+    label: str | None = "x"
 
 
 @pytest.fixture(autouse=True)
@@ -35,13 +37,11 @@ def test_markers_are_ordered_dirty_then_signature_difference():
 def test_field_inspection_reports_value_edit_state_and_types():
     state = ObjectState(Inspected(count=3), scope_id="/inspected")
     ObjectStateRegistry.register(state, _skip_snapshot=True)
-    state.update_parameter("label", "y")
-
-    label = FieldInspection.of(state, "label")
-    count = FieldInspection.of(state, "count")
-
-    assert (label.raw_value, label.resolved_value) == ("y", "y")
-    assert label.resolved_value_available
+    state.fields.label.write("y")
+    label = state.fields.label.inspect()
+    count = state.fields.count.inspect()
+    assert (label.raw_value, label.resolved) == ("y", Value("y"))
+    assert label.resolved.available()
     assert label.dirty and label.last_changed and label.semantic_markers[0] == DIRTY_MARKER
     assert count.signature_diff and not count.dirty
     assert count.semantic_markers == (SIGNATURE_DIFF_MARKER,)
@@ -49,3 +49,34 @@ def test_field_inspection_reports_value_edit_state_and_types():
     assert count.declaring_type.endswith(".Inspected")
     assert not count.inherited_value and count.provenance is None
     assert state_markers(state) == (DIRTY_MARKER, SIGNATURE_DIFF_MARKER)
+
+
+@pytest.mark.parametrize("raw, expected", [(None, Value(None)), (Unset(), Unset()), (Inherit(), Value("global")), ("", Value(""))])
+def test_resolved_meaning_is_one_member_and_retains_literal_null(raw, expected):
+    set_global_config(Inspected, Inspected(label="global"))
+    lazy = LazyDataclassFactory.make_lazy_simple(Inspected)
+    inspected = ObjectState(lazy(label=raw)).fields.label.inspect()
+    assert inspected.raw_value == raw
+    assert inspected.resolved == expected
+    assert inspected.resolved_value_is_none == (expected == Value(None))
+    assert inspected.inherited_value == isinstance(raw, Inherit)
+
+
+@pytest.mark.parametrize("directive", [Inherit(), Unset()])
+def test_projection_sends_the_absent_member_to_the_view(directive):
+    seen = []
+    assert directive.project(lambda value: seen.append(value) or value) is directive
+    assert seen == [directive]
+    assert Value(None).project(lambda value: value) is None
+
+
+def test_resolver_failure_propagates_its_original_identity():
+    failure = RuntimeError("failed real field read")
+    class FailedRead(FieldProxy):
+        @property
+        def value(self):
+            raise failure
+    state = ObjectState(Inspected())
+    with pytest.raises(RuntimeError) as caught:
+        FieldInspection.of(FailedRead(state, "label"))
+    assert caught.value is failure
