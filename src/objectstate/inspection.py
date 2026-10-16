@@ -72,7 +72,7 @@ class FieldInspection:
     @classmethod
     def of(cls, field):
         """Capture one admitted field, never look up a caller-spelled path."""
-        resolved = FieldValue.of(field.value)
+        resolved = field.resolved_member
         provenance = None
         match field.provenance:
             case (source_scope_id, source_type) if source_type is not None:
@@ -83,7 +83,7 @@ class FieldInspection:
                 )
         return cls(
             field=field,
-            raw=FieldValue.of(field.raw),
+            raw=field.raw_member,
             resolved=resolved,
             provenance=provenance,
         )

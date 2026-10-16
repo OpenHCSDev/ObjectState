@@ -13,9 +13,6 @@ from __future__ import annotations
 import copy
 import logging
 from collections.abc import Callable, Sequence
-from dataclasses import fields as dataclass_fields
-from dataclasses import is_dataclass
-from types import FunctionType
 from typing import Any, Optional
 
 from objectstate.field_access import DataclassFieldAccess, DottedFieldPath, FieldAccessError
@@ -24,6 +21,7 @@ from objectstate.construction_binding import (
     DelegatedStateBinding,
     DirectStateBinding,
     StateConstructionBinding,
+    admit_target,
 )
 from objectstate.object_state_metadata import (
     ObjectStateMetadataContract,
@@ -34,6 +32,7 @@ from objectstate.object_state_registry import ObjectStateRegistry
 from objectstate.scope_key import ScopeKey
 from objectstate.parameter_owner import ParameterOwner
 from objectstate.parameter_structure import ParameterStructure
+from objectstate.declarations import ValueDeclaration
 from objectstate.resolution_sources import ResolutionSources
 from objectstate.lazy_factory import is_global_config_type
 from objectstate.subfield_semantics import (
@@ -43,6 +42,7 @@ from objectstate.subfield_semantics import (
 )
 from objectstate.time_travel_profile import TimeTravelProfiler
 from objectstate.value_semantics import semantic_values_equal
+from python_introspect import resolve_declared_type
 
 logger = logging.getLogger(__name__)
 
@@ -120,8 +120,12 @@ class FieldProxy(FieldNamespace):
         return self.declaration.param_type
 
     @property
+    def scope_available(self):
+        return ValueDeclaration.of(self.annotation).scope_available(self.resolved_member)
+
+    @property
     def default(self):
-        return self.declaration.default_value
+        return self.declaration.default_value.stored
 
     @property
     def description(self):
@@ -141,19 +145,28 @@ class FieldProxy(FieldNamespace):
             raise FieldAccessError(f"Field {self._path!r} belongs to a retired declaration")
 
     @property
-    def raw(self):
+    def raw_member(self):
         self._require_present()
-        return self._state._parameters.get(self._path, Unset())
+        return self._state._parameters[self._path]
 
     @property
-    def value(self):
+    def raw(self):
+        return self.raw_member.stored
+
+    @property
+    def resolved_member(self):
         self._require_present()
         return self._state._read_field(self)
 
     @property
+    def value(self):
+        self._require_present()
+        return self.resolved_member.stored
+
+    @property
     def saved_value(self):
         self._require_present()
-        return self._state._read_saved_field(self)
+        return self._state._read_saved_field(self).stored
 
     @property
     def dirty(self):
@@ -163,7 +176,7 @@ class FieldProxy(FieldNamespace):
 
     @property
     def signature_diff(self):
-        return self.raw != self.default
+        return self.raw_member != self.declaration.default_value
 
     def write(self, value):
         self._require_present()
@@ -210,6 +223,10 @@ class FieldProxy(FieldNamespace):
 
 class RootFields(FieldNamespace):
     """The live root namespace shares field discovery, not a captured schema."""
+    @property
+    def scope_available(self):
+        return True
+
     def __init__(self, state):
         self._state = state
 
@@ -238,7 +255,7 @@ class RootFields(FieldNamespace):
     def bind(self, owner, names, field_type=FieldProxy):
         """Bind an already declared attribute vector to this editing state."""
         self._require_present()
-        target = self._state._extraction_target
+        target = self._state._target.stored
         if not ((isinstance(owner, type) and isinstance(target, owner)) or target is owner):
             raise FieldAccessError(f"{owner!r} does not declare this editing target")
         if isinstance(names, str) or not names:
@@ -318,16 +335,16 @@ class ObjectState:
         # extracting editable parameters from a nested config (e.g., pipeline_config).
         delegate_attr = getattr(type(object_instance), '__objectstate_delegate__', None)
         if delegate_attr:
-            self._extraction_target = getattr(object_instance, delegate_attr)
+            self._target = admit_target(object.__getattribute__(object_instance, delegate_attr))
             self._delegate_attr = delegate_attr
             logger.debug(f"ObjectState delegation: extracting from '{delegate_attr}' attribute")
         else:
-            self._extraction_target = object_instance
+            self._target = admit_target(object_instance)
             self._delegate_attr = None
 
         # === Flat Storage (NEW - for flattened architecture) ===
         self._parameter_structure = ParameterStructure()
-        self._cached_object: Any | None = None  # Cached result of to_object()
+        self._cached_object: FieldValue | None = None  # Cached result of to_object()
         self._cached_object_applied: bool = False  # True if cached delegate was applied to object_instance
 
         # UI / integration metadata (never participates in dirty detection).
@@ -345,11 +362,11 @@ class ObjectState:
 
         # Extract parameters using FLAT extraction (dotted paths)
         # This replaces the old UnifiedParameterAnalyzer + _create_nested_states() approach
-        self._parameters: dict[str, Any] = {}
-        extraction_target = self._extraction_target
+        self._parameters: dict[str, FieldValue] = {}
+        extraction_target = self._target
 
         # Flatten parameter extraction - walk nested dataclasses recursively.
-        # Uses _extraction_target (delegate) instead of object_instance for
+        # Uses _target (delegate) instead of object_instance for
         # delegation support. The structure and its immutable path index are
         # replaced atomically once for this extraction.
         self._replace_parameter_structure(
@@ -498,7 +515,7 @@ class ObjectState:
             return False
 
         # Use identity check (is) not equality (==) to detect if it's a new instance
-        if current_delegate is self._extraction_target:
+        if current_delegate is self._target.stored:
             # Delegate hasn't changed - no sync needed
             return False
 
@@ -527,9 +544,7 @@ class ObjectState:
         deepcopy can rebuild callable wrapper instances through ``__reduce__``,
         making live and saved function specs unequal immediately after load.
         """
-        memo: dict[int, Any] = {}
-        cls._seed_callable_identity_memo(parameters, memo, set())
-        return copy.deepcopy(parameters, memo)
+        return copy.deepcopy(parameters, cls._parameter_copy_memo(parameters))
 
     @classmethod
     def copy_parameter_pair_preserving_callable_identity(
@@ -544,52 +559,24 @@ class ObjectState:
         can rebuild callable wrappers twice and make a clean state appear dirty.
         """
 
-        memo: dict[int, Any] = {}
-        seen: set[int] = set()
-        cls._seed_callable_identity_memo(parameters, memo, seen)
-        cls._seed_callable_identity_memo(saved_parameters, memo, seen)
+        memo = cls._parameter_copy_memo(parameters, saved_parameters)
         return copy.deepcopy(parameters, memo), copy.deepcopy(saved_parameters, memo)
 
-    @classmethod
-    def _seed_callable_identity_memo(
-        cls,
-        value: Any,
-        memo: dict[int, Any],
-        seen: set[int],
-    ) -> None:
-        value_id = id(value)
-        if value_id in seen:
-            return
-        seen.add(value_id)
+    @staticmethod
+    def _parameter_copy_memo(*snapshots):
+        memo = {}
+        seen = set()
+        for parameters in snapshots:
+            for member in parameters.values():
+                member.seed_callable_identity(memo, seen)
+        return memo
 
-        if callable(value):
-            memo[value_id] = value
-            return
-
-        if isinstance(value, dict):
-            for key, item in value.items():
-                cls._seed_callable_identity_memo(key, memo, seen)
-                cls._seed_callable_identity_memo(item, memo, seen)
-            return
-
-        if isinstance(value, (list, tuple, set, frozenset)):
-            for item in value:
-                cls._seed_callable_identity_memo(item, memo, seen)
-            return
-
-        if is_dataclass(value) and not isinstance(value, type):
-            for field in dataclass_fields(value):
-                cls._seed_callable_identity_memo(
-                    object.__getattribute__(value, field.name),
-                    memo,
-                    seen,
-                )
 
     @property
     def saved_object(self) -> Any:
         """Get the saved baseline object with the correct type.
 
-        For delegation: returns _extraction_target (the delegate/config)
+        For delegation: returns _target (the delegate/config)
         For non-delegation: returns object_instance
 
         This is the object that should be used for context resolution when
@@ -597,7 +584,7 @@ class ObjectState:
         """
         # Auto-detect delegate changes before returning extraction target
         self._check_and_sync_delegate()
-        return self._extraction_target
+        return self._target.stored
 
     @property
     def fields(self) -> RootFields:
@@ -618,13 +605,13 @@ class ObjectState:
         self._check_and_sync_delegate()
         self._ensure_live_resolved()
         assert self._live_resolved is not None
-        return self._parameter_structure.reconstruct('', self._live_resolved, self._extraction_target, resolved=True)
+        return self._parameter_structure.reconstruct('', self._live_resolved, self._target, resolved=True)
 
     def to_saved_resolved_object(self) -> Any:
         """Reconstruct this state as an object with saved resolved values."""
         self._check_and_sync_delegate()
         self._ensure_saved_resolved()
-        return self._parameter_structure.reconstruct('', self._saved_resolved, self._extraction_target, resolved=True)
+        return self._parameter_structure.reconstruct('', self._saved_resolved, self._target, resolved=True)
 
     @classmethod
     def resolve_saved_object(
@@ -647,9 +634,10 @@ class ObjectState:
         target = (
             getattr(object_instance, delegate_attr) if delegate_attr else object_instance
         )
+        target = admit_target(target)
         structure = ParameterStructure.for_target(target, None)
-        parameters: dict[str, Any] = {}
-        cls._extract_all_parameters_flat(target, parameters, structure)
+        parameters: dict[str, FieldValue] = {}
+        target.extract_parameters(cls, parameters, structure)
         saved_parameters = cls._copy_parameters_for_saved_baseline(parameters)
         snapshot, provenance = cls._resolve_parameter_snapshot(
             saved_parameters,
@@ -887,9 +875,9 @@ class ObjectState:
             self._live_resolved = self._compute_resolved_snapshot()
             self._invalid_fields.clear()
             changed_values = {
-                path: (previous.get(path), value)
+                path: (previous.get(path, Unset()), value)
                 for path, value in self._live_resolved.items()
-                if previous.get(path) != value
+                if previous.get(path, Unset()) != value
             }
             if changed_values:
                 self._set_last_changed_values(changed_values)
@@ -954,9 +942,9 @@ class ObjectState:
         first, which must not happen while a snapshot is being recomputed.
         """
         if use_saved:
-            return self._extraction_target
+            return self._target.stored
         if self._cached_object is not None and not sync_delegate:
-            return self._cached_object
+            return self._cached_object.stored
         return self.to_object(update_delegate=False, sync_delegate=sync_delegate)
 
     def _fields_with_other_sources(
@@ -1043,27 +1031,6 @@ class ObjectState:
         finally:
             self._in_reset = False
 
-    def _dataclass_parameter_updates(self, prefix: str, value: Any) -> dict[str, Any]:
-        """Flatten a dataclass container update into registered child parameters."""
-        if not DataclassFieldAccess.is_container(value):
-            return {}
-
-        prefix_dot = f"{prefix}."
-        if not any(
-            path.startswith(prefix_dot)
-            for path in self._parameters
-            if path != prefix
-        ):
-            return {}
-
-        updates: dict[str, Any] = {}
-        for field in dataclass_fields(value):
-            field_path = f"{prefix_dot}{field.name}"
-            field_value = DataclassFieldAccess.raw_value(value, field.name)
-            if field_path in self._parameters:
-                updates[field_path] = field_value
-            updates.update(self._dataclass_parameter_updates(field_path, field_value))
-        return updates
 
     def _dataclass_ancestor_parameter_updates(
         self,
@@ -1081,7 +1048,7 @@ class ObjectState:
             prefix = ".".join(path_parts[:part_count])
             if prefix not in parameters:
                 continue
-            rebuilt_value = self._parameter_structure.reconstruct(prefix, parameters, self._extraction_target)
+            rebuilt_value = self._parameter_structure.reconstruct_member(prefix, parameters, self._target)
             if parameters.get(prefix) != rebuilt_value:
                 updates[prefix] = rebuilt_value
                 parameters[prefix] = rebuilt_value
@@ -1095,10 +1062,9 @@ class ObjectState:
     ) -> tuple[str, ...]:
         """Return flat field paths whose container type can inherit target_type."""
 
-        from objectstate.lazy_factory import get_base_type_for_lazy
 
         if isinstance(target_type, type):
-            target_base_type = get_base_type_for_lazy(target_type) or target_type
+            target_base_type = resolve_declared_type(target_type)
         else:
             target_base_type = target_type
 
@@ -1111,7 +1077,7 @@ class ObjectState:
 
             if isinstance(container_type, type):
                 container_base_type = (
-                    get_base_type_for_lazy(container_type) or container_type
+                    resolve_declared_type(container_type)
                 )
             else:
                 container_base_type = container_type
@@ -1123,7 +1089,7 @@ class ObjectState:
                 and isinstance(target_base_type, type)
             ):
                 type_matches = any(
-                    (get_base_type_for_lazy(mro_class) or mro_class)
+                    (resolve_declared_type(mro_class))
                     == target_base_type
                     for mro_class in container_base_type.__mro__
                 )
@@ -1163,7 +1129,8 @@ class ObjectState:
             )
             return set()
 
-        child_updates = self._dataclass_parameter_updates(param_name, value)
+        value = self._parameter_structure.admit(param_name, value)
+        child_updates = self._parameter_structure.descendants(param_name, value, self._parameters)
         pending_parameters = dict(self._parameters)
         pending_parameters[param_name] = value
         for child_path, child_value in child_updates.items():
@@ -1260,15 +1227,10 @@ class ObjectState:
         # Leaf edits record directly. Dataclass-container edits record when they
         # materialize changed flat child fields; those child paths are the UI and
         # time-travel navigation authority for inline editors.
-        # A field is a container if there are other params that start with "param_name."
         param_path = DottedFieldPath(param_name)
-        is_container = any(
-            p != param_name and param_path.contains_path(p)
-            for p in self._parameters.keys()
-        )
         snapshot_field = (
             self._select_changed_field(changed_semantic_params)
-            if is_container and changed_semantic_params
+            if self._parameter_structure.direct_paths.get(param_path) and changed_semantic_params
             else param_name
         )
         if snapshot_field:
@@ -1280,14 +1242,14 @@ class ObjectState:
         """Read this projection, preserving scalar terminals and nominal shape."""
         self._check_and_sync_delegate()
         self._ensure_live_resolved()
-        return self._parameter_structure.reconstruct(field._path, self._live_resolved, self._extraction_target, resolved=True)
+        return self._parameter_structure.reconstruct_member(field._path, self._live_resolved, self._target, resolved=True)
 
 
     def _read_saved_field(self, field: FieldProxy) -> Any:
         """The saved projection owns its own payload, independently of live data."""
         self._check_and_sync_delegate()
         self._ensure_saved_resolved()
-        return self._parameter_structure.reconstruct(field._path, self._saved_resolved, self._extraction_target, resolved=True)
+        return self._parameter_structure.reconstruct_member(field._path, self._saved_resolved, self._target, resolved=True)
 
 
     def subfield_semantics(
@@ -1307,13 +1269,11 @@ class ObjectState:
         self._ensure_saved_resolved()
 
         path = owner_field_path
-        raw_value = self._parameters.get(path.value, Unset())
-        resolved_value = self._read_field(self._field_at(path.value))
-        saved_resolved_value = self._read_saved_field(self._field_at(path.value))
-        declaration = self._parameter_structure.declarations.get(path.value)
-        signature_default_value = (
-            declaration.default_value if declaration is not None else Unset()
-        )
+        field = self._field_at(path.value)
+        raw_value = field.raw_member
+        resolved_value = self._read_field(field)
+        saved_resolved_value = self._read_saved_field(field)
+        signature_default_value = self._parameter_structure.declarations[path.value].default_value
 
         return build_subfield_semantic_index(
             owner_field_path=path,
@@ -1365,21 +1325,20 @@ class ObjectState:
             Path prefix for the type, or None if not found.
             Returns "" (empty string) if type is the root object type.
         """
-        from objectstate.lazy_factory import get_base_type_for_lazy
 
         # Normalize the container_type for comparison
-        container_base = get_base_type_for_lazy(container_type) or container_type
+        container_base = resolve_declared_type(container_type)
 
         # Check if container_type matches the root object type
         root_type = type(self.object_instance)
-        root_base = get_base_type_for_lazy(root_type) or root_type
+        root_base = resolve_declared_type(root_type)
         if container_base == root_base:
             return ""  # Root type has no prefix
 
         # Look for paths where the TYPE matches (normalized comparison)
         # The path for a nested config is the one WITHOUT a dot suffix that has the type
         for path, typ in self._parameter_structure.container_types(self._parameters):
-            typ_base = get_base_type_for_lazy(typ) or typ
+            typ_base = resolve_declared_type(typ)
             if not isinstance(typ_base, type):
                 continue
             if typ_base == container_base and '.' not in path:
@@ -1395,10 +1354,9 @@ class ObjectState:
         method is the authority for remapping hidden source types to a visible
         field path.
         """
-        from objectstate.lazy_factory import get_base_type_for_lazy
         from objectstate.ui_visibility import UIVisibilityRegistry
 
-        container_base = get_base_type_for_lazy(container_type) or container_type
+        container_base = resolve_declared_type(container_type)
         if UIVisibilityRegistry.is_hidden(container_base):
             return self._find_visible_subclass_field_path(container_base, field_name)
 
@@ -1413,15 +1371,14 @@ class ObjectState:
 
     def _find_visible_subclass_field_path(self, hidden_type: type, field_name: str) -> str | None:
         """Find a rendered field path for a hidden config type via a visible subclass."""
-        from objectstate.lazy_factory import get_base_type_for_lazy
         from objectstate.ui_visibility import UIVisibilityRegistry
 
-        hidden_base = get_base_type_for_lazy(hidden_type) or hidden_type
+        hidden_base = resolve_declared_type(hidden_type)
         for path, typ in self._parameter_structure.container_types(self._parameters):
             if "." in path:
                 continue
 
-            typ_base = get_base_type_for_lazy(typ) or typ
+            typ_base = resolve_declared_type(typ)
             if not isinstance(typ_base, type):
                 continue
             if UIVisibilityRegistry.is_hidden(typ_base):
@@ -1452,10 +1409,10 @@ class ObjectState:
         path_prefix = self.find_path_for_type(container_type)
         if path_prefix is None:
             # Type not found - try the field_name directly (top-level field)
-            return self._read_field(self._field_at(field_name))
+            return self._read_field(self._field_at(field_name)).stored
 
         full_path = f'{path_prefix}.{field_name}'
-        return self._read_field(self._field_at(full_path))
+        return self._read_field(self._field_at(full_path)).stored
 
     def invalidate_cache(self) -> None:
         """Invalidate resolved cache - forces full recompute on next access."""
@@ -1518,30 +1475,21 @@ class ObjectState:
         for param_path in pending_parameters:
             if param_path not in changed_params:
                 continue
-            old_value = self._parameters.get(param_path)
-            new_value = pending_parameters.get(param_path)
+            old_value = self._parameters.get(param_path, Unset())
+            new_value = pending_parameters.get(param_path, Unset())
             if old_value != new_value:
                 changed_values[param_path] = (old_value, new_value)
         return changed_values
 
-    def notification_fields_for_value_changes(
-        self,
-        changed_values: dict[str, tuple[Any, Any]],
-    ) -> set[str]:
-        """Return ObjectState display paths affected by concrete value changes."""
-
-        fields: set[str] = set()
-        for param_path, (old_value, new_value) in changed_values.items():
-            if self._parameter_structure.is_container_parameter(param_path, new_value, self._parameters):
-                continue
-            fields.add(param_path)
-            fields.update(
-                changed_structural_leaf_paths(
-                    owner_field_path=DottedFieldPath(param_path),
-                    old_value=old_value,
-                    new_value=new_value,
-                )
-            )
+    def notification_fields_for_value_changes(self, changed_values) -> set[str]:
+        """The member owns whether its registered descendants carry the change."""
+        fields = set()
+        for path, (before, after) in changed_values.items():
+            member = self._parameters.get(path, Unset())
+            fields.update(member.notification_paths(path, self._parameter_structure))
+            fields.update(changed_structural_leaf_paths(
+                owner_field_path=DottedFieldPath(path), old_value=before, new_value=after,
+            ))
         return fields
 
     @staticmethod
@@ -1596,7 +1544,7 @@ class ObjectState:
 
         arguments = dict(
             state_type=type(self),
-            target=self._extraction_target,
+            target=self._target.stored,
             parent_scope=(
                 self._parent_state.scope_id or "" if self._parent_state is not None else None
             ),
@@ -1634,7 +1582,7 @@ class ObjectState:
         code mode execution). The ObjectState is updated to point to the new instance
         and parameters are re-extracted to match the new object's state.
 
-        For delegation cases, this updates _extraction_target. For non-delegation cases,
+        For delegation cases, this updates _target. For non-delegation cases,
         it updates object_instance directly.
 
         Args:
@@ -1648,17 +1596,17 @@ class ObjectState:
 
         if self._delegate_attr is not None:
             # Delegation case: verify the new_instance matches the delegate type
-            if type(new_instance) != type(self._extraction_target):
+            if type(new_instance) != type(self._target.stored):
                 logger.warning(
                     f"Type mismatch in update_object_instance for delegated ObjectState: "
-                    f"expected {type(self._extraction_target).__name__}, got {type(new_instance).__name__}"
+                    f"expected {type(self._target.stored).__name__}, got {type(new_instance).__name__}"
                 )
-            self._extraction_target = new_instance
+            self._target = admit_target(new_instance)
             setattr(self.object_instance, self._delegate_attr, new_instance)
         else:
             # Non-delegation case: update object_instance directly
             self.object_instance = new_instance
-            self._extraction_target = new_instance
+            self._target = admit_target(new_instance)
 
         # Re-extract parameters from new instance
         self._replace_parameter_structure(
@@ -1694,8 +1642,8 @@ class ObjectState:
         }
         changed_values = {
             path: (
-                old_live_resolved.get(path),
-                self._live_resolved.get(path),
+                old_live_resolved.get(path, Unset()),
+                self._live_resolved.get(path, Unset()),
             )
             for path in changed_paths
         }
@@ -1733,9 +1681,10 @@ class ObjectState:
         if self._live_resolved is None:
             return set()
         selected = self._invalid_fields & self._parameters.keys()
+        self.to_object(update_delegate=False, sync_delegate=False)
         snapshot, provenance = self._resolve_parameter_snapshot(
             self._parameters, self._parameters, self._parameter_structure,
-            self.to_object(update_delegate=False, sync_delegate=False),
+            self._cached_object,
             self.scope_id, sources.ancestors, use_saved=False, field_paths=selected,
         )
         changed = {
@@ -1775,13 +1724,13 @@ class ObjectState:
         """
         # Auto-detect delegate changes before accessing parameters
         self._check_and_sync_delegate()
-        return dict(self._parameters)
+        return {path: member.stored for path, member in self._parameters.items()}
 
     def reconstruct_top_level_parameters(self) -> dict[str, Any]:
         """Project local constructor argument names, not the editing address map."""
         self._check_and_sync_delegate()
         return {
-            path.field_name: self._parameter_structure.reconstruct(path.value, self._parameters, self._extraction_target)
+            path.field_name: self._parameter_structure.reconstruct(path.value, self._parameters, self._target)
             for path in self._parameter_structure.direct_paths.get(DottedFieldPath(''), ())
         }
 
@@ -1813,39 +1762,13 @@ class ObjectState:
         return False
 
     def _compute_dirty_fields(self) -> set[str]:
-        """Compute dirty set from live vs saved caches."""
+        """Compare admitted effective members, without a second domain normalizer."""
         if self._live_resolved is None:
             return set()
-        dirty = set()
-
-        def _normalize_callable_value(value: Any) -> Any:
-            if value is None:
-                return None
-            if callable(value):
-                return value
-            if isinstance(value, list):
-                normalized = []
-                for item in value:
-                    if callable(item):
-                        normalized.append(item)
-                        continue
-                    if isinstance(item, tuple) and len(item) == 2 and callable(item[0]) and isinstance(item[1], dict):
-                        pruned_kwargs = {k: v for k, v in item[1].items() if FieldValue.of(v).available()}
-                        normalized.append(item[0] if not pruned_kwargs else (item[0], pruned_kwargs))
-                if len(normalized) == 1 and callable(normalized[0]):
-                    return normalized[0]
-                return normalized
-            return value
-        for k in (self._live_resolved.keys() | self._saved_resolved.keys()):
-            live_val = _normalize_callable_value(self._live_resolved.get(k))
-            saved_val = _normalize_callable_value(self._saved_resolved.get(k))
-
-            if live_val != saved_val:
-                dirty.add(k)
-                logger.debug(f"🔴 DIRTY_FIELD: scope={self.scope_id!r} field={k!r} live={live_val!r} saved={saved_val!r}")
-        if dirty:
-            logger.debug(f"🔴 DIRTY_SUMMARY: scope={self.scope_id!r} dirty_fields={dirty}")
-        return dirty
+        return {
+            path for path in self._live_resolved.keys() | self._saved_resolved.keys()
+            if self._live_resolved.get(path, Unset()) != self._saved_resolved.get(path, Unset())
+        }
 
     def _compute_signature_diff_fields(self) -> set[str]:
         """Compute signature-diff set from parameters vs defaults.
@@ -1951,15 +1874,15 @@ class ObjectState:
             raise TypeError("ObjectState._saved_parameters must remain a canonical flat dictionary.")
         sources = self._resolution_sources(sync_delegates=True)[use_saved]
         self._resolved_from[use_saved] = sources
-        current_obj = (
-            self.saved_object if use_saved else self.to_object(update_delegate=False)
-        )
+        if not use_saved:
+            self.to_object(update_delegate=False)
+        current_node = self._target if use_saved else self._cached_object
         parameters = self._saved_parameters if use_saved else self._parameters
         snapshot, provenance = self._resolve_parameter_snapshot(
             self._parameters,
             parameters,
             self._parameter_structure,
-            current_obj,
+            current_node,
             self.scope_id,
             sources.ancestors,
             use_saved=use_saved,
@@ -1970,22 +1893,17 @@ class ObjectState:
 
     @classmethod
     def _resolve_parameter_snapshot(
-        cls, parameters, values, structure, current_obj, scope_id,
+        cls, parameters, values, structure, current_node, scope_id,
         ancestor_objects_with_scopes, *, use_saved, field_paths=None,
     ):
-        """One resolution algorithm for complete and targeted projections.
-
-        A container entry carries the projection's nominal payload; reads rebuild
-        its effective children through ParameterStructure.reconstruct. FieldValue
-        alone decides whether a stored value invokes inheritance.
-        """
+        """Resolve admitted members; terminal parents suppress retained child drafts."""
         from objectstate.context_manager import build_context_stack
         from objectstate.dual_axis_resolver import resolve_with_provenance
 
         snapshot = {}
         provenance = {}
         with build_context_stack(
-            object_instance=current_obj,
+            object_instance=current_node.stored,
             ancestor_objects_with_scopes=ancestor_objects_with_scopes,
             current_scope_id=scope_id, use_live=not use_saved,
         ):
@@ -1995,24 +1913,16 @@ class ObjectState:
                 address = DottedFieldPath(path)
                 owner = structure.owner_paths[path]
                 if address.parent.value:
-                    parent = resolve(address.parent.value)
-                    # Read the effective parent, never retained drafts under a
-                    # null, absent or inherited container. Its own nominal type
-                    # supplies inherited defaults for this source's child.
-                    if DataclassFieldAccess.is_container(parent):
-                        raw = DataclassFieldAccess.raw_value(parent, address.field_name)
-                        owner = type(parent)
-                    else:
-                        raw = Unset()
+                    raw, owner = structure.resolved_child(address.parent.value, resolve(address.parent.value), address.field_name, owner)
                 else:
-                    raw = structure.reconstruct(path, values, current_obj)
+                    raw = structure.reconstruct_member(path, values, current_node)
                 def inherited():
                     if not isinstance(owner, type):
-                        return Unset()  # A callable parameter has no config/MRO layer.
+                        return Unset()
                     result = resolve_with_provenance(owner, address.field_name)
                     provenance[path] = (result.source_scope, result.source_type)
-                    return result.value
-                snapshot[path] = FieldValue.of(raw).resolve(inherited)
+                    return structure.admit(path, result.value)
+                snapshot[path] = raw.resolve(inherited)
                 return snapshot[path]
             for path in parameters:
                 if field_paths is None or path in field_paths:
@@ -2038,57 +1948,17 @@ class ObjectState:
         # Ensure live cache is populated for accurate dirty computation post-save
         self._ensure_live_resolved(notify_flash=False)
 
-        # CRITICAL: Extract old values from object_instance BEFORE rebuilding it
-        # These are the values that descendants might be inheriting from
-        old_instance_values = {}
-        if not isinstance(self.object_instance, type):
-            # Extract raw attribute values from the old object_instance
-            for param_name in self._parameters.keys():
-                # Skip container entries (nested dataclass instances)
-                if param_name in self._parameters:
-                    raw_value = self._parameters.get(param_name)
-                    if self._parameter_structure.is_container_parameter(param_name, raw_value, self._parameters):
-                        continue
-
-                # Get the old value by navigating dotted path on the extraction target
-                # For delegation, parameters are on the delegate, not object_instance
-                try:
-                    # Navigate through nested attributes for dotted paths
-                    obj = self._extraction_target
-                    parts = param_name.split('.')
-                    for part in parts:
-                        obj = object.__getattribute__(obj, part)
-                    old_instance_values[param_name] = obj
-                except AttributeError:
-                    # Field doesn't exist on extraction target, skip it
-                    pass
-
-        # Find parameters that differ between old object_instance and new live parameters
-        # These are the fields that changed and need descendant invalidation
-        changed_params = []
-        for param_name in self._parameters.keys():
-            # Skip container entries
-            raw_value = self._parameters.get(param_name)
-            if self._parameter_structure.is_container_parameter(param_name, raw_value, self._parameters):
-                continue
-
-            old_value = old_instance_values.get(param_name)
-            new_value = self._parameters.get(param_name)
-            if old_value != new_value:
-                changed_params.append(param_name)
-
-        # CRITICAL: Rebuild extraction target BEFORE invalidating descendants
-        # Descendants will recompute using parent's extraction target, so it must have new values!
-        if not isinstance(self.object_instance, type):
-            if self._delegate_attr is not None:
-                # DELEGATION: to_object() returns the delegate and updates it on object_instance
-                # as a side effect. Keep object_instance unchanged (it's the lifecycle object).
-                # _extraction_target is updated to point to the new delegate.
-                self._extraction_target = self.to_object(update_delegate=True)
-            else:
-                # NON-DELEGATION: to_object() returns the reconstructed object_instance
-                self.object_instance = self.to_object(update_delegate=True)
-                self._extraction_target = self.object_instance  # Keep in sync
+        # Compare the saved source before applying the live projection. Each
+        # member decides whether its registered descendants carry notifications.
+        saved_members = ParameterStructure.project_target(self._target, type(self))
+        self.to_object(update_delegate=False)
+        current_members = ParameterStructure.project_target(self._cached_object, type(self))
+        changed_params = [
+            path for path, member in current_members.items()
+            if path in member.notification_paths(path, self._parameter_structure)
+            and saved_members.get(path, Unset()) != member
+        ]
+        self.to_object(update_delegate=True)
 
         # Update saved parameters (after object_instance update, before invalidation)
         self._saved_parameters = self._copy_parameters_for_saved_baseline(self._parameters)
@@ -2214,15 +2084,11 @@ class ObjectState:
         # Clear and re-extract from the saved baseline
         # CRITICAL: For delegation, extract from the delegate (pipeline_config), not the lifecycle object.
         # This keeps flat parameters aligned with the form's target object after window close/reopen.
-        # Also refresh _extraction_target in case the delegate attribute was replaced externally.
-        extraction_target = self._extraction_target
-        if self._delegate_attr is not None:
-            try:
-                extraction_target = getattr(self.object_instance, self._delegate_attr)
-                self._extraction_target = extraction_target
-            except Exception:
-                # Fallback to existing extraction target if delegate access fails
-                extraction_target = self._extraction_target
+        # Also refresh _target in case the delegate attribute was replaced externally.
+        extraction_target = (
+            admit_target(object.__getattribute__(self.object_instance, self._delegate_attr))
+            if self._delegate_attr is not None else self._target
+        )
         self._replace_parameter_structure(
             extraction_target,
             exclude_params=self._exclude_param_names,
@@ -2309,99 +2175,23 @@ class ObjectState:
 
     # ==================== FLAT STORAGE METHODS (NEW) ====================
 
-    @classmethod
-    def _extract_all_parameters_flat(
-        cls,
-        obj: Any,
-        parameters: dict[str, Any],
-        structure: ParameterStructure,
-        prefix: str = '',
-        exclude_params: list[str] | None = None,
-    ) -> None:
-        """Recursively extract parameters into flat dict with dotted paths.
-
-        Populate raw parameters and the existing declaration structure through
-        the canonical parameter analyzer, without constructing an editing state.
-
-        Args:
-            obj: Object to extract from (dataclass instance, callable, or regular object)
-            prefix: Current path prefix (e.g., 'partition_filter_config')
-            exclude_params: List of top-level parameter names to exclude
-        """
-        exclude_params = exclude_params or []
-
-        obj_type = type(obj)
-        is_function = isinstance(obj, FunctionType)
-        owner_target: ParameterOwner = obj if is_function else obj_type
-
-        # Delegate signature default extraction to python_introspect (it must derive
-        # defaults from the type/signature and avoid instance attribute reads).
-        param_info = cls._analyze_parameters(obj, exclude_params if not prefix else [])
-
-        logger.debug(f"🔧 _extract_all_parameters_flat: obj_type={obj_type.__name__}, prefix={prefix!r}, param_info keys={list(param_info.keys())}")
-
-        for param_name, info in param_info.items():
-            # Skip excluded parameters (only at top level)
-            if not prefix and param_name in exclude_params:
-                continue
-
-            # Build dotted path
-            dotted_path = f'{prefix}.{param_name}' if prefix else param_name
-
-            info = structure.declare(dotted_path, info, owner_target)
-
-            # Get current value
-            if is_function:
-                # For functions: use signature default from UnifiedParameterAnalyzer
-                # (functions don't have instance attributes)
-                current_value = info.default_value
-            else:
-                # For class instances: bypass lazy resolution via object.__getattribute__
-                try:
-                    current_value = (
-                        DataclassFieldAccess.raw_value(obj, param_name)
-                        if DataclassFieldAccess.is_container(obj) else getattr(obj, param_name)
-                    )
-                except AttributeError:
-                    current_value = info.default_value
-
-            if DataclassFieldAccess.is_container(current_value):
-                # Store the nested dataclass instance in parameters (needed for UI rendering)
-                parameters[dotted_path] = current_value
-
-                # Recurse into nested dataclass for child fields
-                cls._extract_all_parameters_flat(
-                    current_value, parameters, structure, prefix=dotted_path, exclude_params=[]
-                )
-            else:
-                # Leaf field - store value and container type
-                parameters[dotted_path] = current_value
                 # Store the owner target that has this field.
 
     def _replace_parameter_structure(
-        self,
-        obj: Any,
-        *,
-        exclude_params: list[str] | None = None,
-        initial_values: dict[str, Any] | None = None,
+        self, obj, *, exclude_params=None, initial_values=None,
     ) -> None:
-        """Extract one canonical flat parameter structure and index it once."""
-
+        """Admit one value graph and replace its declaration topology atomically."""
+        self._target = admit_target(obj)
         self._parameters.clear()
-        self._parameter_structure = ParameterStructure.for_target(obj, exclude_params)
-        self._extract_all_parameters_flat(
-            obj,
-            self._parameters,
-            self._parameter_structure,
-            prefix="",
-            exclude_params=exclude_params,
+        self._parameter_structure = ParameterStructure.for_target(self._target, exclude_params)
+        self._target.extract_parameters(
+            type(self), self._parameters, self._parameter_structure,
+            exclusions=exclude_params or (),
         )
-        if initial_values:
-            for param_name, value in initial_values.items():
-                self._parameters[param_name] = value
-                self._parameters.update(
-                    self._dataclass_parameter_updates(param_name, value)
-                )
+        for path, datum in (initial_values or {}).items():
+            member = self._parameter_structure.admit(path, datum)
+            self._parameters[path] = member
+            self._parameters.update(self._parameter_structure.descendants(path, member, self._parameters))
         self._index_parameter_paths()
 
     def _index_parameter_paths(self) -> None:
@@ -2420,109 +2210,23 @@ class ObjectState:
             for owner_path, parameter_paths in paths_by_owner.items()
         }
 
-    def to_object(self, *, update_delegate: bool = False, sync_delegate: bool = True) -> Any:
-        """Reconstruct object from flat parameters with updated nested configs.
-
-        BOUNDARY METHOD - EXPENSIVE - only call at system boundaries:
-        - Save operation
-        - Execute operation
-        - Serialization
-
-        UNIFIED: Works for ANY object_instance type.
-        - Python functions: can't copy, return original
-        - Everything else: shallow copy + reconstruct nested dataclass fields
-
-        DELEGATION: If __objectstate_delegate__ was used:
-        - Reconstructs the delegate (e.g., pipeline_config)
-        - If update_delegate=True, updates the delegate attribute on object_instance
-        - Returns the reconstructed delegate (NOT object_instance)
-        - Callers needing the lifecycle object (orchestrator) should use state.object_instance
-
-        Args:
-            update_delegate: If True, apply reconstructed delegate to object_instance
-            sync_delegate: If True (default), check for delegate changes before reconstruction.
-                          Set to False during cache recomputation to avoid re-entrant invalidation.
-
-        Returns:
-            The reconstructed object that matches the stored parameters.
-            For delegation, this is the delegate type (config), not the lifecycle object.
-        """
-        # Auto-detect delegate changes before reconstruction (unless explicitly disabled)
+    def to_object(self, *, update_delegate=False, sync_delegate=True):
+        """Materialize through the admitted root; apply a cached result only on request."""
         if sync_delegate:
             self._check_and_sync_delegate()
-
-        if self._cached_object is not None:
-            if not update_delegate:
-                return self._cached_object
-            if self._delegate_attr is None or self._cached_object_applied:
-                return self._cached_object
-            # Apply cached delegate to lifecycle object when requested
-            setattr(self.object_instance, self._delegate_attr, self._cached_object)
-            self._cached_object_applied = True
-            return self._cached_object
-
-        # UNIFIED: reconstruct nested dataclass fields
-        # Works for dataclass, non-dataclass class instances, AND functions
-        import copy
-
-        # For delegation, work with the extraction target (delegate), not object_instance
-        target = self._extraction_target
-
-        # Collect ALL top-level field updates from self._parameters
-        # This includes both primitive fields AND nested dataclass fields
-        field_updates = self.reconstruct_top_level_parameters()
-
-        # Reconstruct the target object (either object_instance or delegate)
-        reconstructed = None
-
-        # Python functions can't be copied, but we CAN update their attributes
-        # This is critical for MRO resolution to see edited config values
-        if isinstance(target, FunctionType):
-            for field_name, field_value in field_updates.items():
-                setattr(target, field_name, field_value)
-            reconstructed = target
-        elif DataclassFieldAccess.is_container(target):
-            # CRITICAL: Use replace_raw to preserve raw None values!
-            # dataclasses.replace triggers lazy resolution via __getattribute__,
-            # which resolves None -> concrete defaults and breaks inheritance.
-            from objectstate.lazy_factory import replace_raw
-            reconstructed = replace_raw(target, **field_updates)
-        else:
-            # Non-dataclass class instance - shallow copy + setattr
-            obj_copy = copy.copy(target)
-            obj_type = type(target)
-            for field_name, field_value in field_updates.items():
-                # Skip read-only properties (those without setters)
-                prop = getattr(obj_type, field_name, None)
-                if isinstance(prop, property) and prop.fset is None:
-                    continue
-                setattr(obj_copy, field_name, field_value)
-            reconstructed = obj_copy
-
-        # DELEGATION: If using delegation, update the delegate attribute on object_instance
-        # as a side effect, but return the reconstructed delegate (not object_instance).
-        # This ensures callers get the correct type (config, not orchestrator).
-        # Callers who need the lifecycle object should access state.object_instance directly.
-        if self._delegate_attr is not None:
-            if update_delegate:
-                setattr(self.object_instance, self._delegate_attr, reconstructed)
-                self._cached_object_applied = True
+        if self._cached_object is None:
+            values = self._parameter_structure.direct_values('', self._parameters, self._target)
+            self._cached_object = self._target.with_fields(values)
+            self._cached_object_applied = False
+        node = self._cached_object
+        if update_delegate and not self._cached_object_applied:
+            if self._delegate_attr is None:
+                self.object_instance = node.stored
             else:
-                self._cached_object_applied = False
-            # Return the reconstructed delegate - this is what the parameters represent
-            self._cached_object = reconstructed
-        else:
-            # NON-DELEGATION: Update object_instance to point to reconstructed object
-            # This ensures that when to_object() is called (e.g., on window save),
-            # the ObjectState automatically points to the new instance
-            if update_delegate:
-                self.object_instance = reconstructed
-                self._extraction_target = reconstructed
-                logger.debug(f"Auto-updated object_instance to new reconstructed object for scope={self.scope_id!r}")
-            self._cached_object = reconstructed
+                setattr(self.object_instance, self._delegate_attr, node.stored)
+            self._target = node
             self._cached_object_applied = True
-
-        return self._cached_object
+        return node.stored
 
 
 
@@ -2537,10 +2241,11 @@ class ObjectState:
         """
         changed_params = []
 
-        # Get all parameter names from the new extraction target
+        old_values = ParameterStructure.project_target(old_target, type(self))
+        new_values = ParameterStructure.project_target(new_target, type(self))
         for param_name in self._parameters.keys():
-            old_value = self._get_param_value_from_target(old_target, param_name)
-            new_value = self._get_param_value_from_target(new_target, param_name)
+            old_value = old_values.get(param_name, Unset())
+            new_value = new_values.get(param_name, Unset())
 
             if old_value != new_value:
                 container_type = self._parameter_structure.owner_paths.get(param_name, type(self.object_instance))
@@ -2548,22 +2253,3 @@ class ObjectState:
                 changed_params.append((param_name, container_type, leaf_field_name))
 
         return changed_params
-
-    def _get_param_value_from_target(self, target: Any, param_name: str) -> Any:
-        """
-        Get a parameter value from an extraction target by dotted path.
-
-        Handles nested dataclass attributes.
-        """
-        if target is None:
-            return None
-
-        parts = param_name.split('.')
-        current = target
-
-        for part in parts:
-            if not hasattr(current, part):
-                return None
-            current = getattr(current, part)
-
-        return current

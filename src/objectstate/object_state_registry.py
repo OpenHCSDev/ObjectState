@@ -26,10 +26,12 @@ import copy
 from objectstate.object_state_metadata import ObjectStateMetadataStore
 from objectstate.construction_binding import StateConstructionBinding
 from objectstate.scope_key import ScopeKey
+from objectstate.field_value import Unset
 from objectstate.parameter_owner import ParameterOwner
 from objectstate.snapshot_model import Snapshot, StateSnapshot, Timeline
 from objectstate.time_travel_profile import TimeTravelProfiler
 from objectstate.transaction_checkpoint import ObjectStateTransactionCheckpoint
+from python_introspect import resolve_declared_type
 
 if TYPE_CHECKING:
     from objectstate.object_state import ObjectState
@@ -452,7 +454,7 @@ class ObjectStateRegistry:
         where it was not registered) ends that at once.
         """
         state = cls._states.get("")
-        if state is not None and type(state._extraction_target) is config_type:
+        if state is not None and type(state._target.stored) is config_type:
             return state
         return None
 
@@ -821,12 +823,11 @@ class ObjectStateRegistry:
         include_origin: bool = True,
     ) -> None:
         """Immediate implementation for scope/type/field-aware invalidation."""
-        from objectstate.lazy_factory import get_base_type_for_lazy
         changed_scope = cls._normalize_scope_id(scope_id)
 
         # Normalize to base type for comparison (LazyX → X)
         if isinstance(changed_type, type):
-            base_changed_type = get_base_type_for_lazy(changed_type) or changed_type
+            base_changed_type = resolve_declared_type(changed_type)
         else:
             base_changed_type = changed_type
 
@@ -1716,12 +1717,9 @@ class ObjectStateRegistry:
     ) -> Dict[str, Tuple[Any, Any]]:
         changed: Dict[str, Tuple[Any, Any]] = {}
         for param_key in set(target_params.keys()) | set(current_params.keys()):
-            before = current_params.get(param_key)
-            after = target_params.get(param_key)
-            if DataclassFieldAccess.is_container(before) or DataclassFieldAccess.is_container(after):
-                continue
-            if before != after:
-                changed[param_key] = (before, after)
+            before = current_params.get(param_key, Unset())
+            after = target_params.get(param_key, Unset())
+            changed.update(after.history_changes(before, param_key))
         return changed
 
     @staticmethod
@@ -1733,8 +1731,8 @@ class ObjectStateRegistry:
     ) -> Dict[str, Tuple[Any, Any]]:
         return {
             path: (
-                current_live.get(path),
-                target_live.get(path),
+                current_live.get(path, Unset()),
+                target_live.get(path, Unset()),
             )
             for path in changed_paths
         }

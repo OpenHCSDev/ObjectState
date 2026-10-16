@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, fields
 from types import GetSetDescriptorType, MemberDescriptorType
 from typing import Iterable, Iterator
 
@@ -83,36 +83,12 @@ class DataclassFieldAccess:
     _SLOT_DESCRIPTOR_TYPES = (MemberDescriptorType, GetSetDescriptorType)
 
     @staticmethod
-    def is_config_type(value_type) -> bool:
-        """A dataclass declaration for domain data, not for stored meaning."""
-        from objectstate.field_value import FieldValue
-
-        return isinstance(value_type, type) and is_dataclass(value_type) and not issubclass(value_type, FieldValue)
-
-    @classmethod
-    def is_container(cls, value) -> bool:
-        """A domain configuration instance, never a class or a meaning member."""
-        return not isinstance(value, type) and cls.is_config_type(type(value))
-
-    @staticmethod
     def field_names(instance_or_type) -> frozenset[str]:
-        dataclass_type = instance_or_type if isinstance(instance_or_type, type) else type(instance_or_type)
-        if not is_dataclass(dataclass_type):
-            raise TypeError(
-                "DataclassFieldAccess requires a dataclass instance or type; "
-                f"got {dataclass_type!r}."
-            )
-        return frozenset(field.name for field in fields(dataclass_type))
+        return frozenset(field.name for field in fields(instance_or_type))
 
     @staticmethod
     def init_field_names(instance_or_type) -> tuple[str, ...]:
-        dataclass_type = instance_or_type if isinstance(instance_or_type, type) else type(instance_or_type)
-        if not is_dataclass(dataclass_type):
-            raise TypeError(
-                "DataclassFieldAccess requires a dataclass instance or type; "
-                f"got {dataclass_type!r}."
-            )
-        return tuple(field.name for field in fields(dataclass_type) if field.init)
+        return tuple(field.name for field in fields(instance_or_type) if field.init)
 
     @classmethod
     def has_field(cls, instance_or_type, field_name: str) -> bool:

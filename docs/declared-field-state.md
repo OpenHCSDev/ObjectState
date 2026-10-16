@@ -21,8 +21,22 @@ Inspection retains `raw` and `resolved` as `FieldValue` members. The family is
 dataclass-declared, so the existing declaration-aware JSON codec preserves
 `Value(None)`, `Inherit()` and `Unset()` with distinct member tags. Consumers
 invoke member behavior rather than transporting a value plus presence flags.
-`DataclassFieldAccess.is_container` and `is_config_type` distinguish domain
-configuration structure from these meaning members.
+`ValueDeclaration.of(annotation)` compiles field behavior from the resolved
+annotation, not from its payload. Its `admit(value)` preserves directives and
+selects configuration, nullable, scalar and collection behavior. Leaves have no
+configuration-child interface. Root constructor/function/instance namespaces
+are admitted separately through `construction_binding.admit_target`.
+
+`ParameterOwnerDeclaration` owns shared constructor declarations. Configuration
+rebuilding outside keyword initialization requires the explicit
+`ConfigurationRebuild.from_fields` capability. `InheritedDefault` is the single
+metadata key for inherited defaults; `ValueDefault` and `FactoryDefault` own
+materialization. Unknown default names raise `KeyError`; MRO traversal selects
+only declarations that actually declare the field.
+
+Type normalization uses python-introspect's public `resolve_declared_type`.
+LazyFactory supplies its registered relation once; consumers do not repeat lazy
+lookups, fallback expressions or normalization caches.
 
 Lazy constructor defaults are `Inherit()` without changing whether the domain
 annotation permits None. Required parameters without a value use `Unset()`.

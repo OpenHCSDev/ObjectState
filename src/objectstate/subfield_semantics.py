@@ -305,25 +305,8 @@ def _build_leaf(
 
 
 def _leaf_values(value) -> dict:
-    if not FieldValue.of(value).available():
-        return {}
-    return dict(_iter_leaf_values(value, StructuralValuePath()))
-
-
-def _iter_leaf_values(value, path: StructuralValuePath):
-    if DataclassFieldAccess.is_container(value):
-        for dataclass_field in dataclass_fields(type(value)):
-            child_path = path.child_field(dataclass_field.name)
-            child_value = DataclassFieldAccess.raw_value(value, dataclass_field.name)
-            yield from _iter_leaf_values(child_value, child_path)
-        return
-
-    if isinstance(value, (tuple, list)):
-        for index, child_value in enumerate(value):
-            yield from _iter_leaf_values(child_value, path.child_index(index))
-        return
-
-    yield path, value
+    member = FieldValue.of(value)
+    return dict(member.structural_leaves(StructuralValuePath())) if member.available() else {}
 
 
 def _ordered_paths(*leaf_sets: dict) -> tuple[StructuralValuePath, ...]:

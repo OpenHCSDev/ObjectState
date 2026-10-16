@@ -56,7 +56,6 @@ from objectstate.lazy_factory import (
     LazyDataclassFactory,
     auto_create_decorator,
     register_lazy_type_mapping,
-    get_base_type_for_lazy,
     get_lazy_type_for_base,
     # Constructor patching for code execution
     # Global config type checking
@@ -146,7 +145,6 @@ __all__ = [
     'LazyDataclassFactory',
     'auto_create_decorator',
     'register_lazy_type_mapping',
-    'get_base_type_for_lazy',
     'get_lazy_type_for_base',
     # Stored field meaning
     'FieldValue',

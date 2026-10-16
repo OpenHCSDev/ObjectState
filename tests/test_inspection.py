@@ -74,7 +74,7 @@ def test_resolver_failure_propagates_its_original_identity():
     failure = RuntimeError("failed real field read")
     class FailedRead(FieldProxy):
         @property
-        def value(self):
+        def resolved_member(self):
             raise failure
     state = ObjectState(Inspected())
     with pytest.raises(RuntimeError) as caught:

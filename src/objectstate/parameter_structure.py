@@ -6,10 +6,12 @@ import copy
 from dataclasses import dataclass, field, fields, replace
 from typing import Any
 
-from python_introspect import ParameterInfo
+from python_introspect import ParameterInfo, resolve_declared_type
 
 from objectstate.field_access import DataclassFieldAccess, DottedFieldPath
-from objectstate.field_value import Unset
+from objectstate.field_value import FieldValue, Unset
+from objectstate.declarations import ValueDeclaration
+from objectstate.construction_binding import admit_target
 from objectstate.parameter_owner import ParameterOwner
 
 
@@ -27,23 +29,28 @@ class ParameterStructure:
 
     def declare(self, path: str, info: ParameterInfo, owner: ParameterOwner) -> ParameterInfo:
         """Admit a declaration and its owner together, never the payload's type."""
-        declaration = info._replace(default_value=Unset()) if info.is_required else info
+        declaration = info._replace(default_value=Unset() if info.is_required else ValueDeclaration.of(info.param_type).admit(info.default_value))
         self.declarations[path] = declaration
         self.owner_paths[path] = owner
         return declaration
 
     def binding_owner(self, path: str) -> ParameterOwner:
         """Immutable declaration identity survives schema copying and undo."""
-        from objectstate.lazy_factory import get_base_type_for_lazy
+        return resolve_declared_type(self.owner_paths[path])
 
-        owner = self.owner_paths[path]
-        return (get_base_type_for_lazy(owner) or owner) if isinstance(owner, type) else owner
+    def admit(self, path, value):
+        return ValueDeclaration.of(self.declarations[path].param_type).admit(value)
+
+    def descendants(self, path, value, registered):
+        return ValueDeclaration.of(self.declarations[path].param_type).descendants(value, path, registered)
+
+    def resolved_child(self, parent, value, name, owner):
+        return ValueDeclaration.of(self.declarations[parent].param_type).resolved_child(value, name, owner)
 
     def container_types(self, values: dict[str, Any]):
         """Nominal payload types come from the projection, not declaration owners."""
-        for path, value in values.items():
-            if DataclassFieldAccess.is_container(value):
-                yield path, type(value)
+        for path, member in values.items():
+            yield from member.payload_types(path)
 
     def affected_paths(self, changed):
         """A container's presence/source is a dependency of every declared child."""
@@ -68,16 +75,6 @@ class ParameterStructure:
 
         return {path: info.description for path, info in self.declarations.items()}
 
-    def is_container_parameter(
-        self, name: str, value: Any, parameters: dict[str, Any]
-    ) -> bool:
-        """Identify a nested dataclass entry from its actual extracted children."""
-
-        if not DataclassFieldAccess.is_container(value):
-            return False
-        prefix = f"{name}."
-        return any(path.startswith(prefix) for path in parameters)
-
     @classmethod
     def for_target(
         cls, target: Any, exclusions: list[str] | None
@@ -87,10 +84,17 @@ class ParameterStructure:
         names = list(exclusions or [])
         return cls(
             exclusions=names,
-            excluded_values={
-                name: getattr(target, name) for name in names if hasattr(target, name)
-            },
+            excluded_values={name: target.read_raw(name) for name in names},
+
         )
+
+    @classmethod
+    def project_target(cls, target, state_type):
+        namespace = admit_target(target)
+        structure = cls.for_target(namespace, None)
+        values = {}
+        namespace.extract_parameters(state_type, values, structure)
+        return values
 
     def clone(self) -> ParameterStructure:
         """Detach owned maps without cloning declaration/target identities.
@@ -104,37 +108,22 @@ class ParameterStructure:
             **{item.name: copy.copy(getattr(self, item.name)) for item in fields(self)},
         )
 
-    def reconstruct(self, prefix, values, target, *, resolved=False):
-        """Build one projection from its own payload, preserving scalar terminals.
-
-        A container's stored None/Inherit/Unset is authoritative even when an
-        editor retains child drafts. Nominal type comes from that payload, never
-        from the declaration-owner index. Live and saved projections share this.
-        """
-        from objectstate.lazy_factory import get_base_type_for_lazy, replace_raw
-
-        prototype = values.get(prefix, Unset()) if prefix else target
-        if prefix and not DataclassFieldAccess.is_container(prototype):
-            return prototype
-        prefix_dot = f"{prefix}." if prefix else ""
-        direct = {}
-        for path, value in values.items():
-            if not path.startswith(prefix_dot):
-                continue
-            remainder = path[len(prefix_dot):]
-            if "." in remainder:
-                continue
-            direct[remainder] = (
-                self.reconstruct(path, values, target, resolved=resolved)
-                if DataclassFieldAccess.is_container(value) else value
-            )
+    def direct_values(self, prefix, values, target, *, resolved=False):
+        """Project topology; each admitted member owns reconstruction behavior."""
+        prefix_dot = f'{prefix}.' if prefix else ''
+        direct = {
+            path[len(prefix_dot):]: self.reconstruct_member(path, values, target, resolved=resolved)
+            for path in values
+            if path.startswith(prefix_dot) and '.' not in path[len(prefix_dot):]
+        }
         if not prefix:
             direct.update(self.excluded_values)
-        if DataclassFieldAccess.is_container(prototype):
-            if not resolved:
-                return replace_raw(prototype, **direct)
-            constructor = get_base_type_for_lazy(type(prototype)) or type(prototype)
-            arguments = DataclassFieldAccess.raw_init_values(prototype, constructor)
-            arguments.update(direct)
-            return constructor(**arguments)
-        return type(prototype)(**direct)
+        return direct
+
+    def reconstruct_member(self, prefix, values, target, *, resolved=False):
+        prototype = values.get(prefix, Unset()) if prefix else target
+        return prototype.reconstruct(prefix, values, self, target, resolved=resolved)
+
+    def reconstruct(self, prefix, values, target, *, resolved=False):
+        """Expose domain data only at the reconstruction boundary."""
+        return self.reconstruct_member(prefix, values, target, resolved=resolved).stored

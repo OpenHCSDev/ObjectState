@@ -10,11 +10,12 @@ The resolver is completely generic and has no application-specific dependencies.
 
 import functools
 import logging
-from dataclasses import MISSING, fields, is_dataclass
 from typing import Any, NamedTuple
 
 from objectstate.field_access import DataclassFieldAccess
 from objectstate.field_value import FieldValue, Unset
+from objectstate.declarations import ValueDeclaration
+from python_introspect import resolve_declared_type
 
 logger = logging.getLogger(__name__)
 
@@ -35,57 +36,18 @@ class ResolvedField(NamedTuple):
     source_type: type | None
 
 
-@functools.lru_cache(maxsize=None)
-def _normalize_to_base(t: type) -> type:
-    """Normalize lazy type to its base type for comparison.
-
-    LazyPartitionFilterConfig -> PartitionFilterConfig
-    PartitionFilterConfig -> PartitionFilterConfig
-
-    PERFORMANCE: Results are cached with lru_cache since type->base_type
-    mappings are immutable after class creation. Import is hoisted to
-    avoid per-call import overhead.
-    """
-    from objectstate.lazy_factory import get_base_type_for_lazy
-    return get_base_type_for_lazy(t) or t
-
-
-def _direct_owner_field_default(config_type: type, field_name: str):
-    """A declared own default, or Unset when this owner delegates the default."""
-    if not is_dataclass(config_type):
-        return Unset()
-    declaration = config_type.__dataclass_fields__.get(field_name)
-    if declaration is None or "_inherited_default" in declaration.metadata:
-        return Unset()
-    if declaration.default is not MISSING:
-        return declaration.default
-    if declaration.default_factory is not MISSING:
-        return declaration.default_factory()
-    return Unset()
-
-
 def declared_default(container_type: type, field_name: str) -> tuple[Any, type | None]:
-    """Read the declared default, retaining an explicit None as a real value."""
-    base = _normalize_to_base(container_type)
-    own = _direct_owner_field_default(base, field_name)
-    own_type = base if FieldValue.of(own).available() else None
-    if FieldValue.of(own).available():
-        return own, own_type
-    for owner in base.__mro__:
-        value = getattr(owner, field_name, Unset())
-        if FieldValue.of(value).available():
-            return value, own_type
-    if is_dataclass(container_type):
-        for declaration in fields(container_type):
-            if declaration.name != field_name:
-                continue
-            inherited = declaration.metadata.get("_inherited_default", MISSING)
-            if inherited is not MISSING and FieldValue.of(inherited).available():
-                return inherited, own_type
-            factory = declaration.metadata.get("_inherited_default_factory", MISSING)
-            if factory is not MISSING:
-                return factory(), own_type
-    return Unset(), own_type
+    """Defaults come from declarations, never slot descriptors or guessed attributes."""
+    base = ValueDeclaration.of(resolve_declared_type(container_type))
+    own = base.own_default(field_name)
+    own_type = base.declaring_type if own.available() else None
+    if own.available():
+        return own.stored, own_type
+    for declaration in base.configuration_mro(field_name):
+        value = declaration.own_default(field_name)
+        if value.available():
+            return value.stored, own_type
+    return ValueDeclaration.of(container_type).inherited_default(field_name).stored, own_type
 
 
 def resolve_with_provenance(container_type: type, field_name: str) -> ResolvedField:
@@ -139,7 +101,7 @@ def _resolve_in_layers(layers: tuple, container_type: type, field_name: str) -> 
     The order is stated with an example in ``docs/context_system.rst`` under
     "Precedence Order"; this function is its implementation.
     """
-    container_base = _normalize_to_base(container_type)
+    container_base = resolve_declared_type(container_type)
 
     visible_layers = tuple(reversed(layers))
 
@@ -149,10 +111,8 @@ def _resolve_in_layers(layers: tuple, container_type: type, field_name: str) -> 
     unset_type: type | None = None
     unset_found = False
 
-    for mro_class in container_base.__mro__:
-        if not is_dataclass(mro_class):
-            continue
-        mro_type = _normalize_to_base(mro_class)
+    for declaration in ValueDeclaration.of(container_base).configuration_mro(field_name):
+        mro_type = resolve_declared_type(declaration.declaring_type)
         outermost_scope: str | None = None
         held_by_a_layer = False
 
@@ -160,14 +120,11 @@ def _resolve_in_layers(layers: tuple, container_type: type, field_name: str) -> 
             config_instance = layer.configs.get(mro_type)
             if config_instance is None:
                 continue
+            value = config_instance.read_raw(field_name)
             held_by_a_layer = True
             outermost_scope = layer.scope_id
-            try:
-                value = DataclassFieldAccess.raw_value(config_instance, field_name)
-            except AttributeError:
-                continue
-            if FieldValue.of(value).available():
-                return ResolvedField(value, layer.scope_id, mro_type)
+            if value.available():
+                return ResolvedField(value.stored, layer.scope_id, mro_type)
 
         if held_by_a_layer and not unset_found:
             unset_found = True

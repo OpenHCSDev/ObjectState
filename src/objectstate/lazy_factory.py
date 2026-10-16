@@ -11,9 +11,12 @@ from abc import ABC
 from contextlib import contextmanager
 from objectstate.field_value import FieldValue, Inherit, Unset
 from objectstate.field_access import DataclassFieldAccess
-from dataclasses import MISSING, dataclass, field, fields, is_dataclass, make_dataclass
+from objectstate.declarations import ValueDeclaration, InheritedDefault, ValueDefault, FactoryDefault, admit_root_value
+from objectstate.dual_axis_resolver import resolve_with_provenance
+from objectstate.construction_binding import admit_target
+from dataclasses import MISSING, dataclass, field, fields, make_dataclass
 from functools import lru_cache
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar, Union, get_type_hints
+from typing import Annotated, Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar, Union, get_type_hints, get_args, get_origin
 
 from python_introspect import (
     make_optional,
@@ -22,7 +25,8 @@ from python_introspect import (
     resolve_optional,
 )
 
-from objectstate.ui_visibility import mark_ui_hidden_config
+from objectstate.ui_visibility import mark_ui_hidden_config, UIParameterVisibilityPolicy
+from python_introspect import resolve_declared_type
 
 # Note: dual_axis_resolver_recursive and lazy_placeholder imports kept inline to avoid circular imports
 
@@ -34,14 +38,6 @@ _lazy_type_registry: Dict[Type, Type] = {}
 _base_to_lazy_registry: Dict[Type, Type] = {}
 
 
-def _resolved_dataclass_annotations(dataclass_type: type) -> Dict[str, object]:
-    """Resolve declarations even while a class decorator precedes module binding."""
-
-    return get_type_hints(
-        dataclass_type,
-        localns={dataclass_type.__name__: dataclass_type},
-        include_extras=True,
-    )
 
 
 def _recreated_dataclass_namespace(
@@ -99,8 +95,8 @@ def get_inherited_field_names(cls: Type) -> set:
     # Get all field names from parent dataclasses
     parent_fields = set()
     for base in cls.__mro__[1:]:  # Skip cls itself
-        if dataclasses.is_dataclass(base):
-            parent_fields.update(base.__dataclass_fields__.keys())
+        for owner in ValueDeclaration.of(base).configuration_owners():
+            parent_fields.update(item.name for item in owner.declared_fields())
 
     # cls's OWN annotations (not inherited). Python 3.14 (PEP 649) no longer
     # stores them in cls.__dict__['__annotations__'].
@@ -109,26 +105,18 @@ def get_inherited_field_names(cls: Type) -> set:
     return parent_fields - own_defined
 
 
-def _inherited_default_metadata(field_definition) -> dict:
-    """Preserve one concrete dataclass field's standalone fallback values."""
-
+def _inheritance_metadata(field_definition) -> dict:
+    """Preserve a declaration's one inherited-default member."""
     metadata = dict(field_definition.metadata)
-    metadata.setdefault(
-        "_inherited_default",
-        (
-            field_definition.default
-            if field_definition.default is not MISSING
-            else MISSING
-        ),
-    )
-    metadata.setdefault(
-        "_inherited_default_factory",
-        field_definition.default_factory,
-    )
+    if InheritedDefault not in metadata:
+        if field_definition.default is not MISSING:
+            metadata[InheritedDefault] = ValueDefault(field_definition.default)
+        elif field_definition.default_factory is not MISSING:
+            metadata[InheritedDefault] = FactoryDefault(field_definition.default_factory)
     return metadata
 
 
-def rebuild_with_inherited_defaults(
+def rebuild_with_inheritance(
     cls: Type,
     inherited_field_names: Optional[set] = None,
     new_name: Optional[str] = None
@@ -148,19 +136,19 @@ def rebuild_with_inherited_defaults(
     Returns:
         A new class with the same fields but modified defaults
     """
-    if not dataclasses.is_dataclass(cls):
-        raise ValueError(f"{cls} is not a dataclass")
+    declaration = ValueDeclaration.of(cls)
+    declaration.require_config_type()
 
     if inherited_field_names is None:
         # All fields get None (for lazy classes)
         inherited_field_names = {f.name for f in fields(cls)}
 
-    annotations = _resolved_dataclass_annotations(cls)
+    annotations = ValueDeclaration.of(cls).field_annotations()
 
     # Build field definitions
     field_defs = []
     for f in fields(cls):
-        declared_type = annotations.get(f.name, f.type)
+        declared_type = annotations[f.name]
         if f.name in inherited_field_names:
             # Force None default, but preserve original default in metadata for fallback
             # This allows standalone usage to fall back to parent's static default
@@ -170,7 +158,7 @@ def rebuild_with_inherited_defaults(
                     declared_type,
                     field(
                         default=Inherit(),
-                        metadata=_inherited_default_metadata(f),
+                        metadata=_inheritance_metadata(f),
                     ),
                 )
             )
@@ -195,11 +183,7 @@ def rebuild_with_inherited_defaults(
     bases = cls.__bases__
 
     # Check if any base is a frozen dataclass - if so, new class must also be frozen
-    is_frozen = any(
-        dataclasses.is_dataclass(b) and b.__dataclass_fields__ and
-        getattr(b, '__dataclass_params__', None) and b.__dataclass_params__.frozen
-        for b in cls.__mro__[1:]
-    )
+    is_frozen = any(owner.frozen_declaration() for base in cls.__mro__[1:] for owner in ValueDeclaration.of(base).configuration_owners())
 
     # Get the original metaclass to preserve it
     orig_metaclass = type(cls)
@@ -243,9 +227,6 @@ def replace_raw(instance, **changes):
     Returns:
         A new instance with raw values preserved (not resolved)
     """
-    if not is_dataclass(instance):
-        raise TypeError(f"replace_raw() should be called on dataclass instances, got {type(instance)}")
-
     # Get all field values using object.__getattribute__ to avoid lazy resolution
     field_values = {}
     for f in fields(instance):
@@ -383,8 +364,7 @@ _GLOBAL_CONFIG_TYPES: set[type] = set()
 
 def mark_global_config_type(config_type: Type) -> Type:
     """Register config_type as an ObjectState global-config authority."""
-    if not isinstance(config_type, type) or not is_dataclass(config_type):
-        raise TypeError("Global config authorities must be dataclass types.")
+    ValueDeclaration.of(config_type).require_config_type()
     _GLOBAL_CONFIG_TYPES.add(config_type)
     return config_type
 
@@ -495,34 +475,8 @@ def get_lazy_type_for_base(base_type: Type) -> Optional[Type]:
     return _base_to_lazy_registry.get(base_type)
 
 
-def _normalized_config_type(annotation: object) -> Optional[type]:
-    """Return the nominal config owner declared by one field annotation."""
-
-    candidate = resolve_optional(resolve_annotated(annotation))
-    if not isinstance(candidate, type):
-        return None
-    return get_base_type_for_lazy(candidate) or candidate
 
 
-@lru_cache(maxsize=None)
-def _declared_config_field_names(
-    owner_type: type,
-    config_type: type,
-) -> Tuple[str, ...]:
-    """Find fields whose resolved declaration owns ``config_type``."""
-
-    if not is_dataclass(owner_type):
-        raise TypeError(f"{owner_type!r} is not a dataclass type.")
-    config_base = get_base_type_for_lazy(config_type) or config_type
-    annotations = _resolved_dataclass_annotations(owner_type)
-    return tuple(
-        field_definition.name
-        for field_definition in fields(owner_type)
-        if _normalized_config_type(
-            annotations.get(field_definition.name, field_definition.type)
-        )
-        is config_base
-    )
 
 
 def _single_declared_config_field(
@@ -533,12 +487,18 @@ def _single_declared_config_field(
 ) -> Optional[str]:
     """Select one annotation-owned config field and reject ambiguity."""
 
-    field_names = _declared_config_field_names(owner_type, config_type)
+    owner = ValueDeclaration.of(owner_type)
+    owner.require_config_type()
+    config_base = resolve_declared_type(config_type)
+    field_names = tuple(
+        name for name, declared_type in owner.configuration_fields()
+        if (resolve_declared_type(declared_type)) is config_base
+    )
     if len(field_names) == 1:
         return field_names[0]
     if not field_names and not required:
         return None
-    config_base = get_base_type_for_lazy(config_type) or config_type
+    config_base = resolve_declared_type(config_type)
     if not field_names:
         raise TypeError(
             f"{owner_type.__name__} has no field declared as "
@@ -631,7 +591,7 @@ class LazyMethodBindings:
             stack = context_layer_stack.get()
             if not stack.layers:
                 return declared_default(_cls, name)[0]
-            return value.resolve(lambda: resolve_in_stack(stack, _cls, name).value)
+            return value.resolve(lambda: FieldValue.of(resolve_in_stack(stack, _cls, name).value)).stored
 
         return __getattribute__
 
@@ -728,6 +688,21 @@ class LazyMethodBindings:
 class LazyDataclassFactory:
     """Generic factory for creating lazy dataclasses with flexible resolution."""
 
+    @classmethod
+    def configuration_field(cls, owner, declaration, annotation):
+        declared_type = owner.declaring_type
+        lazy_type = declared_type if resolve_declared_type(declared_type) is not declared_type else get_lazy_type_for_base(declared_type)
+        if lazy_type is None:
+            if not has_lazy_resolution(declared_type):
+                return ValueDeclaration.lazy_field(owner, declaration, annotation, cls)
+            lazy_type = cls.make_lazy_simple(declared_type)
+        transformed = Annotated[lazy_type, *get_args(annotation)[1:]] if get_origin(annotation) is Annotated else lazy_type
+        return transformed, field(default_factory=lazy_type, metadata=declaration.metadata)
+
+    @staticmethod
+    def configuration_editing_default(owner):
+        return owner.admit_data(owner.declaring_type()) if has_lazy_resolution(owner.declaring_type) else Inherit()
+
     @staticmethod
     def registered_type_pairs() -> tuple[tuple[type, type], ...]:
         """Project current lazy/public declarations without constructing values."""
@@ -737,94 +712,22 @@ class LazyDataclassFactory:
 
 
 
-    @staticmethod
-    def _introspect_dataclass_fields(
-        base_class: Type,
-        debug_template: str,
-    ) -> List[Tuple[str, Type, None]]:
-        """
-        Introspect dataclass fields for lazy loading.
-
-        Converts nested dataclass fields to lazy equivalents and makes fields Optional
-        if they lack defaults. Complex logic handles type unwrapping and lazy nesting.
-        """
-        base_fields = fields(base_class)
-        annotations = _resolved_dataclass_annotations(base_class)
-        lazy_field_definitions = []
-
-        for field_definition in base_fields:
-            # Check if field has default value or factory
-            has_default = (
-                field_definition.default is not MISSING
-                or field_definition.default_factory is not MISSING
-            )
-
-            # Check if field type is a dataclass that should be made lazy
-            field_type = annotations.get(
-                field_definition.name,
-                field_definition.type,
-            )
-            lazy_nested_type = None  # Track if we created a lazy nested type
-            nested_type = resolve_annotated(field_type)
-            nested_is_registered_lazy = (
-                isinstance(nested_type, type)
-                and (
-                    get_base_type_for_lazy(nested_type) is not None
-                    or get_lazy_type_for_base(nested_type) is not None
-                    or has_lazy_resolution(nested_type)
-                )
-            )
-            if is_dataclass(nested_type) and nested_is_registered_lazy:
-                if get_base_type_for_lazy(nested_type) is not None:
-                    lazy_nested_type = nested_type
-                else:
-                    lazy_nested_type = get_lazy_type_for_base(nested_type)
-                if lazy_nested_type is None:
-                    lazy_nested_type = LazyDataclassFactory.make_lazy_simple(nested_type)
-                field_type = lazy_nested_type
-                logger.debug(f"Created lazy class for {field_definition.name}: {nested_type} -> {lazy_nested_type}")
-
-            # CRITICAL FIX: For lazy configs, nested dataclass fields should use default_factory
-            # to provide lazy instances (e.g., LazyPathPlanningConfig), not None.
-            # This allows getattr(pipeline_config, 'path_planning_config') to return an instance.
-            # Non-dataclass fields still default to None for placeholder inheritance.
-            # CRITICAL: Always preserve metadata from original field (e.g., ui_hidden flag)
-            if lazy_nested_type is not None:
-                final_field_type = field_type
-                # Nested dataclass field: use default_factory so accessing returns an instance
-                # This matches AbstractStep pattern: napari_streaming_config = LazyNapariStreamingConfig()
-                field_def = (
-                    field_definition.name,
-                    final_field_type,
-                    dataclasses.field(
-                        default_factory=lazy_nested_type,
-                        metadata=field_definition.metadata,
-                    ),
-                )
-            else:
-                final_field_type = field_type
-                # CRITICAL FIX: For lazy configs, ALL non-dataclass fields should default to None
-                # This enables proper inheritance from parent configs and placeholder styling
-                field_def = (
-                    field_definition.name,
-                    final_field_type,
-                    dataclasses.field(
-                        default=Inherit(),
-                        metadata=_inherited_default_metadata(field_definition),
-                    ),
-                )
-
-            lazy_field_definitions.append(field_def)
-
-            # Debug logging with provided template (reduced to DEBUG level to reduce log pollution)
+    @classmethod
+    def _introspect_dataclass_fields(cls, base, debug_template):
+        """Declaration members produce their field definition, not type flags."""
+        annotations = base.field_annotations()
+        definitions = []
+        for declaration in base.declared_fields():
+            annotation = annotations[declaration.name]
+            final_type, field_definition = ValueDeclaration.of(resolve_annotated(annotation)).lazy_field(declaration, annotation, cls)
+            definitions.append((declaration.name, final_type, field_definition))
             logger.debug(debug_template.format(
-                field_name=field_definition.name,
-                original_type=field_definition.type,
-                has_default=has_default,
-                final_type=final_field_type
+                field_name=declaration.name,
+                original_type=declaration.type,
+                has_default=(declaration.default is not MISSING or declaration.default_factory is not MISSING),
+                final_type=final_type,
             ))
-
-        return lazy_field_definitions
+        return definitions
 
     @staticmethod
     def _create_lazy_dataclass_unified(
@@ -839,8 +742,8 @@ class LazyDataclassFactory:
         binds resolution methods, and registers type mappings. Complex orchestration
         of field analysis, method binding, and class creation.
         """
-        if not is_dataclass(base_class):
-            raise ValueError(f"{base_class} must be a dataclass")
+        declaration = ValueDeclaration.of(base_class)
+        declaration.require_config_type()
 
         registered_type = get_lazy_type_for_base(base_class)
         if registered_type is not None:
@@ -880,17 +783,13 @@ class LazyDataclassFactory:
 
         # Check if base_class is frozen - must match to avoid inheritance error
         # "cannot inherit frozen dataclass from a non-frozen one" and vice versa
-        base_is_frozen = (
-            is_dataclass(base_class) and
-            hasattr(base_class, '__dataclass_params__') and
-            base_class.__dataclass_params__.frozen
-        )
+        base_is_frozen = declaration.frozen_declaration()
 
         # Single make_dataclass call - no duplication
         lazy_class = make_dataclass(
             lazy_class_name,
             LazyDataclassFactory._introspect_dataclass_fields(
-                base_class,
+                declaration,
                 debug_template,
             ),
             bases=bases,
@@ -982,80 +881,12 @@ class LazyDataclassFactory:
 
 
 def resolve_lazy_configurations_for_serialization(data: Any) -> Any:
+    """Admit one input graph; members own recursive resolution and reconstruction.
+
+    Inheritance requests require an active configuration context. Constructor
+    failures propagate; serialization never bypasses a domain constructor.
     """
-    Recursively resolve lazy dataclass instances to concrete values for serialization.
-
-    CRITICAL: This function must be called WITHIN a config_context() block!
-    The context provides the hierarchy for lazy resolution.
-
-    How it works:
-    1. For lazy dataclasses: Access fields with getattr() to trigger resolution
-    2. The lazy __getattribute__ uses the active config_context() to resolve None values
-    3. Convert resolved values to base config for pickling
-
-    Example (from README.md):
-        with config_context(orchestrator.pipeline_config):
-            # Lazy resolution happens here via context
-            resolved_steps = resolve_lazy_configurations_for_serialization(steps)
-    """
-    # Check if this is a lazy dataclass
-    base_type = get_base_type_for_lazy(type(data))
-    if base_type is not None:
-        # This is a lazy dataclass - resolve fields using getattr() within the active context
-        # getattr() triggers lazy __getattribute__ which uses config_context() for resolution
-        resolved_fields = {}
-        for f in fields(data):
-            # CRITICAL: Use getattr() to trigger lazy resolution via context
-            # The active config_context() provides the hierarchy for resolution
-            resolved_value = getattr(data, f.name)
-            resolved_fields[f.name] = resolved_value
-
-        # Create base config instance with resolved values
-        resolved_data = base_type(**resolved_fields)
-    else:
-        # Not a lazy dataclass
-        resolved_data = data
-
-    # Recursively process nested structures based on type
-    if is_dataclass(resolved_data) and not isinstance(resolved_data, type):
-        # Process dataclass fields recursively
-        logger.debug(f"Resolving fields for {type(resolved_data).__name__}: {[f.name for f in fields(resolved_data)]}")
-        resolved_fields = {}
-        for f in fields(resolved_data):
-            field_value = getattr(resolved_data, f.name)
-            logger.debug(f"Resolving {type(resolved_data).__name__}.{f.name} = {type(field_value).__name__}")
-            resolved_fields[f.name] = resolve_lazy_configurations_for_serialization(field_value)
-        cls = type(resolved_data)
-
-        # Optional hook: allow dataclasses with custom constructors to control rebuild.
-        rebuild = getattr(cls, "__objectstate_rebuild__", None)
-        if callable(rebuild):
-            return rebuild(**resolved_fields)
-
-        # Default: try normal construction, then fall back to field-wise construction.
-        try:
-            return cls(**resolved_fields)
-        except TypeError:
-            obj = cls.__new__(cls)
-            for k, v in resolved_fields.items():
-                object.__setattr__(obj, k, v)
-            return obj
-
-    elif isinstance(resolved_data, dict):
-        # Process dictionary values recursively
-        return {
-            key: resolve_lazy_configurations_for_serialization(value)
-            for key, value in resolved_data.items()
-        }
-
-    elif isinstance(resolved_data, (list, tuple)):
-        # Process sequence elements recursively
-        resolved_items = [resolve_lazy_configurations_for_serialization(item) for item in resolved_data]
-        return type(resolved_data)(resolved_items)
-
-    else:
-        # Primitive type or unknown structure - return as-is
-        return resolved_data
+    return admit_root_value(data).for_serialization(resolve_with_provenance)
 
 
 # Generic dataclass editing with configurable value preservation
@@ -1063,22 +894,19 @@ T = TypeVar('T')
 
 
 def create_dataclass_for_editing(dataclass_type: Type[T], source_config: Any, preserve_values: bool = False, context_provider: Optional[Callable[[Any], None]] = None) -> T:
-    """Create dataclass for editing with configurable value preservation."""
-    if not is_dataclass(dataclass_type):
-        raise ValueError(f"{dataclass_type} must be a dataclass")
-
-    # Set up context if provider is given (e.g., thread-local storage)
+    """Preserve stored meanings, or create inherited drafts without inventing nulls."""
+    declaration = ValueDeclaration.of(dataclass_type)
+    constructor = declaration.require_config_type()
     if context_provider:
         context_provider(source_config)
-
-    field_values = {
-        f.name: (getattr(source_config, f.name) if preserve_values
-                else f.type() if is_dataclass(f.type) and has_lazy_resolution(f.type)
-                else None)
-        for f in fields(dataclass_type)
+    source = admit_target(source_config)
+    annotations = declaration.field_annotations()
+    values = {
+        field.name: (source.read_raw(field.name) if preserve_values
+                     else ValueDeclaration.of(annotations[field.name]).editing_default(LazyDataclassFactory))
+        for field in declaration.declared_fields() if field.init
     }
-
-    return dataclass_type(**field_values)
+    return constructor(**{name: member.stored for name, member in values.items()})
 
 
 
@@ -1203,7 +1031,7 @@ def declare_group_abbreviation(config_type: type, name: str) -> None:
     A lazy class has no abbreviation of its own: the declaration lands on its
     base class. A second, different declaration for one class raises.
     """
-    declaring_type = get_base_type_for_lazy(config_type) or config_type
+    declaring_type = resolve_declared_type(config_type)
     declared = vars(declaring_type).get(GROUP_ABBREVIATION_ATTRIBUTE)
     if declared is not None and declared != name:
         raise ValueError(
@@ -1224,7 +1052,7 @@ def get_group_abbreviation(config_type: str | type) -> str:
     if isinstance(config_type, str):
         return config_type.split('_')[0] if config_type else "root"
 
-    declaring_type = get_base_type_for_lazy(config_type) or config_type
+    declaring_type = resolve_declared_type(config_type)
     for ancestor in declaring_type.__mro__:
         declared = vars(ancestor).get(GROUP_ABBREVIATION_ATTRIBUTE)
         if declared is not None:
@@ -1272,7 +1100,7 @@ def create_global_default_decorator(target_config_class: Type):
                 # This replaces the old pre-process setattr + post-process Field patching
                 inherited_fields = get_inherited_field_names(actual_cls)
                 if inherited_fields:
-                    actual_cls = rebuild_with_inherited_defaults(actual_cls, inherited_fields)
+                    actual_cls = rebuild_with_inheritance(actual_cls, inherited_fields)
 
             field_name = _camel_to_snake(actual_cls.__name__)
 
@@ -1324,7 +1152,7 @@ def create_global_default_decorator(target_config_class: Type):
                     'field_name': field_name,
                     'optional': optional,  # Store the optional flag
                     'inherit_fields': inherit_fields,  # Store the inherit_fields flag
-                    'ui_hidden': ui_hidden  # Store the ui_hidden flag for field metadata
+                    UIParameterVisibilityPolicy: ui_hidden
                 })
 
             # Immediately create lazy version of this config (not dependent on injection)
@@ -1356,7 +1184,7 @@ def create_global_default_decorator(target_config_class: Type):
                 ALWAYS_VIEWABLE_FIELDS_REGISTRY[lazy_class] = always_viewable_fields
 
             # Note: No Stage 3 post-processing needed!
-            # - Base class: rebuilt via rebuild_with_inherited_defaults() above
+            # - Base class: rebuilt via rebuild_with_inheritance() above
             # - Lazy class: _introspect_dataclass_fields() already sets None defaults
 
             return actual_cls
@@ -1390,9 +1218,9 @@ def _inject_multiple_fields_into_dataclass(target_class: Type, configs: List[Dic
     """Mathematical simplification: Batch field injection with direct dataclass recreation."""
     # Imports moved to top-level
 
-    annotations = _resolved_dataclass_annotations(target_class)
+    annotations = ValueDeclaration.of(target_class).field_annotations()
     existing_fields = [
-        (f.name, annotations.get(f.name, f.type), copy.copy(f))
+        (f.name, annotations[f.name], copy.copy(f))
         for f in fields(target_class)
     ]
 
@@ -1411,7 +1239,7 @@ def _inject_multiple_fields_into_dataclass(target_class: Type, configs: List[Dic
             # CRITICAL: GlobalPipelineConfig needs default_factory to create instances with defaults
             # PipelineConfig (created by make_lazy_simple) automatically gets default=None
             # So we use default_factory here for GlobalPipelineConfig fields
-            default_value = field(default_factory=field_type, metadata={'ui_hidden': is_ui_hidden})
+            default_value = field(default_factory=field_type, metadata=UIParameterVisibilityPolicy.field_metadata(is_ui_hidden))
 
         return (config['field_name'], field_type, default_value)
 

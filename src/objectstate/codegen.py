@@ -40,18 +40,7 @@ def _set_field_names(value: LazyDataclass) -> frozenset[str]:
 def raw_values_equal(left: object, right: object) -> bool:
     """Whether two values are equal, comparing dataclasses by raw field values."""
 
-    if DataclassFieldAccess.is_container(left) and DataclassFieldAccess.is_container(right):
-        if type(left) is not type(right):
-            return False
-        return all(
-            raw_values_equal(
-                DataclassFieldAccess.raw_value(left, field.name),
-                DataclassFieldAccess.raw_value(right, field.name),
-            )
-            for field in fields(left)
-            if field.init
-        )
-    return left == right
+    return FieldValue.of(left).source_equals(FieldValue.of(right))
 
 
 def field_needs_source(current: object, default: object, context: FormatContext) -> bool:

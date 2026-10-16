@@ -68,7 +68,15 @@ class UIParameterVisibilityRequest:
 
 
 class UIParameterVisibilityPolicy:
-    """Authority for deciding whether a parameter is omitted from generic UI forms."""
+    """Authority for field metadata and omission from generic UI forms."""
+
+    @classmethod
+    def field_metadata(cls, hidden: bool) -> dict:
+        return {cls: hidden}
+
+    @classmethod
+    def field_hidden(cls, declaration) -> bool:
+        return cls in declaration.metadata and declaration.metadata[cls]
 
     @classmethod
     def should_hide(cls, request: UIParameterVisibilityRequest) -> bool:

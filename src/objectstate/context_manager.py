@@ -23,10 +23,12 @@ import threading
 from collections.abc import Sequence
 from contextlib import ExitStack, contextmanager
 from typing import Any, Dict, get_type_hints
-from dataclasses import fields, is_dataclass
 from python_introspect import resolve_annotated, resolve_optional
 from objectstate.field_access import DataclassFieldAccess
 from objectstate.field_value import FieldValue
+from objectstate.declarations import ValueDeclaration, admit_root_value
+from objectstate.construction_binding import admit_target
+from python_introspect import resolve_declared_type
 
 logger = logging.getLogger(__name__)
 
@@ -50,11 +52,11 @@ class ContextLayer:
     ``scope_id`` is ``None`` for a layer entered without one.
     """
 
-    __slots__ = ("scope_id", "obj", "_configs")
+    __slots__ = ("scope_id", "value", "_configs")
 
     def __init__(self, scope_id: str | None, obj: Any):
         self.scope_id = scope_id
-        self.obj = obj
+        self.value = admit_target(obj)
         self._configs: dict[type, Any] | None = None
 
     @property
@@ -62,11 +64,11 @@ class ContextLayer:
         """The config instances this layer holds, by type. Extracted once per layer."""
         configs = self._configs
         if configs is None:
-            configs = self._configs = extract_all_configs(self.obj)
+            configs = self._configs = self.value.context_configs()
         return configs
 
     def __repr__(self) -> str:
-        return f"ContextLayer({self.scope_id!r}, {type(self.obj).__name__})"
+        return f"ContextLayer({self.scope_id!r}, {type(self.value.stored).__name__})"
 
 
 class ContextLayerStack:
@@ -97,52 +99,29 @@ context_layer_stack: contextvars.ContextVar[ContextLayerStack] = contextvars.Con
     'context_layer_stack', default=NO_LAYERS
 )
 
-def _merge_nested_dataclass(base, override):
-    """Merge stored values; Inherit delegates, while None is a concrete override."""
-    return FieldValue.of(override).overlay(base, _merge_concrete_dataclass)
 
 
-def _merge_concrete_dataclass(base, override):
-    if not DataclassFieldAccess.is_container(base) or not DataclassFieldAccess.is_container(override):
-        return override
-    from objectstate.lazy_factory import get_base_type_for_lazy, replace_raw
-    base_type = get_base_type_for_lazy(type(base)) or type(base)
-    override_type = get_base_type_for_lazy(type(override)) or type(override)
-    result_owner = base if base_type is override_type else override
-    base_fields = DataclassFieldAccess.field_names(base)
-    values = {
-        f.name: _merge_nested_dataclass(
-            DataclassFieldAccess.raw_value(base, f.name),
-            DataclassFieldAccess.raw_value(override, f.name),
-        )
-        for f in fields(override) if f.name in base_fields
-    }
-    return replace_raw(result_owner, **values) if values else result_owner
 
 
 @contextmanager
 def config_context(obj, use_live_global: bool = True, scope_id: str | None = None):
-    """Enter one layer. A stored None always supplies a concrete value."""
+    """Enter one admitted layer; field members own merge and raw-read behavior."""
     from objectstate.config import get_base_config_type
-    from objectstate.lazy_factory import replace_raw
+
     current = get_current_temp_global()
-    base = current if current is not None else get_base_global_config(use_live=use_live_global)
+    base = admit_root_value(current if current is not None else get_base_global_config(use_live=use_live_global))
+    incoming = admit_target(obj)
     overrides = {}
     if obj is not None:
-        read = DataclassFieldAccess.raw_value if DataclassFieldAccess.is_container(obj) else getattr
-        for declaration in fields(get_base_config_type()):
-            try:
-                value = read(obj, declaration.name)
-            except AttributeError:
-                continue
-            base_value = DataclassFieldAccess.raw_value(base, declaration.name)
-            overrides[declaration.name] = _merge_nested_dataclass(base_value, value)
-    merged = replace_raw(base, **overrides) if overrides else base
+        global_declaration = ValueDeclaration.of(get_base_config_type())
+        for name in incoming.declaration.parameters.keys() & global_declaration.parameters.keys():
+            overrides[name] = incoming.read_raw(name).overlay(base.read_raw(name))
+    merged = base.with_fields(overrides).stored if overrides else base.stored
     types = context_type_stack.get()
-    stack = context_layer_stack.get() if current is not None else ContextLayerStack((ContextLayer("", base),))
+    stack = context_layer_stack.get() if current is not None else ContextLayerStack((ContextLayer('', base),))
     if obj is not None:
-        stack = stack.with_layer(ContextLayer(scope_id, obj))
-        types += (type(obj),)
+        stack = stack.with_layer(ContextLayer(scope_id, incoming))
+        types += (type(incoming.stored),)
     with ExitStack() as resources:
         for variable, value in ((current_temp_global, merged), (context_type_stack, types), (context_layer_stack, stack)):
             resources.callback(variable.reset, variable.set(value))
@@ -187,18 +166,6 @@ def get_context_layer_stack() -> ContextLayerStack:
     return context_layer_stack.get()
 
 
-@functools.lru_cache(maxsize=None)
-def _normalize_type(t):
-    """Normalize a type by getting its base type if it's a lazy variant.
-
-    This function is defined here to avoid circular imports with lazy_factory.
-    The actual get_base_type_for_lazy is imported lazily when needed.
-
-    PERFORMANCE: Results are cached with lru_cache since type->base_type
-    mappings are immutable after class creation.
-    """
-    from objectstate.lazy_factory import get_base_type_for_lazy
-    return get_base_type_for_lazy(t) or t
 
 
 def _is_global_type(t):
@@ -225,7 +192,7 @@ def _normalize_type_for_hierarchy(t):
 
     Rule: If normalization would produce a global type from a non-global type, keep the original.
     """
-    normalized = _normalize_type(t)
+    normalized = resolve_declared_type(t)
     # Don't collapse lazy-to-global - they're distinct hierarchy levels
     if _is_global_type(normalized) and not _is_global_type(t):
         return t
@@ -312,7 +279,7 @@ def get_normalized_stack():
     canonical_stack = get_context_type_stack()
     normalized = []
     for t in canonical_stack:
-        base_t = _normalize_type(t)
+        base_t = resolve_declared_type(t)
         if not _is_global_type(base_t):
             normalized.append(base_t)
     return normalized
@@ -335,7 +302,7 @@ def get_types_before_in_stack(target_type):
     # First try active context stack
     normalized_stack = get_normalized_stack()
     if normalized_stack:
-        target_base = _normalize_type(target_type)
+        target_base = resolve_declared_type(target_type)
 
         # Find target's position
         target_index = -1
@@ -365,18 +332,17 @@ def is_ancestor_in_context(ancestor_type, descendant_type):
         True if ancestor_type is an ancestor of descendant_type,
         False otherwise.
     """
-    from objectstate.lazy_factory import get_base_type_for_lazy
 
     # Check 1: Is ancestor_type the lazy base of descendant_type?
     # This handles GlobalPipelineConfig → PipelineConfig relationship
     # PipelineConfig is a lazy version of GlobalPipelineConfig
-    descendant_base = get_base_type_for_lazy(descendant_type)
-    if descendant_base is not None and descendant_base == ancestor_type:
+    descendant_base = resolve_declared_type(descendant_type)
+    if descendant_base is not descendant_type and descendant_base == ancestor_type:
         return True
 
     # Check 2: Normalize for comparison (handles nested lazy configs like LazyPathPlanningConfig)
-    ancestor_base = _normalize_type(ancestor_type)
-    descendant_normalized = _normalize_type(descendant_type)
+    ancestor_base = resolve_declared_type(ancestor_type)
+    descendant_normalized = resolve_declared_type(descendant_type)
 
     # Check 3: Active context stack (uses normalized types)
     normalized_stack = get_normalized_stack()
@@ -395,7 +361,7 @@ def is_ancestor_in_context(ancestor_type, descendant_type):
     # Check 4: Known hierarchy registry (uses actual types, not normalized)
     ancestors = get_ancestors_from_hierarchy(descendant_type)
     # Check if ancestor_type OR its normalized form is in the ancestor list
-    return ancestor_type in ancestors or ancestor_base in [_normalize_type(a) for a in ancestors]
+    return ancestor_type in ancestors or ancestor_base in [resolve_declared_type(a) for a in ancestors]
 
 
 def is_same_type_in_context(type_a, type_b):
@@ -411,7 +377,7 @@ def is_same_type_in_context(type_a, type_b):
     Returns:
         True if both types normalize to the same base type.
     """
-    return _normalize_type(type_a) == _normalize_type(type_b)
+    return resolve_declared_type(type_a) == resolve_declared_type(type_b)
 
 
 # ============================================================================
@@ -507,22 +473,16 @@ def get_current_temp_global():
 # Utility functions for debugging and introspection
 
 def get_context_info() -> Dict[str, Any]:
-    """
-    Get information about current context for debugging.
-    
-    Returns:
-        Dict with context information including type, field count, etc.
-    """
     current = get_current_temp_global()
     if current is None:
-        return {"active": False}
-        
+        return {'active': False}
+    node = admit_target(current)
+    declarations = node.declared_fields()
     return {
-        "active": True,
-        "type": type(current).__name__,
-        "field_count": len(fields(current)) if is_dataclass(current) else 0,
-        "non_none_fields": sum(1 for f in fields(current) 
-                              if getattr(current, f.name) is not None) if is_dataclass(current) else 0
+        'active': True,
+        'type': type(current).__name__,
+        'field_count': len(declarations),
+        'non_none_fields': sum(node.read_raw(field.name).stored is not None for field in declarations),
     }
 
 
@@ -543,144 +503,17 @@ def extract_all_configs_from_context() -> Dict[type, Any]:
     return extract_all_configs(current)
 
 
-@functools.cache
-def _declared_config_fields(dataclass_type: type) -> tuple[tuple[str, type], ...]:
-    """The fields of a dataclass type that are declared as dataclass types, with those types.
-
-    A fact about the class, so it is kept per class.
-    """
-    annotations = get_type_hints(dataclass_type, include_extras=True)
-    declared = []
-    for field_info in fields(dataclass_type):
-        field_type = annotations.get(field_info.name, field_info.type)
-        actual_type = resolve_optional(resolve_annotated(field_type))
-        if is_dataclass(actual_type):
-            declared.append((field_info.name, actual_type))
-    return tuple(declared)
 
 
-def extract_all_configs(context_obj) -> Dict[type, Any]:
-    """
-    Extract all config instances from a context object using type-driven approach.
-
-    A context layer keeps its own result (``ContextLayer.configs``); this function
-    itself keeps nothing.
-
-    This function leverages dataclass field type annotations to efficiently extract
-    config instances, avoiding string matching and runtime attribute scanning.
-
-    Args:
-        context_obj: Object to extract configs from (orchestrator, merged config, etc.)
-
-    Returns:
-        Dict mapping nominal config types to config instances.
-    """
-    if context_obj is None:
-        return {}
-
-    configs: Dict[type, Any] = {}
-
-    # Include the context object itself if it's a dataclass
-    if DataclassFieldAccess.is_container(context_obj):
-        _record_config_instance(configs, context_obj, source="context object")
-
-    # Type-driven extraction: Use dataclass field annotations to find config fields
-    if DataclassFieldAccess.is_container(context_obj):
-        for field_name, declared_type in _declared_config_fields(type(context_obj)):
-            # Only concrete values contribute instances. Inherit/Unset do not
-            # recursively ask the context whose membership is being collected.
-            raw = DataclassFieldAccess.raw_value(context_obj, field_name)
-            FieldValue.of(raw).map(lambda concrete: _record_config_instance(
-                configs, concrete,
-                source=f"{type(context_obj).__name__}.{field_name}",
-                expected_type=declared_type,
-            ))
-
-    # For non-dataclass objects (orchestrators, etc.), extract dataclass attributes
-    else:
-        _extract_from_object_attributes_typed(context_obj, configs)
-
-    if logger.isEnabledFor(logging.DEBUG):
-        logger.debug(
-            "Extracted %d configs: %s",
-            len(configs),
-            [config_type.__name__ for config_type in configs],
-        )
-    return configs
+def extract_all_configs(context_obj):
+    """Admit an external context and return its typed configuration members."""
+    return admit_target(context_obj).context_configs()
 
 
-def _record_config_instance(
-    configs: Dict[type, Any],
-    config_instance: Any,
-    *,
-    source: str,
-    expected_type: type | None = None,
-) -> None:
-    """Admit concrete config instances, checking their declaration and identity."""
-
-    from objectstate.lazy_factory import get_base_type_for_lazy
-
-    if config_instance is None:
-        return  # A concrete nullable slot contributes no config instance.
-    if expected_type is not None and not _is_compatible_config_type(config_instance, expected_type):
-        raise TypeError(f"{source} declares {expected_type.__name__}, got {type(config_instance).__name__}.")
-    instance_type = type(config_instance)
-    base_type = get_base_type_for_lazy(instance_type) or instance_type
-    existing = configs.get(base_type)
-    if existing is not None and existing is not config_instance:
-        raise ValueError(
-            f"{source} introduces a second {base_type.__name__} instance into "
-            "one configuration context."
-        )
-    configs[base_type] = config_instance
 
 
-def _extract_from_object_attributes_typed(obj, configs: Dict[type, Any]) -> None:
-    """
-    Type-safe extraction from object attributes for non-dataclass objects.
-
-    This is used for orchestrators and other objects that aren't dataclasses
-    but have config attributes. Uses type checking instead of string matching.
-    """
-    for attr_name in dir(obj):
-        if attr_name.startswith('_'):
-            continue
-
-        try:
-            attr_value = getattr(obj, attr_name)
-        except (AttributeError, TypeError):
-            continue
-        if DataclassFieldAccess.is_container(attr_value):
-            _record_config_instance(
-                configs,
-                attr_value,
-                source=f"{type(obj).__name__}.{attr_name}",
-            )
-            logger.debug(
-                "Extracted config %s from attribute %s",
-                type(attr_value).__name__,
-                attr_name,
-            )
 
 
-def _is_compatible_config_type(value, expected_type) -> bool:
-    """
-    Check if value is compatible with expected_type, handling lazy-to-base type mapping.
-
-    This handles cases where:
-    - value is LazyStepMaterializationConfig, expected_type is StepMaterializationConfig
-    - value is a subclass of the expected type
-    - value is exactly the expected type
-    """
-    from objectstate.lazy_factory import get_base_type_for_lazy
-
-    expected_type = resolve_optional(resolve_annotated(expected_type))
-    if not isinstance(expected_type, type):
-        return False
-    value_type = type(value)
-    value_base = get_base_type_for_lazy(value_type) or value_type
-    expected_base = get_base_type_for_lazy(expected_type) or expected_type
-    return issubclass(value_base, expected_base)
 
 
 def spawn_thread_with_context(
