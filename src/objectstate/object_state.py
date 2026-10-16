@@ -46,7 +46,50 @@ from objectstate.value_semantics import semantic_values_equal
 
 logger = logging.getLogger(__name__)
 
-class FieldProxy:
+class FieldNamespace:
+    """Declaration discovery and observer lifetime shared by roots and fields.
+
+    A namespace promises neither a field default nor a writable datum. Each
+    concrete scope owns its admission check and changed-field projection.
+    """
+    @property
+    def _structure(self):
+        return self._state._parameter_structure
+
+    @property
+    def state(self):
+        return self._state
+
+    @property
+    def children(self):
+        self._require_present()
+        return tuple(self._state._field_at(path.value) for path in self._structure.direct_paths.get(DottedFieldPath(self._path), ()))
+
+    def __getattr__(self, name):
+        self._require_present()
+        for child in self._structure.direct_paths.get(DottedFieldPath(self._path), ()):
+            if child.field_name == name:
+                return self._state._field_at(child.value)
+        raise AttributeError(f"Field {self._path!r} has no declared child {name!r}")
+
+    def _subscribe(self, callback, listen, unlisten):
+        def changed(paths):
+            self._notify_subscriber(callback, paths)
+        listen(changed)
+        def release():
+            unlisten(changed)
+        return release
+
+    def subscribe(self, callback):
+        """Observe this field's state; receive changed field handles, never strings."""
+        return self._subscribe(callback, self._state._listen_state, self._state._unlisten_state)
+
+    def subscribe_value(self, callback):
+        """Observe resolved-value changes, including changes inherited from elsewhere."""
+        return self._subscribe(callback, self._state._listen_resolved, self._state._unlisten_resolved)
+
+
+class FieldProxy(FieldNamespace):
     """One declaration bound to an editing state.
 
     The structure, not dataclass reflection repeated by each consumer, admits the
@@ -61,13 +104,7 @@ class FieldProxy:
         self._path = path
         self._owner = state._parameter_structure.binding_owner(path)
 
-    @property
-    def _structure(self):
-        return self._state._parameter_structure
 
-    @property
-    def state(self):
-        return self._state
 
     @property
     def declaration(self):
@@ -136,17 +173,7 @@ class FieldProxy:
         from copy import deepcopy
         return self.write(deepcopy(self.default))
 
-    @property
-    def children(self):
-        self._require_present()
-        return tuple(self._state._field_at(path.value) for path in self._structure.direct_paths.get(DottedFieldPath(self._path), ()))
 
-    def __getattr__(self, name):
-        self._require_present()
-        for child in self._structure.direct_paths.get(DottedFieldPath(self._path), ()):
-            if child.field_name == name:
-                return self._state._field_at(child.value)
-        raise AttributeError(f"Field {self._path!r} has no declared child {name!r}")
 
     def _notify_subscriber(self, callback, paths):
         owner = DottedFieldPath(self._path)
@@ -154,21 +181,8 @@ class FieldProxy:
         if selected:
             callback(frozenset(self._state._field_at(path) for path in selected if path in self._state._parameter_structure.declarations))
 
-    def _subscribe(self, callback, listen, unlisten):
-        def changed(paths):
-            self._notify_subscriber(callback, paths)
-        listen(changed)
-        def release():
-            unlisten(changed)
-        return release
 
-    def subscribe(self, callback):
-        """Observe this field's state; receive changed field handles, never strings."""
-        return self._subscribe(callback, self._state._listen_state, self._state._unlisten_state)
 
-    def subscribe_value(self, callback):
-        """Observe resolved-value changes, including changes inherited from elsewhere."""
-        return self._subscribe(callback, self._state._listen_resolved, self._state._unlisten_resolved)
 
     def __eq__(self, other):
         return isinstance(other, FieldProxy) and self._state is other._state and self._owner is other._owner and self._path == other._path
@@ -194,7 +208,7 @@ class FieldProxy:
         return FieldInspection.of(self)
 
 
-class RootFields(FieldProxy):
+class RootFields(FieldNamespace):
     """The live root namespace shares field discovery, not a captured schema."""
     def __init__(self, state):
         self._state = state
@@ -204,28 +218,15 @@ class RootFields(FieldProxy):
     def _path(self):
         return ''
 
-    @property
-    def present(self):
-        return True
 
     __hash__ = None
 
     def __eq__(self, other):
         return isinstance(other, RootFields) and self._state is other._state
 
-    @property
-    def raw(self):
-        return self._state.to_object()
 
-    @property
-    def value(self):
-        return self._state.to_resolved_object()
 
-    def write(self, value):
-        return self._state.update_object_instance(value)
 
-    def reset(self):
-        return self._state.reset_all_parameters()
 
     def __iter__(self):
         self._state._check_and_sync_delegate()
@@ -236,6 +237,7 @@ class RootFields(FieldProxy):
 
     def bind(self, owner, names, field_type=FieldProxy):
         """Bind an already declared attribute vector to this editing state."""
+        self._require_present()
         target = self._state._extraction_target
         if not ((isinstance(owner, type) and isinstance(target, owner)) or target is owner):
             raise FieldAccessError(f"{owner!r} does not declare this editing target")
@@ -251,6 +253,9 @@ class RootFields(FieldProxy):
 
     def _notify_subscriber(self, callback, paths):
         callback(frozenset(self._state._field_at(path) for path in paths if path in self._structure.declarations))
+
+    def _require_present(self):
+        self._state._check_and_sync_delegate()
 
 
 
@@ -602,6 +607,7 @@ class ObjectState:
         return FieldProxy(self, path)
 
     def field(self, owner: ParameterOwner, name: str) -> FieldProxy:
+        self._check_and_sync_delegate()
         matches = [path for path, declaration in self._parameter_structure.declarations.items() if declaration.name == name and self._parameter_structure.binding_owner(path) is owner]
         if len(matches) != 1:
             raise FieldAccessError(f"Expected one declared {owner!r}.{name}, found {len(matches)}; use the declaration namespace for repeated owners")

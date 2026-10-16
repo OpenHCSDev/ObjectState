@@ -4,7 +4,7 @@ from dataclasses import dataclass, field as dataclass_field
 import pytest
 
 from objectstate import (
-    DataclassFieldAccess, Inherit, LazyDataclassFactory, ObjectState, Unset,
+    DataclassFieldAccess, FieldProxy, Inherit, LazyDataclassFactory, ObjectState, Unset,
     set_base_config_type, set_global_config,
 )
 from objectstate.field_access import FieldAccessError
@@ -120,3 +120,35 @@ def test_wrong_and_retired_declarations_fail_at_the_handle():
     assert state.fields.text.value == 'unrelated'
     for deleted in ('parameters', 'get_resolved_value', 'get_saved_resolved_value', 'update_parameter', 'reset_parameter', 'on_state_changed', 'on_resolved_changed', 'type_for_path', 'get_provenance'):
         assert not hasattr(state, deleted)
+
+
+def test_factory_checks_the_current_delegate_before_admission():
+    set_base_config_type(Settings)
+    set_global_config(Settings, Settings())
+    class Lifecycle:
+        __objectstate_delegate__ = 'config'
+        def __init__(self):
+            self.config = Settings()
+    @dataclass
+    class Other:
+        text: str = 'other'
+    owner = Lifecycle()
+    state = ObjectState(owner)
+    owner.config = Other()
+    with pytest.raises(FieldAccessError):
+        state.field(Settings, 'text')
+    with pytest.raises(FieldAccessError):
+        state.fields.bind(Settings, ('text',))
+
+
+def test_root_namespace_is_not_a_field_and_can_name_value():
+    @dataclass
+    class Named:
+        value: int = 5
+    set_base_config_type(Named)
+    set_global_config(Named, Named())
+    state = ObjectState(Named())
+    assert isinstance(state.fields.value, FieldProxy)
+    assert state.fields.value.value == 5
+    with pytest.raises(AttributeError):
+        _ = state.fields.default

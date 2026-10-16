@@ -67,8 +67,10 @@ The following #46 producer prototype is deliberately unready for installation:
 - Handles own `raw`, `value`, `default`, `write`, `reset`, `dirty`, `inspect`,
   `subscribe` and `subscribe_value`. Subscriptions return their release operation
   and deliver field handles, not path strings.
-- RootFields inherits declaration discovery and subscription lifetime behavior;
-  only its live root schema and changed-field projection differ.
+- FieldNamespace owns declaration discovery and subscription lifetime behavior
+  shared by FieldProxy and RootFields. A root is a namespace, not a declared
+  field: it no longer falsely advertises a field default/value contract. A root
+  declaration literally named `value` can therefore be acquired normally.
 - The old producer get_resolved_value/update_parameter/reset_parameter,
   public parameters storage, and on/off observer entry points are removed.
   Producer checkpoint/registry/inspection/edit-session consumers were migrated.
@@ -85,7 +87,7 @@ The following #46 producer prototype is deliberately unready for installation:
   reconstruction decisions are deleted. Full and targeted reads share one
   resolver, including descendant invalidation when a container becomes None,
   Inherit or Unset. Retained child drafts cannot override that container.
-- Nine focused producer tests pass. The source-paired bridge mutation/catalog
+- Eleven focused producer tests pass. The source-paired bridge mutation/catalog
   journey preserves null, empty string and string 'None', resets to inheritance,
   rejects an unknown address and travels backward through registered history
   while retaining the original field handle.
@@ -93,9 +95,16 @@ The following #46 producer prototype is deliberately unready for installation:
   still defaults to None in the request DTO. Omission must be admitted as absence
   and rejected before mutation unless reset was requested; explicit JSON null
   must remain data. This needs repair at the existing request/codec boundary.
-- Dirty/path metadata APIs and external consumer ports remain unfinished. The
-  companion frontend branches still target the preceding #32 producer checkpoint;
-  do not combine their source with the unready #46 producer head.
+- Toad #687 now consumes handles throughout forms, saved preferences and sort
+  subscriptions. Its forms are keyed by handles and release observers on unmount.
+  Nullable inputs commit real values rather than checking a box over backend
+  None; hints stay placeholders, never stored input. Annotated optional members
+  retain their metadata. Twenty-four form/settings tests pass. A real source-
+  paired Textual journey covers native clicks/keystrokes, null, empty/string
+  'None', open refresh, registered undo and unmount release.
+- Dirty/path metadata APIs and Qt/OpenHCS/Core consumer ports remain unfinished.
+  Qt/OpenHCS companion branches still target the preceding #32 producer
+  checkpoint; do not combine those with the unready #46 producer head.
 
 Evidence is owned by doctrine-segment under
 `/home/ts/.cache/agent-scratch/objectstate-declared-fields/`:
@@ -103,7 +112,9 @@ Evidence is owned by doctrine-segment under
 `handle-producer-declared-live.txt`, `declaration-owner-projection-live.txt`,
 `declared-field-handles-final-tests.txt`, `bridge-handle-history-journey.txt`,
 `form-manager-owner-journey.txt`, `reconstruction-live.txt`, and
-`source-state-roundtrip-paired.txt`. Bridge verification additionally pairs the
+`source-state-roundtrip-paired.txt`. Latest namespace/Toad receipts are
+`namespace-admission-final-tests.txt`, `toad-nullable-annotation-final-tests.txt`
+and `toad-nullable-annotation-final-journey.txt`. Bridge verification additionally pairs the
 existing zmqruntime source because the installed package lacks execution.config.
 AST coverage is lexical; dynamic bindings are not claimed resolved.
 
