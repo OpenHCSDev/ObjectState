@@ -853,7 +853,7 @@ class ObjectStateRegistry:
     ) -> None:
         """Find fields in state that could inherit from target_base_type and invalidate them.
 
-        With flat storage, we scan _path_to_type to find all dotted paths whose
+        The declaration structure selects field addresses whose declaring
         container type matches or inherits from target_base_type.
 
         A field should be invalidated if:
@@ -877,7 +877,7 @@ class ObjectStateRegistry:
         # DEBUG: Log entry into type matching
         if _debug:
             logger.debug(f"🔍 _invalidate_field_in_matching_states: state_scope={state.scope_id}, target_base_type={target_base_type.__name__}, field_name={field_name}")
-            logger.debug(f"🔍   state._path_to_type has {len(state._path_to_type)} entries")
+            logger.debug(f"🔍   state._parameter_structure.owner_paths has {len(state._parameter_structure.owner_paths)} entries")
 
         for dotted_path in state.inheritance_field_paths(
             target_base_type,

@@ -587,21 +587,14 @@ def extract_all_configs(context_obj) -> Dict[type, Any]:
     # Type-driven extraction: Use dataclass field annotations to find config fields
     if is_dataclass(type(context_obj)):
         for field_name, declared_type in _declared_config_fields(type(context_obj)):
-            # Read the stored value: a None field holds no config in this object,
-            # and resolving it here would ask the context that is being read.
-            field_value = object.__getattribute__(context_obj, field_name)
-            if field_value is None:
-                continue
-            if not _is_compatible_config_type(field_value, declared_type):
-                raise TypeError(
-                    f"{type(context_obj).__name__}.{field_name} declares "
-                    f"{declared_type.__name__}, got {type(field_value).__name__}."
-                )
-            _record_config_instance(
-                configs,
-                field_value,
+            # Only concrete values contribute instances. Inherit/Unset do not
+            # recursively ask the context whose membership is being collected.
+            raw = DataclassFieldAccess.raw_value(context_obj, field_name)
+            FieldValue.of(raw).map(lambda concrete: _record_config_instance(
+                configs, concrete,
                 source=f"{type(context_obj).__name__}.{field_name}",
-            )
+                expected_type=declared_type,
+            ))
 
     # For non-dataclass objects (orchestrators, etc.), extract dataclass attributes
     else:
@@ -621,11 +614,16 @@ def _record_config_instance(
     config_instance: Any,
     *,
     source: str,
+    expected_type: type | None = None,
 ) -> None:
-    """Record one nominal config identity and reject ambiguous duplicates."""
+    """Admit concrete config instances, checking their declaration and identity."""
 
     from objectstate.lazy_factory import get_base_type_for_lazy
 
+    if config_instance is None:
+        return  # A concrete nullable slot contributes no config instance.
+    if expected_type is not None and not _is_compatible_config_type(config_instance, expected_type):
+        raise TypeError(f"{source} declares {expected_type.__name__}, got {type(config_instance).__name__}.")
     instance_type = type(config_instance)
     base_type = get_base_type_for_lazy(instance_type) or instance_type
     existing = configs.get(base_type)

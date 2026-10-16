@@ -75,10 +75,24 @@ The following #46 producer prototype is deliberately unready for installation:
 - A fresh producer editing session checks read/write/reset/dirty, leaf/root
   subscription delivery and release, inspection and rejection of a nonexistent
   declaration. This does NOT establish all applications work.
-- **Known structural gap:** handles currently retain a ParameterStructure
-  identity. Schema reconstruction/undo must not retire an otherwise unchanged
-  declaration. Canonical declaration lifetime and the overloaded owner_paths
-  index require repair in ParameterStructure before calling this API complete.
+- Declaration lifetime is now tied to state + declaring owner + address, not a
+  temporary ParameterStructure instance. Restore, same-schema replacement and
+  actual registered-history undo retain the original handle; a same-name field
+  on an unrelated declaration cannot be targeted through it.
+- ParameterStructure.declare is the sole owner_paths writer. The index contains
+  declaration owners only. Payload types come from the projection. The mixed
+  _path_to_type alias, duplicate partial resolver and competing type-based
+  reconstruction decisions are deleted. Full and targeted reads share one
+  resolver, including descendant invalidation when a container becomes None,
+  Inherit or Unset. Retained child drafts cannot override that container.
+- Nine focused producer tests pass. The source-paired bridge mutation/catalog
+  journey preserves null, empty string and string 'None', resets to inheritance,
+  rejects an unknown address and travels backward through registered history
+  while retaining the original field handle.
+- **Remaining bridge defect, owned by doctrine:** an omitted mutation value
+  still defaults to None in the request DTO. Omission must be admitted as absence
+  and rejected before mutation unless reset was requested; explicit JSON null
+  must remain data. This needs repair at the existing request/codec boundary.
 - Dirty/path metadata APIs and external consumer ports remain unfinished. The
   companion frontend branches still target the preceding #32 producer checkpoint;
   do not combine their source with the unready #46 producer head.
@@ -86,8 +100,11 @@ The following #46 producer prototype is deliberately unready for installation:
 Evidence is owned by doctrine-segment under
 `/home/ts/.cache/agent-scratch/objectstate-declared-fields/`:
 `handles-before.json` (NRA imports/attributes/calls and complete class census),
-`handle-producer-declared-live.txt`, `form-manager-owner-journey.txt`,
-`reconstruction-live.txt`, and `source-state-roundtrip-paired.txt`.
+`handle-producer-declared-live.txt`, `declaration-owner-projection-live.txt`,
+`declared-field-handles-final-tests.txt`, `bridge-handle-history-journey.txt`,
+`form-manager-owner-journey.txt`, `reconstruction-live.txt`, and
+`source-state-roundtrip-paired.txt`. Bridge verification additionally pairs the
+existing zmqruntime source because the installed package lacks execution.config.
 AST coverage is lexical; dynamic bindings are not claimed resolved.
 
 ## Delivery order

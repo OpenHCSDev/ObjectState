@@ -29,6 +29,14 @@ class DottedFieldPath:
 
         return self.parts[-1] if self.parts else ""
 
+    def bind(self, state):
+        """Admit a decoded external address as a declaration-bound field."""
+        return state._field_at(self.value)
+
+    @property
+    def parent(self) -> "DottedFieldPath":
+        return DottedFieldPath(".".join(self.parts[:-1]))
+
     def child(self, field_name: str) -> "DottedFieldPath":
         if self.value == "":
             return DottedFieldPath(field_name)

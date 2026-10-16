@@ -211,7 +211,7 @@ __description__ = 'Generic configuration framework for lazy dataclass resolution
 # Object state management
 from objectstate.object_state_registry import ObjectStateRegistry
 from objectstate.scope_key import ScopeKey
-from objectstate.object_state import ObjectState
+from objectstate.object_state import FieldProxy, ObjectState
 from objectstate.object_state_metadata import (
     ObjectStateMetadataContract,
     ObjectStateMetadataContractRegistry,
@@ -246,6 +246,7 @@ from objectstate.reified_generics import List, Dict, Set, Tuple, Optional
 __all__ += [
     # Object state
     'ObjectState',
+    'FieldProxy',
     'ObjectStateRegistry',
     'ScopeKey',
     'retain_only_authored_paths',

@@ -7,7 +7,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from objectstate.object_state import ObjectState
+from objectstate.object_state import FieldProxy, ObjectState
 from objectstate.object_state_registry import ObjectStateRegistry
 
 logger = logging.getLogger(__name__)
@@ -68,8 +68,7 @@ class FieldProvenance:
 class FieldInspection:
     """One field of one ObjectState: raw and resolved value, edit state and provenance."""
 
-    state: ObjectState
-    field_path: str
+    field: FieldProxy
     raw_value: object
     resolved_value: object
     resolved_value_available: bool
@@ -94,7 +93,7 @@ class FieldInspection:
                 exc_info=True,
             )
         provenance = None
-        match state.get_provenance(field_path):
+        match field.provenance:
             case (source_scope_id, source_type) if source_type is not None:
                 provenance = FieldProvenance(
                     source_scope_id=source_scope_id,
@@ -102,8 +101,7 @@ class FieldInspection:
                     field_name=field_path.rsplit(".", 1)[-1],
                 )
         return cls(
-            state=state,
-            field_path=field_path,
+            field=field,
             raw_value=field.raw,
             resolved_value=resolved_value,
             resolved_value_available=resolved_value_available,
@@ -112,15 +110,15 @@ class FieldInspection:
 
     @property
     def dirty(self) -> bool:
-        return self.field_path in self.state.dirty_fields
+        return self.field.dirty
 
     @property
     def signature_diff(self) -> bool:
-        return self.field_path in self.state.signature_diff_fields
+        return self.field.signature_diff
 
     @property
     def last_changed(self) -> bool:
-        return self.field_path == self.state.last_changed_field
+        return self.field_path == self.field.state.last_changed_field
 
     @property
     def raw_value_is_inherited(self) -> bool:
@@ -145,12 +143,17 @@ class FieldInspection:
         return field_markers(dirty=self.dirty, signature_diff=self.signature_diff)
 
     @property
+    def field_path(self) -> str:
+        """External address spelling is projected through the existing codec."""
+        return self.field.address.value
+
+    @property
     def field_name(self) -> str:
-        return self.field_path.rsplit(".", 1)[-1]
+        return self.field.name
 
     @property
     def container_path(self) -> str:
-        return self.field_path.rsplit(".", 1)[0] if "." in self.field_path else ""
+        return self.field.address.parent.value
 
     @property
     def raw_value_type(self) -> str:
@@ -164,4 +167,4 @@ class FieldInspection:
     def declaring_type(self) -> str:
         """Qualified name of the dataclass that declares this field."""
 
-        return type_qualname(self.state.type_for_path(self.field_path))
+        return type_qualname(self.field.declaring_type)

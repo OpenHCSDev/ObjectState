@@ -25,11 +25,36 @@ class ParameterStructure:
     exclusions: list[str] = field(default_factory=list)
     excluded_values: dict[str, Any] = field(default_factory=dict)
 
-    def declare(self, path: str, info: ParameterInfo) -> ParameterInfo:
-        """Admit external signature absence once, as Unset rather than None."""
+    def declare(self, path: str, info: ParameterInfo, owner: ParameterOwner) -> ParameterInfo:
+        """Admit a declaration and its owner together, never the payload's type."""
         declaration = info._replace(default_value=Unset()) if info.is_required else info
         self.declarations[path] = declaration
+        self.owner_paths[path] = owner
         return declaration
+
+    def binding_owner(self, path: str) -> ParameterOwner:
+        """Immutable declaration identity survives schema copying and undo."""
+        from objectstate.lazy_factory import get_base_type_for_lazy
+
+        owner = self.owner_paths[path]
+        return (get_base_type_for_lazy(owner) or owner) if isinstance(owner, type) else owner
+
+    def container_types(self, values: dict[str, Any]):
+        """Nominal payload types come from the projection, not declaration owners."""
+        for path, value in values.items():
+            if is_dataclass(value):
+                yield path, type(value)
+
+    def affected_paths(self, changed):
+        """A container's presence/source is a dependency of every declared child."""
+        affected = set(changed) & self.declarations.keys()
+        pending = list(affected)
+        while pending:
+            for child in self.direct_paths.get(DottedFieldPath(pending.pop()), ()):
+                if child.value not in affected:
+                    affected.add(child.value)
+                    pending.append(child.value)
+        return affected
 
     @property
     def defaults(self) -> dict[str, Any]:
@@ -89,7 +114,7 @@ class ParameterStructure:
         from objectstate.field_access import DataclassFieldAccess
         from objectstate.lazy_factory import get_base_type_for_lazy, replace_raw
 
-        prototype = values[prefix] if prefix else target
+        prototype = values.get(prefix, Unset()) if prefix else target
         if prefix and not is_dataclass(prototype):
             return prototype
         prefix_dot = f"{prefix}." if prefix else ""
