@@ -76,6 +76,10 @@ class ValueDeclaration(ABC):
     def choose_declaration(self, consumer, **arguments):
         """Consume the annotation's form capability."""
 
+    def normalize_data(self, value):
+        """Retain data whose declaration requires no structural conversion."""
+        return value
+
     def convert_structure(self, consumer, value, name):
         return consumer.convert_leaf_structure(value, self.annotation, name)
 
@@ -143,6 +147,9 @@ class SequenceDeclaration(CollectionDeclaration):
     def item_declaration(self, index):
         """Admit this index through its declared element annotation."""
 
+    def normalize_data(self, value):
+        return self.container(value)
+
     def items(self, value):
         return ((index, self.item_declaration(index).admit(child))
                 for index, child in enumerate(value))
@@ -201,6 +208,9 @@ class NullableDeclaration(ValueDeclaration):
 
     def admit_data(self, value):
         return members.NullValue() if value is None else self.inner.admit_data(value)
+
+    def normalize_data(self, value):
+        return None if value is None else self.inner.normalize_data(value)
 
     def scope_available(self, member):
         return member.fold(lambda value: value is not None, lambda directive: False)

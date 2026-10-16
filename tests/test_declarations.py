@@ -40,6 +40,22 @@ def test_nullable_scope_preserves_null_and_directives():
     assert declaration.scope_available(declaration.admit(Item()))
 
 
+@pytest.mark.parametrize("annotation, value, expected", [
+    (tuple[int, ...], [1, 2], (1, 2)),
+    (list[int], (1, 2), [1, 2]),
+    (tuple[int, str], [1, "two"], (1, "two")),
+    (tuple[int, ...] | None, [1], (1,)),
+    (tuple[int, ...] | None, None, None),
+])
+def test_declared_collection_shape_owns_normalization(annotation, value, expected):
+    assert ValueDeclaration.of(annotation).normalize_data(value) == expected
+
+
+def test_scalar_declaration_does_not_classify_a_sequence_payload():
+    payload = [1, 2]
+    assert ValueDeclaration.of(object).normalize_data(payload) is payload
+
+
 def test_collection_serialization_uses_element_declarations():
     declaration = ValueDeclaration.of(tuple[Item, ...])
     member = declaration.admit((Item(Inherit()), Item(None), Item("")))
