@@ -1219,7 +1219,7 @@ class ConfigInjection:
     nullable: bool = False
     ui_hidden: bool = False
 
-    def field_tuple(self) -> Tuple[str, Any, dataclasses.Field]:
+    def field_tuple(self) -> Tuple[str, object, dataclasses.Field]:
         metadata = {'ui_hidden': self.ui_hidden}
         if self.nullable:
             return self.field_name, Optional[self.config_class], field(default=None, metadata=metadata)

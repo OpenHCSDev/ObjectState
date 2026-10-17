@@ -189,7 +189,7 @@ def test_lazy_dataclass_preserves_declaration_metadata_and_validation() -> None:
 def test_injected_global_config_preserves_metadata_and_validation(
     monkeypatch,
 ) -> None:
-    from objectstate.lazy_factory import _inject_multiple_fields_into_dataclass
+    from objectstate.lazy_factory import ConfigInjection, _inject_multiple_fields_into_dataclass
 
     @dataclass
     class GlobalMetadataValidationRoot(AnnotatedDataclassValidationMixin):
@@ -217,13 +217,7 @@ def test_injected_global_config_preserves_metadata_and_validation(
 
     _inject_multiple_fields_into_dataclass(
         GlobalMetadataValidationRoot,
-        [
-            {
-                "config_class": InjectedConstraintConfig,
-                "field_name": "injected_constraint_config",
-                "lazy_class_name": "LazyInjectedConstraintConfig",
-            }
-        ],
+        [ConfigInjection(InjectedConstraintConfig, "injected_constraint_config")],
     )
 
     rebuilt_global = module.GlobalMetadataValidationRoot
