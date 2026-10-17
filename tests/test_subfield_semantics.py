@@ -6,7 +6,7 @@ import pytest
 
 from objectstate import (
     DottedFieldPath,
-    MISSING,
+    Unset,
     LazyDataclassFactory,
     ObjectState,
     ObjectStateRegistry,
@@ -64,10 +64,7 @@ def test_tuple_dataclass_leaf_semantics_detect_only_changed_leaf() -> None:
     )
     ObjectStateRegistry.register(state, _skip_snapshot=True)
 
-    state.update_parameter(
-        "clauses",
-        (Clause("file", "contains", "GFP"),),
-    )
+    DottedFieldPath("clauses").bind(state).write((Clause("file", "contains", "GFP"),))
 
     index = state.subfield_semantics(DottedFieldPath("clauses"))
     subject = index.leaf_for(_path(0, "subject"))
@@ -99,13 +96,10 @@ def test_container_replacement_reports_child_semantic_change_only() -> None:
     ObjectStateRegistry.register(state, _skip_snapshot=True)
     resolved_events: list[set[str]] = []
     state_events: list[set[str]] = []
-    state.on_resolved_changed(lambda paths: resolved_events.append(set(paths)))
-    state.on_state_changed(lambda paths: state_events.append(set(paths)))
+    state._listen_resolved(lambda paths: resolved_events.append(set(paths)))
+    state._listen_state(lambda paths: state_events.append(set(paths)))
 
-    changed_paths = state.update_parameter(
-        "bindings",
-        replace_raw(state.parameters["bindings"], enabled=None),
-    )
+    changed_paths = DottedFieldPath("bindings").bind(state).write(replace_raw(state.fields.bindings.raw, enabled=None))
 
     assert "bindings.enabled" in state._last_changed_concrete_paths
     assert "bindings" not in state._last_changed_concrete_paths
@@ -121,10 +115,7 @@ def test_missing_default_leaf_marks_signature_diff_without_confusing_none() -> N
     state = ObjectState(Holder(), scope_id="subfield")
     ObjectStateRegistry.register(state, _skip_snapshot=True)
 
-    state.update_parameter(
-        "clauses",
-        (Clause("file", "is_image", None),),
-    )
+    DottedFieldPath("clauses").bind(state).write((Clause("file", "is_image", None),))
 
     leaf = state.subfield_semantics(DottedFieldPath("clauses")).leaf_for(
         _path(0, "value")
@@ -134,7 +125,7 @@ def test_missing_default_leaf_marks_signature_diff_without_confusing_none() -> N
     assert leaf.raw_present is True
     assert leaf.raw_value is None
     assert leaf.signature_default_present is False
-    assert leaf.signature_default_value is MISSING
+    assert leaf.signature_default_value == Unset()
     assert leaf.signature_diff is True
 
 
@@ -157,13 +148,10 @@ def test_inherited_tuple_cells_are_marked_inherited() -> None:
 
     state = ObjectState(RootConfig(), scope_id="subfield")
     ObjectStateRegistry.register(state, _skip_snapshot=True)
-    state.update_parameter(
-        "parent_config.clauses",
-        (Clause("file", "contains", "DAPI"),),
-    )
+    DottedFieldPath("parent_config.clauses").bind(state).write((Clause("file", "contains", "DAPI"),))
     state.mark_saved()
 
-    assert state.get_resolved_value("child_config.clauses") == (
+    assert DottedFieldPath("child_config.clauses").bind(state).value == (
         Clause("file", "contains", "DAPI"),
     )
     index = state.subfield_semantics(DottedFieldPath("child_config.clauses"))
@@ -171,7 +159,7 @@ def test_inherited_tuple_cells_are_marked_inherited() -> None:
 
     assert leaf is not None
     assert leaf.raw_present is False
-    assert leaf.raw_value is MISSING
+    assert leaf.raw_value == Unset()
     assert leaf.resolved_value == "DAPI"
     assert leaf.saved_resolved_value == "DAPI"
     assert leaf.dirty is False
@@ -200,23 +188,17 @@ def test_inherited_tuple_recompute_notifies_structural_leaf_paths() -> None:
 
     state = ObjectState(RootConfig(), scope_id="subfield")
     ObjectStateRegistry.register(state, _skip_snapshot=True)
-    state.update_parameter(
-        "parent_config.clauses",
-        (Clause("file", "contains", "DAPI"),),
-    )
-    assert state.get_resolved_value("child_config.clauses") == (
+    DottedFieldPath("parent_config.clauses").bind(state).write((Clause("file", "contains", "DAPI"),))
+    assert DottedFieldPath("child_config.clauses").bind(state).value == (
         Clause("file", "contains", "DAPI"),
     )
 
     changed_notifications: list[set[str]] = []
-    state.on_resolved_changed(
+    state._listen_resolved(
         lambda changed_paths: changed_notifications.append(set(changed_paths))
     )
-    state.update_parameter(
-        "parent_config.clauses",
-        (Clause("file", "contains", "GFP"),),
-    )
-    assert state.get_resolved_value("child_config.clauses") == (
+    DottedFieldPath("parent_config.clauses").bind(state).write((Clause("file", "contains", "GFP"),))
+    assert DottedFieldPath("child_config.clauses").bind(state).value == (
         Clause("file", "contains", "GFP"),
     )
 
@@ -248,12 +230,9 @@ def test_time_travel_navigation_field_ignores_inherited_resolved_fanout() -> Non
 
     state = ObjectState(RootConfig(), scope_id="subfield")
     ObjectStateRegistry.register(state, _skip_snapshot=True)
-    state.update_parameter(
-        "parent_config.clauses",
-        (Clause("file", "contains", "DAPI"),),
-    )
+    DottedFieldPath("parent_config.clauses").bind(state).write((Clause("file", "contains", "DAPI"),))
 
-    assert state.get_resolved_value("child_config.clauses") == (
+    assert DottedFieldPath("child_config.clauses").bind(state).value == (
         Clause("file", "contains", "DAPI"),
     )
     concrete_parent_change = state.last_changed_field
@@ -262,7 +241,7 @@ def test_time_travel_navigation_field_ignores_inherited_resolved_fanout() -> Non
     assert not concrete_parent_change.startswith("child_config.")
 
     changed_notifications: list[set[str]] = []
-    state.on_resolved_changed(
+    state._listen_resolved(
         lambda changed_paths: changed_notifications.append(set(changed_paths))
     )
 

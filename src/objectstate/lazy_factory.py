@@ -572,7 +572,7 @@ class LazyMethodBindings:
         def __getattribute__(self: Any, name: str) -> Any:
             value = object.__getattribute__(self, name)
             # Fast path: non-None values never need resolution
-            if not FieldValue.is_inherited(value):
+            if not FieldValue.of(value).inherits():
                 return value
             # PERFORMANCE: Use pre-computed frozenset (O(1) lookup) instead of
             # rebuilding {f.name for f in fields(self.__class__)} (O(n)) on every access.

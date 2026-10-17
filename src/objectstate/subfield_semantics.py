@@ -158,10 +158,10 @@ class ObjectStateSubfieldSemantic(Generic[SubfieldValueT]):
     display_path: str
     value_type_name: str | None
 
-    raw_value: SubfieldValueT | MissingValue
-    resolved_value: SubfieldValueT | MissingValue
-    saved_resolved_value: SubfieldValueT | MissingValue
-    signature_default_value: SubfieldValueT | MissingValue
+    raw_value: SubfieldValueT | FieldValue
+    resolved_value: SubfieldValueT | FieldValue
+    saved_resolved_value: SubfieldValueT | FieldValue
+    signature_default_value: SubfieldValueT | FieldValue
 
     raw_present: bool
     resolved_present: bool

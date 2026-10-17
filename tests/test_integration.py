@@ -5,12 +5,8 @@ Tests actual usage patterns that match how OpenHCS uses the library.
 import pytest
 from dataclasses import dataclass
 
-from objectstate import (
-    set_base_config_type,
-    LazyDataclassFactory,
-    config_context,
-    get_base_type_for_lazy,
-)
+from python_introspect import resolve_declared_type
+from objectstate import set_base_config_type, LazyDataclassFactory, config_context
 
 
 def test_readme_quick_start_example():
@@ -53,7 +49,7 @@ def test_lazy_factory_creates_lazy_class():
     assert LazyConfig.__name__ == "LazyMyConfig"
 
     # Type mapping should be registered
-    assert get_base_type_for_lazy(LazyConfig) == MyConfig
+    assert resolve_declared_type(LazyConfig) == MyConfig
 
 
 def test_lazy_instantiation():

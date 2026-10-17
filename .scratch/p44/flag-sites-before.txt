@@ -1,0 +1,179 @@
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/windows/config_window.py:566:        if not dataclasses.is_dataclass(config_type):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/editable_table.py:381:            and is_dataclass(arguments[0])
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/editable_table.py:508:            if isinstance(annotation, type) and is_dataclass(annotation):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/editable_table.py:531:                    default=row_field.default,
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/editable_table.py:582:                column.editor.raw_for(column.default)
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/editable_table.py:583:                if column.default is not MISSING
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/theming/color_scheme.py:316:                        if isinstance(value, list) and len(value) >= 3:
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/theming/color_scheme.py:376:            if isinstance(color_value, tuple) and len(color_value) >= 3:
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/log_viewer.py:281:            if isinstance(item, dict):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/log_viewer.py:283:            elif isinstance(item, tuple) and len(item) == 2:
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/log_viewer.py:1961:                        if isinstance(value, list) and len(value) == 3:
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/protocols/widget_adapters.py:164:            return FieldValue.is_inherited(self._draft)
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/protocols/widget_adapters.py:170:            if FieldValue.is_inherited(self._draft):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/protocols/widget_adapters.py:496:            elif isinstance(value, list):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_pane.py:479:            initial_values = dict(self.kwargs or {}) if isinstance(self.kwargs, dict) else None
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/shared/abstract_manager_widget.py:715:            config = self.PREVIEW_FORMATTING_CONFIG.default_factory()
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/shared/manager_item_display_builder.py:200:            if not is_dataclass(config_type):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/forms/parameter_form_manager.py:219:        return ParameterDefaultsByName((field.name, field.default) for field in self.fields.children)
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/shared/tabbed_form_widget.py:218:        if is_dataclass(obj):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/shared/tabbed_form_widget.py:222:        if isinstance(obj, dict):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/forms/widget_strategies.py:356:    if isinstance(value, list):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/forms/widget_strategies.py:358:    if isinstance(value, tuple):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/forms/widget_strategies.py:360:    if isinstance(value, dict):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/forms/widget_strategies.py:939:        if not isinstance(value, list):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/forms/widget_strategies.py:1690:            if not dataclasses.is_dataclass(global_config):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/forms/parameter_form_chrome_sync.py:368:                        skip_context_behavior = FieldValue.is_inherited(value)
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/forms/parameter_form_chrome_sync.py:372:                        if FieldValue.is_inherited(value):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/forms/form_init_service.py:579:                services[fld.name] = fld.default
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/services/scope_color_service.py:160:        cached_scope = cache_key[0] if isinstance(cache_key, tuple) else cache_key
+src/objectstate/object_state.py:187:        return self.write(deepcopy(self.default))
+src/objectstate/object_state.py:971:            if FieldValue.is_inherited(own_values.get(path, Unset()))
+src/objectstate/object_state.py:1871:        if not isinstance(self._parameters, dict):
+src/objectstate/object_state.py:1873:        if not isinstance(self._saved_parameters, dict):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/services/window_manager.py:400:        if lookup.is_present:
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/services/window_manager.py:509:        if not lookup.is_present:
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/services/window_manager.py:732:        if existing.is_present and existing.window is not window:
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/services/window_manager.py:807:        return lookup.is_present
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/services/window_manager.py:820:        if lookup.is_present:
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/services/window_manager.py:835:        if not lookup.is_present:
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/services/widget_service.py:355:        if isinstance(value, list):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/structural_table.py:342:        if not is_dataclass(self.row_value_type):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/shared/zmq_server_browser_widget.py:124:        self._tree_state_adapter = TreeStateAdapter.default()
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/forms/inline_dataclass_context.py:110:        default_value = DottedFieldPath(identity.object_state_path.value).bind(self.state).default
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/forms/inline_dataclass_context.py:128:            default_value = DottedFieldPath(identity.object_state_path.value).bind(self.state).default
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:229:                if not isinstance(entry, (tuple, list)) or len(entry) < 1:
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:308:        if not self.is_dict_mode or not isinstance(self.pattern_data, dict):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:334:        if isinstance(raw, list):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:337:        if isinstance(raw, dict):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:340:                if not isinstance(tokens, list):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:360:        if self.is_dict_mode and isinstance(self._pattern_tokens, dict):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:363:        if isinstance(self._pattern_tokens, list):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:370:            if not isinstance(self._pattern_tokens, dict):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:385:        if not self.is_dict_mode or not isinstance(self.pattern_data, dict):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:405:        if isinstance(self._pattern_tokens, dict):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:457:        if self.is_dict_mode and isinstance(self.pattern_data, dict):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:464:                    if isinstance(self._pattern_tokens, dict):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:476:            and isinstance(self.pattern_data, dict)
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:481:            if isinstance(self._pattern_tokens, dict):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:537:        if isinstance(initial_functions, dict):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:542:            existing_tokens = self._pattern_tokens if isinstance(self._pattern_tokens, dict) else {}
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:571:            seed_tokens = self._pattern_tokens if isinstance(self._pattern_tokens, list) else []
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:724:        if not isinstance(self.pattern_data, dict):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:1339:        if isinstance(pattern, dict):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:1351:        if isinstance(pattern, list):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:1522:        if self.is_dict_mode and isinstance(self.pattern_data, dict):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:1599:        if self.is_dict_mode and isinstance(self.pattern_data, dict):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:1643:                old_pattern = self.pattern_data if isinstance(self.pattern_data, dict) else {}
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:1644:                old_tokens = self._pattern_tokens if isinstance(self._pattern_tokens, dict) else {}
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:1663:                    if isinstance(old_tokens, dict)
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:1685:                    if isinstance(self._pattern_tokens, list)
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:1701:                    self.pattern_data.copy() if isinstance(self.pattern_data, dict) else {}
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:1704:                    self._pattern_tokens.copy() if isinstance(self._pattern_tokens, dict) else {}
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:1773:        if isinstance(self._pattern_tokens, dict) and self.selected_pattern_key is not None:
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:1811:            and isinstance(self.pattern_data, dict)
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:1823:        if not self.is_dict_mode or not isinstance(self.pattern_data, dict):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:1846:        if not self.is_dict_mode or not isinstance(self.pattern_data, dict):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:1865:        if not token or not self.is_dict_mode or not isinstance(self.pattern_data, dict):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:1867:        if not isinstance(self._pattern_tokens, dict):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:1891:            clean_kwargs = self._sanitize_pattern_kwargs(kwargs if isinstance(kwargs, dict) else {})
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/function_list_editor.py:1906:            old_pattern = self.pattern_data if isinstance(self.pattern_data, dict) else {}
+src/objectstate/reified_generics.py:194:        if not isinstance(params, tuple):
+src/objectstate/reified_generics.py:217:        if not isinstance(params, tuple):
+src/objectstate/reified_generics.py:232:        if not isinstance(params, tuple):
+src/objectstate/reified_generics.py:244:        if not isinstance(params, tuple):
+src/objectstate/reified_generics.py:304:        if not isinstance(params, tuple):
+src/objectstate/codegen.py:61:    if field.default is not MISSING:
+src/objectstate/codegen.py:62:        return field.default
+src/objectstate/codegen.py:63:    if field.default_factory is not MISSING:
+src/objectstate/codegen.py:64:        return field.default_factory()
+src/objectstate/codegen.py:106:        if FieldValue.is_inherited(current):
+src/objectstate/declarations.py:32:        return self.default
+src/objectstate/declarations.py:91:        if declaration.default is not MISSING:
+src/objectstate/declarations.py:92:            metadata[InheritedDefault] = ValueDefault(declaration.default)
+src/objectstate/declarations.py:93:        elif declaration.default_factory is not MISSING:
+src/objectstate/declarations.py:94:            metadata[InheritedDefault] = FactoryDefault(declaration.default_factory)
+src/objectstate/declarations.py:335:        if not isinstance(value, dict):
+src/objectstate/declarations.py:346:        if declaration.default is not MISSING:
+src/objectstate/declarations.py:347:            return self.context_field_types[name].admit(declaration.default)
+src/objectstate/declarations.py:348:        if declaration.default_factory is not MISSING:
+src/objectstate/declarations.py:349:            return self.context_field_types[name].admit(declaration.default_factory())
+src/objectstate/declarations.py:439:        if is_dataclass(annotation):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/shared/config_hierarchy_tree.py:567:        if not is_dataclass(root_dataclass):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/shared/config_hierarchy_tree.py:626:            if not is_dataclass(field_type):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/shared/config_hierarchy_tree.py:752:        if not is_dataclass(root_config):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/shared/config_hierarchy_tree.py:808:            if not is_dataclass(cls):
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/bridge/windows.py:1583:                if kind.item_action is not None and kind.item_action.default
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/bridge/windows.py:1845:        if isinstance(value, (frozenset, list, set, tuple)):
+src/objectstate/lazy_factory.py:112:        if field_definition.default is not MISSING:
+src/objectstate/lazy_factory.py:113:            metadata[InheritedDefault] = ValueDefault(field_definition.default)
+src/objectstate/lazy_factory.py:114:        elif field_definition.default_factory is not MISSING:
+src/objectstate/lazy_factory.py:115:            metadata[InheritedDefault] = FactoryDefault(field_definition.default_factory)
+src/objectstate/lazy_factory.py:575:            if not FieldValue.is_inherited(value):
+src/objectstate/lazy_factory.py:727:                has_default=(declaration.default is not MISSING or declaration.default_factory is not MISSING),
+/home/ts/wt/pyqt-declared-fields/src/pyqt_reactive/widgets/shared/tree_rebuild_coordinator.py:21:        return cls(TreeStateAdapter.default())
+/home/ts/wt/formbridge-declared-fields/src/formbridge/flash_trace.py:55:        if isinstance(value, (list, tuple, set, frozenset)):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/contracts.py:81:                    and declared_field.default_factory is not MISSING
+/home/ts/wt/formbridge-declared-fields/src/formbridge/contracts.py:82:                    and kwargs.get(declared_field.name) is parameters[declared_field.name].default
+/home/ts/wt/formbridge-declared-fields/src/formbridge/contracts.py:175:        return errors if isinstance(errors, list) else None
+src/objectstate/docs/context_system.rst:154:       if is_dataclass(context_obj):
+src/objectstate/docs/context_system.rst:157:               if is_dataclass(value):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/forms/raw_display_value.py:70:            FieldValue.is_inherited(self.raw_field(field_name))
+/home/ts/wt/formbridge-declared-fields/src/formbridge/forms/raw_display_value.py:71:            and not FieldValue.is_inherited(self.display_field(field_name))
+/home/ts/wt/formbridge-declared-fields/src/formbridge/forms/raw_display_value.py:78:            item.default
+/home/ts/wt/formbridge-declared-fields/src/formbridge/forms/parameter_form_service.py:243:            if isinstance(value, list):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/forms/parameter_form_service.py:324:        if isinstance(value, (list, tuple)):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/forms/parameter_form_service.py:370:        if not isinstance(value, (list, tuple)):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/forms/parameter_form_service.py:404:        if not isinstance(value, list):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/forms/parameter_form_service.py:419:        if not isinstance(value, dict):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/forms/parameter_form_service.py:531:        if isinstance(resolved_info, dict) and full_param_path:
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/pattern_data_manager.py:80:        if not isinstance(pattern, list):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/pattern_data_manager.py:97:        if not isinstance(pattern, dict):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/pattern_data_manager.py:114:        if isinstance(func_item, tuple) and len(func_item) == 2 and callable(func_item[0]):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/pattern_data_manager.py:140:        if isinstance(pattern, list):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/pattern_data_manager.py:149:        elif isinstance(pattern, dict):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/pattern_data_manager.py:152:                if not isinstance(value, list):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/pattern_data_manager.py:175:        if is_dict and isinstance(pattern, dict):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/pattern_data_manager.py:179:        elif not is_dict and isinstance(pattern, list):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/pattern_data_manager.py:202:        if is_dict and isinstance(pattern, dict):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/pattern_data_manager.py:206:        elif not is_dict and isinstance(pattern, list):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:177:        if isinstance(value, tuple):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:295:        if isinstance(func_item, tuple) and len(func_item) == 2 and callable(func_item[0]):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:371:        if isinstance(tokens, list):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:373:        elif isinstance(tokens, dict):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:390:        if isinstance(pattern, dict):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:416:        if isinstance(next_pattern, dict):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:417:            previous_by_key = previous_pattern if isinstance(previous_pattern, dict) else {}
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:418:            tokens_by_key = existing_tokens if isinstance(existing_tokens, dict) else {}
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:429:            previous_pattern if not isinstance(previous_pattern, dict) else [],
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:430:            existing_tokens if isinstance(existing_tokens, list) else [],
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:462:            isinstance(func_list, tuple)
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:465:            and isinstance(func_list[1], Mapping)
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:470:        elif isinstance(func_list, list):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:531:        item_list = func_list if isinstance(func_list, list) else [func_list]
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:563:        item_list = func_list if isinstance(func_list, list) else [func_list]
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:623:        if isinstance(pattern, dict):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:624:            token_map = tokens if isinstance(tokens, dict) else {}
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:626:                channel_items = items if isinstance(items, list) else [items]
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:646:        item_list = pattern if isinstance(pattern, list) else [pattern]
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:647:        token_list = tokens if isinstance(tokens, list) else []
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:995:        if isinstance(pattern, list) and len(pattern) == 1:
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:1041:        if isinstance(tokens, list):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:1043:        if isinstance(tokens, dict):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:1077:        if isinstance(tokens, list):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:1079:            if isinstance(pattern, list):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:1097:        if isinstance(tokens, dict):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:1098:            if not isinstance(pattern, dict):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/function_pattern_code_document.py:1111:                if not isinstance(items, list):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/widget_tree_projection_config.py:35:    if isinstance(value, (str, bytes, tuple, list, dict, set, frozenset)):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/widget_tree_projection_config.py:47:        required = declared_field.default is MISSING and declared_field.default_factory is MISSING
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/widget_tree_projection_config.py:60:                declared_field.default is not MISSING
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/widget_tree_projection_config.py:61:                and type(field_value) is type(declared_field.default)
+/home/ts/wt/formbridge-declared-fields/src/formbridge/services/widget_tree_projection_config.py:62:                and member.source_equals(node.declaration.field_types[declared_field.name].admit(declared_field.default))
+/home/ts/wt/formbridge-declared-fields/src/formbridge/bridge/live_overview.py:162:        if not isinstance(payload, dict):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/bridge/service.py:1328:            if not isinstance(payload, dict):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/bridge/dto.py:1681:        if not isinstance(payload, dict):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/bridge/field_projection.py:147:        if isinstance(value, (list, tuple)) and len(value) > query.max_value_items:
+/home/ts/wt/formbridge-declared-fields/src/formbridge/bridge/server.py:323:        if not isinstance(payload, dict):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/bridge/server.py:333:        if not isinstance(payload, dict):
+/home/ts/wt/formbridge-declared-fields/src/formbridge/bridge/server.py:536:                    if not isinstance(request_payload, dict):

@@ -11,12 +11,8 @@ from python_introspect import (
     optional_member_type,
 )
 
-from objectstate import (
-    LazyDataclassFactory,
-    get_base_type_for_lazy,
-    patch_lazy_constructors,
-    register_lazy_type_mapping,
-)
+from python_introspect import resolve_declared_type
+from objectstate import LazyDataclassFactory, patch_lazy_constructors, register_lazy_type_mapping
 
 
 def test_make_lazy_simple():
@@ -33,7 +29,7 @@ def test_make_lazy_simple():
     assert LazySimpleConfig.__name__ == "LazySimpleConfig"
 
     # Check that type mapping was registered
-    assert get_base_type_for_lazy(LazySimpleConfig) == SimpleConfig
+    assert resolve_declared_type(LazySimpleConfig) == SimpleConfig
 
 
 def test_make_lazy_simple_reuses_the_registered_nominal_type() -> None:
@@ -330,7 +326,7 @@ def test_register_and_get_lazy_type_mapping():
     register_lazy_type_mapping(LazyConfig, BaseConfig)
 
     # Verify mapping
-    assert get_base_type_for_lazy(LazyConfig) == BaseConfig
+    assert resolve_declared_type(LazyConfig) == BaseConfig
 
 
 def test_patch_lazy_constructors_uses_registered_type_mapping():
@@ -351,7 +347,7 @@ def test_patch_lazy_constructors_uses_registered_type_mapping():
 
     assert object.__getattribute__(candidate, "inherited") is None
     nested = object.__getattribute__(candidate, "nested")
-    assert get_base_type_for_lazy(type(nested)) is NestedConfig
+    assert resolve_declared_type(type(nested)) is NestedConfig
     assert object.__getattribute__(nested, "value") is None
 
 
@@ -504,7 +500,7 @@ def test_lazy_from_config_uses_declared_type_not_class_name() -> None:
     parent = LazyParentConfig.from_config(ChildConfig(value="explicit"))
 
     child = object.__getattribute__(parent, "payload")
-    assert get_base_type_for_lazy(type(child)) is ChildConfig
+    assert resolve_declared_type(type(child)) is ChildConfig
     assert object.__getattribute__(child, "value") == "explicit"
 
 

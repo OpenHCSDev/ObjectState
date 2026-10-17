@@ -103,7 +103,7 @@ class LazyDataclassFormatter(LazyResolutionFormatter):
     formats = LazyDataclass
 
     def clean_field_needs_source(self, value: object, field: Field, current: object) -> bool:
-        if FieldValue.is_inherited(current):
+        if FieldValue.of(current).inherits():
             return False
         if field.name in _set_field_names(value):
             return True

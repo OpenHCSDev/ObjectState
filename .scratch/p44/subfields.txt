@@ -1,0 +1,147 @@
+/home/ts/code/projects/openhcs-sequential/.venv/lib/python3.12/site-packages/pytest_asyncio/plugin.py:208: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+.FFFFFF                                                                  [100%]
+=================================== FAILURES ===================================
+_________ test_tuple_dataclass_leaf_semantics_detect_only_changed_leaf _________
+
+    def test_tuple_dataclass_leaf_semantics_detect_only_changed_leaf() -> None:
+        state = ObjectState(
+            Holder(clauses=(Clause("file", "contains", "DAPI"),)),
+            scope_id="subfield",
+        )
+        ObjectStateRegistry.register(state, _skip_snapshot=True)
+    
+>       state.update_parameter(
+            "clauses",
+            (Clause("file", "contains", "GFP"),),
+        )
+E       AttributeError: 'ObjectState' object has no attribute 'update_parameter'. Did you mean: '_saved_parameters'?
+
+tests/test_subfield_semantics.py:67: AttributeError
+________ test_container_replacement_reports_child_semantic_change_only _________
+
+    def test_container_replacement_reports_child_semantic_change_only() -> None:
+        @dataclass
+        class RootConfig:
+            bindings: EnableableHolder = field(
+                default_factory=lambda: EnableableHolder(
+                    enabled=True,
+                    clauses=(Clause("file", "contains", "DAPI"),),
+                )
+            )
+    
+        state = ObjectState(RootConfig(), scope_id="subfield")
+        ObjectStateRegistry.register(state, _skip_snapshot=True)
+        resolved_events: list[set[str]] = []
+        state_events: list[set[str]] = []
+>       state.on_resolved_changed(lambda paths: resolved_events.append(set(paths)))
+E       AttributeError: 'ObjectState' object has no attribute 'on_resolved_changed'. Did you mean: '_notify_resolved_changed'?
+
+tests/test_subfield_semantics.py:102: AttributeError
+____ test_missing_default_leaf_marks_signature_diff_without_confusing_none _____
+
+    def test_missing_default_leaf_marks_signature_diff_without_confusing_none() -> None:
+        state = ObjectState(Holder(), scope_id="subfield")
+        ObjectStateRegistry.register(state, _skip_snapshot=True)
+    
+>       state.update_parameter(
+            "clauses",
+            (Clause("file", "is_image", None),),
+        )
+E       AttributeError: 'ObjectState' object has no attribute 'update_parameter'. Did you mean: '_saved_parameters'?
+
+tests/test_subfield_semantics.py:124: AttributeError
+_______________ test_inherited_tuple_cells_are_marked_inherited ________________
+
+    def test_inherited_tuple_cells_are_marked_inherited() -> None:
+        @dataclass
+        class ParentConfig:
+            clauses: tuple[Clause, ...] | None = None
+    
+        @dataclass
+        class ChildConfig(ParentConfig):
+            clauses: tuple[Clause, ...] | None = None
+    
+        LazyParentConfig = LazyDataclassFactory.make_lazy_simple(ParentConfig)
+        LazyChildConfig = LazyDataclassFactory.make_lazy_simple(ChildConfig)
+    
+        @dataclass
+        class RootConfig:
+            parent_config: LazyParentConfig = field(default_factory=LazyParentConfig)
+            child_config: LazyChildConfig = field(default_factory=LazyChildConfig)
+    
+        state = ObjectState(RootConfig(), scope_id="subfield")
+        ObjectStateRegistry.register(state, _skip_snapshot=True)
+>       state.update_parameter(
+            "parent_config.clauses",
+            (Clause("file", "contains", "DAPI"),),
+        )
+E       AttributeError: 'ObjectState' object has no attribute 'update_parameter'. Did you mean: '_saved_parameters'?
+
+tests/test_subfield_semantics.py:160: AttributeError
+________ test_inherited_tuple_recompute_notifies_structural_leaf_paths _________
+
+    def test_inherited_tuple_recompute_notifies_structural_leaf_paths() -> None:
+        @dataclass
+        class ParentConfig:
+            clauses: tuple[Clause, ...] | None = None
+    
+        @dataclass
+        class ChildConfig(ParentConfig):
+            clauses: tuple[Clause, ...] | None = None
+    
+        LazyParentConfig = LazyDataclassFactory.make_lazy_simple(ParentConfig)
+        LazyChildConfig = LazyDataclassFactory.make_lazy_simple(ChildConfig)
+    
+        @dataclass
+        class RootConfig:
+            parent_config: LazyParentConfig = field(default_factory=LazyParentConfig)
+            child_config: LazyChildConfig = field(default_factory=LazyChildConfig)
+    
+        state = ObjectState(RootConfig(), scope_id="subfield")
+        ObjectStateRegistry.register(state, _skip_snapshot=True)
+>       state.update_parameter(
+            "parent_config.clauses",
+            (Clause("file", "contains", "DAPI"),),
+        )
+E       AttributeError: 'ObjectState' object has no attribute 'update_parameter'. Did you mean: '_saved_parameters'?
+
+tests/test_subfield_semantics.py:203: AttributeError
+_____ test_time_travel_navigation_field_ignores_inherited_resolved_fanout ______
+
+    def test_time_travel_navigation_field_ignores_inherited_resolved_fanout() -> None:
+        @dataclass
+        class ParentConfig:
+            clauses: tuple[Clause, ...] | None = None
+    
+        @dataclass
+        class ChildConfig(ParentConfig):
+            clauses: tuple[Clause, ...] | None = None
+    
+        LazyParentConfig = LazyDataclassFactory.make_lazy_simple(ParentConfig)
+        LazyChildConfig = LazyDataclassFactory.make_lazy_simple(ChildConfig)
+    
+        @dataclass
+        class RootConfig:
+            parent_config: LazyParentConfig = field(default_factory=LazyParentConfig)
+            child_config: LazyChildConfig = field(default_factory=LazyChildConfig)
+    
+        state = ObjectState(RootConfig(), scope_id="subfield")
+        ObjectStateRegistry.register(state, _skip_snapshot=True)
+>       state.update_parameter(
+            "parent_config.clauses",
+            (Clause("file", "contains", "DAPI"),),
+        )
+E       AttributeError: 'ObjectState' object has no attribute 'update_parameter'. Did you mean: '_saved_parameters'?
+
+tests/test_subfield_semantics.py:251: AttributeError
+=========================== short test summary info ============================
+FAILED tests/test_subfield_semantics.py::test_tuple_dataclass_leaf_semantics_detect_only_changed_leaf
+FAILED tests/test_subfield_semantics.py::test_container_replacement_reports_child_semantic_change_only
+FAILED tests/test_subfield_semantics.py::test_missing_default_leaf_marks_signature_diff_without_confusing_none
+FAILED tests/test_subfield_semantics.py::test_inherited_tuple_cells_are_marked_inherited
+FAILED tests/test_subfield_semantics.py::test_inherited_tuple_recompute_notifies_structural_leaf_paths
+FAILED tests/test_subfield_semantics.py::test_time_travel_navigation_field_ignores_inherited_resolved_fanout
+6 failed, 1 passed in 0.61s

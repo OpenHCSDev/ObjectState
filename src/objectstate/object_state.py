@@ -968,7 +968,7 @@ class ObjectState:
             path
             for config_type, field_name in differing
             for path in self.inheritance_field_paths(config_type, field_name)
-            if FieldValue.is_inherited(own_values.get(path, Unset()))
+            if own_values.get(path, Unset()).inherits()
         }
 
     def _resolve_saved_again_if_sources_changed(self, sources: ResolutionSources) -> bool:

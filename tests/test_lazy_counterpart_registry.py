@@ -4,7 +4,8 @@ from dataclasses import dataclass
 
 import pytest
 
-from objectstate import LazyDataclassFactory, abbreviation, get_base_type_for_lazy, lazy_factory
+from python_introspect import resolve_declared_type
+from objectstate import LazyDataclassFactory, abbreviation, lazy_factory
 from objectstate.lazy_factory import (
     create_global_default_decorator,
     get_group_abbreviation,
@@ -55,7 +56,7 @@ def test_class_inside_function_gets_abbreviation_on_base_and_lazy(define, global
     config = define(global_default, "wfc")
     lazy = get_lazy_type_for_base(config)
 
-    assert get_base_type_for_lazy(lazy) is config
+    assert resolve_declared_type(lazy) is config
     assert get_group_abbreviation(config) == "wfc"
     assert get_group_abbreviation(lazy) == "wfc"
 
@@ -159,8 +160,8 @@ def test_registry_refuses_a_second_counterpart_in_either_direction():
     with pytest.raises(ValueError, match="already owns lazy type"):
         LazyDataclassFactory.make_lazy_simple(First, "OtherLazyFirst")
     assert get_lazy_type_for_base(First) is lazy_first
-    assert get_base_type_for_lazy(lazy_second) is Second
-    assert get_base_type_for_lazy(Unregistered) is None
+    assert resolve_declared_type(lazy_second) is Second
+    assert get_lazy_type_for_base(Unregistered) is None
 
 
 def test_no_lazy_class_is_looked_up_by_constructed_name():

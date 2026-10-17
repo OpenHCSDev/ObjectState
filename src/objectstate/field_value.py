@@ -20,10 +20,6 @@ class FieldValue(ABC):
     def of(cls, value: Any) -> FieldValue:
         return value if isinstance(value, cls) else Value(value)
 
-    @staticmethod
-    def is_inherited(value):
-        return FieldValue.of(value).inherits()
-
     @abstractmethod
     def available(self):
         """Whether domain data is supplied, including literal null."""
