@@ -1,0 +1,219 @@
+.........FFF.FFFFF........                                               [100%]
+=================================== FAILURES ===================================
+________ test_pep604_optional_dataclass_uses_shared_optional_authority _________
+
+    def test_pep604_optional_dataclass_uses_shared_optional_authority() -> None:
+        annotation = NestedConfig | None
+    
+        assert ParameterTypeUtils.is_optional(annotation)
+>       assert ParameterTypeUtils.is_optional_dataclass(annotation)
+E       AttributeError: type object 'ParameterTypeUtils' has no attribute 'is_optional_dataclass'
+
+../formbridge-declared-fields/tests/test_parameter_form_service.py:185: AttributeError
+____________ test_declared_nested_field_path_uses_exact_field_name _____________
+
+    def test_declared_nested_field_path_uses_exact_field_name() -> None:
+        service = ParameterFormService()
+    
+        assert (
+>           service.resolve_declared_field_path(
+                NestedConfigOwner,
+                "primary",
+                NestedConfig,
+            )
+            == "primary"
+        )
+E       AttributeError: 'ParameterFormService' object has no attribute 'resolve_declared_field_path'
+
+../formbridge-declared-fields/tests/test_parameter_form_service.py:197: AttributeError
+_____ test_declared_nested_field_path_fails_on_missing_or_mismatched_owner _____
+
+    def test_declared_nested_field_path_fails_on_missing_or_mismatched_owner() -> None:
+        service = ParameterFormService()
+    
+        with pytest.raises(ValueError, match="no declared field 'missing'"):
+>           service.resolve_declared_field_path(
+                NestedConfigOwner,
+                "missing",
+                NestedConfig,
+            )
+E           AttributeError: 'ParameterFormService' object has no attribute 'resolve_declared_field_path'
+
+../formbridge-declared-fields/tests/test_parameter_form_service.py:226: AttributeError
+______ test_update_form_from_instance_dispatches_only_changed_nested_leaf ______
+
+    def test_update_form_from_instance_dispatches_only_changed_nested_leaf() -> None:
+        nested_manager = _RecordingFormManager(
+            {
+                "enabled": None,
+                "label": "same",
+            }
+        )
+        root_manager = _RecordingFormManager(
+            {
+                "name": "same",
+                "nested": _NestedConfig(enabled=None, label="same"),
+            },
+            nested_managers={"nested": nested_manager},
+        )
+    
+>       CodeEditorFormUpdater.update_form_from_instance(
+            root_manager,
+            _RootConfig(
+                name="same",
+                nested=_NestedConfig(enabled=False, label="same"),
+            ),
+        )
+
+../formbridge-declared-fields/tests/test_code_editor_form_updater.py:62: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+form_manager = <test_code_editor_form_updater._RecordingFormManager object at 0x7fdd623bf650>
+new_instance = _RootConfig(name='same', nested=_NestedConfig(enabled=False, label='same'))
+broadcast_callback = None
+
+    @staticmethod
+    def update_form_from_instance(form_manager, new_instance: Any, broadcast_callback=None) -> None:
+        source = admit_target(new_instance)
+>       for field in form_manager.fields.children:
+E       AttributeError: '_RecordingFormManager' object has no attribute 'fields'
+
+../formbridge-declared-fields/src/formbridge/services/code_editor_form_updater.py:14: AttributeError
+________ test_update_form_from_instance_skips_fully_unchanged_document _________
+
+    def test_update_form_from_instance_skips_fully_unchanged_document() -> None:
+        nested_manager = _RecordingFormManager(
+            {
+                "enabled": None,
+                "label": "same",
+            }
+        )
+        root_manager = _RecordingFormManager(
+            {
+                "name": "same",
+                "nested": _NestedConfig(enabled=None, label="same"),
+            },
+            nested_managers={"nested": nested_manager},
+        )
+    
+>       CodeEditorFormUpdater.update_form_from_instance(
+            root_manager,
+            _RootConfig(
+                name="same",
+                nested=_NestedConfig(enabled=None, label="same"),
+            ),
+        )
+
+../formbridge-declared-fields/tests/test_code_editor_form_updater.py:89: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+form_manager = <test_code_editor_form_updater._RecordingFormManager object at 0x7fdd62286e70>
+new_instance = _RootConfig(name='same', nested=_NestedConfig(enabled=None, label='same'))
+broadcast_callback = None
+
+    @staticmethod
+    def update_form_from_instance(form_manager, new_instance: Any, broadcast_callback=None) -> None:
+        source = admit_target(new_instance)
+>       for field in form_manager.fields.children:
+E       AttributeError: '_RecordingFormManager' object has no attribute 'fields'
+
+../formbridge-declared-fields/src/formbridge/services/code_editor_form_updater.py:14: AttributeError
+____________ test_update_form_from_instance_preserves_literal_null _____________
+
+    def test_update_form_from_instance_preserves_literal_null() -> None:
+        root_manager = _RecordingFormManager(
+            {
+                "name": "override",
+                "nested": None,
+            }
+        )
+    
+>       CodeEditorFormUpdater.update_form_from_instance(
+            root_manager,
+            _RootConfig(name=None, nested=None),
+        )
+
+../formbridge-declared-fields/tests/test_code_editor_form_updater.py:109: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+form_manager = <test_code_editor_form_updater._RecordingFormManager object at 0x7fdd622874d0>
+new_instance = _RootConfig(name=None, nested=None), broadcast_callback = None
+
+    @staticmethod
+    def update_form_from_instance(form_manager, new_instance: Any, broadcast_callback=None) -> None:
+        source = admit_target(new_instance)
+>       for field in form_manager.fields.children:
+E       AttributeError: '_RecordingFormManager' object has no attribute 'fields'
+
+../formbridge-declared-fields/src/formbridge/services/code_editor_form_updater.py:14: AttributeError
+_______ test_update_form_from_instance_updates_unexpanded_dataclass_once _______
+
+    def test_update_form_from_instance_updates_unexpanded_dataclass_once() -> None:
+        original_nested = _NestedConfig(enabled=None, label="same")
+        replacement_nested = _NestedConfig(enabled=True, label="same")
+        root_manager = _RecordingFormManager(
+            {
+                "name": "same",
+                "nested": original_nested,
+            }
+        )
+    
+>       CodeEditorFormUpdater.update_form_from_instance(
+            root_manager,
+            _RootConfig(name="same", nested=replacement_nested),
+        )
+
+../formbridge-declared-fields/tests/test_code_editor_form_updater.py:127: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+form_manager = <test_code_editor_form_updater._RecordingFormManager object at 0x7fdd62285280>
+new_instance = _RootConfig(name='same', nested=_NestedConfig(enabled=True, label='same'))
+broadcast_callback = None
+
+    @staticmethod
+    def update_form_from_instance(form_manager, new_instance: Any, broadcast_callback=None) -> None:
+        source = admit_target(new_instance)
+>       for field in form_manager.fields.children:
+E       AttributeError: '_RecordingFormManager' object has no attribute 'fields'
+
+../formbridge-declared-fields/src/formbridge/services/code_editor_form_updater.py:14: AttributeError
+____ test_update_form_from_non_dataclass_step_dispatches_only_changed_field ____
+
+    def test_update_form_from_non_dataclass_step_dispatches_only_changed_field() -> None:
+        root_manager = _RecordingFormManager(
+            {
+                "name": "Original",
+                "description": None,
+                "enabled": True,
+            }
+        )
+    
+>       CodeEditorFormUpdater.update_form_from_instance(
+            root_manager,
+            _Step(name="Renamed"),
+        )
+
+../formbridge-declared-fields/tests/test_code_editor_form_updater.py:144: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+form_manager = <test_code_editor_form_updater._RecordingFormManager object at 0x7fdd62286480>
+new_instance = <test_code_editor_form_updater._Step object at 0x7fdd62286630>
+broadcast_callback = None
+
+    @staticmethod
+    def update_form_from_instance(form_manager, new_instance: Any, broadcast_callback=None) -> None:
+        source = admit_target(new_instance)
+>       for field in form_manager.fields.children:
+E       AttributeError: '_RecordingFormManager' object has no attribute 'fields'
+
+../formbridge-declared-fields/src/formbridge/services/code_editor_form_updater.py:14: AttributeError
+=========================== short test summary info ============================
+FAILED ../formbridge-declared-fields/tests/test_parameter_form_service.py::test_pep604_optional_dataclass_uses_shared_optional_authority
+FAILED ../formbridge-declared-fields/tests/test_parameter_form_service.py::test_declared_nested_field_path_uses_exact_field_name
+FAILED ../formbridge-declared-fields/tests/test_parameter_form_service.py::test_declared_nested_field_path_fails_on_missing_or_mismatched_owner
+FAILED ../formbridge-declared-fields/tests/test_code_editor_form_updater.py::test_update_form_from_instance_dispatches_only_changed_nested_leaf
+FAILED ../formbridge-declared-fields/tests/test_code_editor_form_updater.py::test_update_form_from_instance_skips_fully_unchanged_document
+FAILED ../formbridge-declared-fields/tests/test_code_editor_form_updater.py::test_update_form_from_instance_preserves_literal_null
+FAILED ../formbridge-declared-fields/tests/test_code_editor_form_updater.py::test_update_form_from_instance_updates_unexpanded_dataclass_once
+FAILED ../formbridge-declared-fields/tests/test_code_editor_form_updater.py::test_update_form_from_non_dataclass_step_dispatches_only_changed_field
+8 failed, 18 passed in 0.37s

@@ -3,13 +3,15 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from copy import copy
+from collections.abc import Mapping, Sequence
 from dataclasses import MISSING, dataclass, field, fields, is_dataclass
 from enum import Enum
 from functools import cache, cached_property
 from inspect import isclass
-from typing import Any, ClassVar, get_args, get_origin, get_type_hints
+from pathlib import Path
+from typing import Any, ClassVar, Literal, get_args, get_origin, get_type_hints
 
-from python_introspect import UnifiedParameterAnalyzer, resolve_annotated, resolve_declared_type
+from python_introspect import UnifiedParameterAnalyzer, coerce_enum_member, resolve_annotated, resolve_declared_type
 from python_introspect.annotation_types import is_union_type
 
 from objectstate import field_value as members
@@ -83,6 +85,27 @@ class ValueDeclaration(ABC):
     def convert_structure(self, consumer, value, name):
         return consumer.convert_leaf_structure(value, self.annotation, name)
 
+    def accepts_data(self, value):
+        return self.annotation is Any or isinstance(value, get_origin(self.annotation) or self.annotation)
+
+    def project_literal(self, value):
+        return value
+
+    def map_choices(self, value, decode):
+        return decode(value)
+
+    def literal_members(self):
+        return ()
+
+    def literal_editor(self, consumer, request):
+        return None
+
+    def collection_cell_editor(self, editor_type):
+        return None
+
+    def record_cell_editor(self, editor_type, sequence):
+        return None
+
     def editing_default(self, factory):
         return members.Inherit()
 
@@ -129,7 +152,121 @@ class ScalarDeclaration(ValueDeclaration):
         return None
 
 
+class LiteralScalarDeclaration(ScalarDeclaration):
+    def literal_members(self):
+        return (self,)
+
+
+class EnumDeclaration(LiteralScalarDeclaration):
+    def __init__(self, annotation):
+        super().__init__(annotation, members.EnumValue)
+
+    @cached_property
+    def value_declarations(self):
+        return {name: ValueDeclaration.of(type(item.value)) for name, item in self.annotation.__members__.items()}
+
+    def project_literal(self, value):
+        return self.value_declarations[value.name].project_literal(value.value)
+
+    def convert_structure(self, consumer, value, name):
+        return coerce_enum_member(self.annotation, value)
+
+
+class PathDeclaration(LiteralScalarDeclaration):
+    def project_literal(self, value):
+        return str(value)
+
+    def convert_structure(self, consumer, value, name):
+        return self.annotation(value)
+
+
+class UnionDeclaration(ScalarDeclaration):
+    @cached_property
+    def alternatives(self):
+        return tuple(ValueDeclaration.of(item) for item in get_args(self.annotation))
+
+    def accepts_data(self, value):
+        return any(item.accepts_data(value) for item in self.alternatives)
+
+    def literal_members(self):
+        return tuple(member for item in self.alternatives for member in item.literal_members())
+
+    def literal_editor(self, consumer, request):
+        alternatives = self.literal_members()
+        if not alternatives:
+            return None
+        current = members.FieldValue.of(request.current_value)
+        if current.available() and current.stored is not None and not any(item.accepts_data(current.stored) for item in alternatives):
+            return None
+        return consumer.union_editor(request)
+
+    def project_literal(self, value):
+        for item in self.alternatives:
+            if item.accepts_data(value):
+                return item.project_literal(value)
+        raise ValueError(f'{value!r} does not match {self.annotation!r}')
+
+    def convert_structure(self, consumer, value, name):
+        errors = []
+        for item in self.alternatives:
+            try:
+                return consumer._converted_container_item(value, item.annotation, name)
+            except (TypeError, ValueError) as error:
+                errors.append(error)
+        raise errors[-1]
+
+
+class LiteralDeclaration(ScalarDeclaration):
+    @cached_property
+    def alternatives(self):
+        return {item: ValueDeclaration.of(type(item)) for item in get_args(self.annotation)}
+
+    def accepts_data(self, value):
+        return value in self.alternatives
+
+    def project_literal(self, value):
+        return self.alternatives[value].project_literal(value)
+
+
 class CollectionDeclaration(ScalarDeclaration):
+    def literal_members(self):
+        return (self,)
+
+    def literal_editor(self, consumer, request):
+        return consumer.container_editor(request)
+
+    @property
+    def literal_name(self):
+        return self.container.__name__
+
+    @property
+    def literal_example(self):
+        return repr(self.container())
+
+    def require_literal(self, value):
+        if not isinstance(value, self.container):
+            raise ValueError(f'Expected {self.literal_name}, got {type(value).__name__}.')
+        return value
+
+    def convert_structure(self, consumer, value, name):
+        if not isinstance(value, self.input_types):
+            return super().convert_structure(consumer, value, name)
+        self.validate_arity(value, name)
+        return self.map_data(value, lambda declaration, datum: consumer._converted_container_item(datum, declaration.annotation, name))
+
+    def validate_arity(self, value, name):
+        pass
+
+    def project_literal(self, value):
+        return self.map_data(value, lambda declaration, datum: declaration.project_literal(datum))
+
+    def map_choices(self, value, decode):
+        return self.map_data(value, lambda declaration, datum: decode(datum))
+
+    @abstractmethod
+    def map_data(self, value, convert):
+        """Traverse with the declarations that own both keys and elements."""
+
     def admit_data(self, value):
         return members.CollectionValue(value, self)
 
@@ -139,6 +276,8 @@ class CollectionDeclaration(ScalarDeclaration):
 
 
 class SequenceDeclaration(CollectionDeclaration):
+    input_types = (list, tuple)
+
     def __init__(self, annotation, container):
         super().__init__(annotation)
         self.container = container
@@ -149,6 +288,9 @@ class SequenceDeclaration(CollectionDeclaration):
 
     def normalize_data(self, value):
         return self.container(value)
+
+    def map_data(self, value, convert):
+        return self.container(convert(self.item_declaration(index), child) for index, child in enumerate(value))
 
     def items(self, value):
         return ((index, self.item_declaration(index).admit(child))
@@ -169,6 +311,9 @@ class RepeatedSequenceDeclaration(SequenceDeclaration):
     def item_declaration(self, index):
         return self.item
 
+    def collection_cell_editor(self, editor_type):
+        return self.item.record_cell_editor(editor_type, self)
+
 
 class FixedTupleDeclaration(SequenceDeclaration):
     def __init__(self, annotation, items):
@@ -178,12 +323,25 @@ class FixedTupleDeclaration(SequenceDeclaration):
     def item_declaration(self, index):
         return self.item_types[index]
 
+    def validate_arity(self, value, name):
+        if len(value) != len(self.item_types):
+            raise ValueError(f'Invalid tuple length for parameter {name!r}: expected {len(self.item_types)}, got {len(value)}.')
+
 
 class MappingDeclaration(CollectionDeclaration):
+    container = dict
+    input_types = dict
+
     def __init__(self, annotation, key, item):
         super().__init__(annotation)
         self.key = key
         self.item = item
+
+    def normalize_data(self, value):
+        return self.container(value)
+
+    def map_data(self, value, convert):
+        return self.container((convert(self.key, key), convert(self.item, child)) for key, child in value.items())
 
     def items(self, value):
         return ((key, self.item.admit(child)) for key, child in value.items())
@@ -192,7 +350,7 @@ class MappingDeclaration(CollectionDeclaration):
         return path.child_field(str(key))
 
     def rebuild(self, items):
-        return dict(items)
+        return self.container(items)
 
     def serialize(self, member, resolver):
         return member.fold(lambda value: {
@@ -215,11 +373,37 @@ class NullableDeclaration(ValueDeclaration):
     def scope_available(self, member):
         return member.fold(lambda value: value is not None, lambda directive: False)
 
+    def literal_members(self):
+        return self.inner.literal_members()
+
+    def literal_editor(self, consumer, request):
+        return self.inner.literal_editor(consumer, request)
+
+    @property
+    def literal_name(self):
+        return self.inner.literal_name
+
+    @property
+    def literal_example(self):
+        return self.inner.literal_example
+
+    def require_literal(self, value):
+        return None if value is None else self.inner.require_literal(value)
+
+    def accepts_data(self, value):
+        return value is None or self.inner.accepts_data(value)
+
+    def project_literal(self, value):
+        return None if value is None else self.inner.project_literal(value)
+
+    def map_choices(self, value, decode):
+        return None if value is None else self.inner.map_choices(value, decode)
+
     def configuration_owners(self):
         return self.inner.configuration_owners()
 
     def choose_declaration(self, consumer, **arguments):
-        return self.inner.choose_declaration(consumer, **arguments)
+        return consumer.nullable_declaration(self.inner, **arguments)
 
     def convert_structure(self, consumer, value, name):
         return None if value is None else self.inner.convert_structure(consumer, value, name)
@@ -307,6 +491,9 @@ class ConfigurationDeclaration(ParameterOwnerDeclaration):
 
     def require_config_type(self):
         return self.declaring_type
+
+    def record_cell_editor(self, editor_type, sequence):
+        return editor_type(sequence.annotation)
 
     def declared_fields(self):
         return self.fields
@@ -424,13 +611,16 @@ def _compile_declaration(annotation):
         nonnull = tuple(arm for arm in arms if arm is not type(None))
         if len(nonnull) == 1 and len(nonnull) != len(arms):
             return NullableDeclaration(annotation, ValueDeclaration.of(nonnull[0]))
+        return UnionDeclaration(annotation)
     origin = get_origin(annotation) or annotation
     arguments = get_args(annotation)
-    if origin in (list, tuple):
+    if origin is Literal:
+        return LiteralDeclaration(annotation)
+    if origin in (list, tuple, Sequence):
         if origin is tuple and arguments and arguments[-1] is not Ellipsis:
             return FixedTupleDeclaration(annotation, tuple(ValueDeclaration.of(item) for item in arguments))
-        return RepeatedSequenceDeclaration(annotation, origin, ValueDeclaration.of(arguments[0] if arguments else Any))
-    if origin is dict:
+        return RepeatedSequenceDeclaration(annotation, tuple if origin is Sequence else origin, ValueDeclaration.of(arguments[0] if arguments else Any))
+    if origin in (dict, Mapping):
         key, item = arguments if arguments else (Any, Any)
         return MappingDeclaration(annotation, ValueDeclaration.of(key), ValueDeclaration.of(item))
     if annotation is type(None):
@@ -440,7 +630,11 @@ def _compile_declaration(annotation):
             declaration = RebuildableConfigurationDeclaration if issubclass(annotation, ConfigurationRebuild) else ConfigurationDeclaration
             return declaration(annotation)
         if issubclass(annotation, Enum):
-            return ScalarDeclaration(annotation, members.EnumValue)
+            return EnumDeclaration(annotation)
+        if issubclass(annotation, Path):
+            return PathDeclaration(annotation)
         if issubclass(annotation, str):
-            return ScalarDeclaration(annotation, members.TextValue)
+            return LiteralScalarDeclaration(annotation, members.TextValue)
+        if annotation in (int, float, bool):
+            return LiteralScalarDeclaration(annotation)
     return ScalarDeclaration(annotation)

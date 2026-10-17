@@ -1,0 +1,7 @@
+P44_FORM_SCREENSHOT
+built {'text': 'InheritedLineEdit', 'count': 'InheritedIntEdit'}
+open form preserves literal None and inherited 77 separately
+existing form receives a backend change to literal None
+native Qt keystrokes commit through the original debounce and state callbacks
+reset performs one mutation hook and one publication, restores inherited 77
+view retired
