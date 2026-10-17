@@ -2147,11 +2147,7 @@ class ObjectState:
 
                 # Check if this path is a CONTAINER entry (value is a nested dataclass)
                 # vs a LEAF field (value is primitive, even if container_type is a dataclass)
-                is_container_entry = structure.is_container_parameter(
-                    dotted_path, raw_value, parameters
-                )
-
-                if is_container_entry:
+                if structure.is_container_parameter(dotted_path, raw_value, parameters):
                     # Container-level entry - SKIP from snapshot
                     # Containers are kept in parameters for UI rendering but excluded from
                     # dirty comparison since we compare leaf fields instead

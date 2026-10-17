@@ -22,7 +22,7 @@ def global_default():
         pass
 
     yield create_global_default_decorator(GlobalCounterpartConfig)
-    del lazy_factory._pending_injections[GlobalCounterpartConfig.__name__]
+    del lazy_factory._pending_injections[GlobalCounterpartConfig]
 
 
 def _abbreviation_first(global_default, name):
