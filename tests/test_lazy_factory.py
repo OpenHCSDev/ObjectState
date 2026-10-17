@@ -12,7 +12,8 @@ from python_introspect import (
 )
 
 from python_introspect import resolve_declared_type
-from objectstate import LazyDataclassFactory, patch_lazy_constructors, register_lazy_type_mapping
+from objectstate import LazyDataclassFactory, Inherit, register_lazy_type_mapping
+from objectstate.declarations import ValueDeclaration
 
 
 def test_make_lazy_simple():
@@ -342,13 +343,12 @@ def test_patch_lazy_constructors_uses_registered_type_mapping():
     LazyDataclassFactory.make_lazy_simple(NestedConfig)
     LazyConfig = LazyDataclassFactory.make_lazy_simple(BaseConfig)
 
-    with patch_lazy_constructors():
-        candidate = LazyConfig()
+    candidate = ValueDeclaration.of(LazyConfig).construct({})
 
-    assert object.__getattribute__(candidate, "inherited") is None
+    assert isinstance(object.__getattribute__(candidate, "inherited"), Inherit)
     nested = object.__getattribute__(candidate, "nested")
     assert resolve_declared_type(type(nested)) is NestedConfig
-    assert object.__getattribute__(nested, "value") is None
+    assert isinstance(object.__getattribute__(nested, "value"), Inherit)
 
 
 def test_patch_lazy_constructors_does_not_hide_default_factory_failure():
@@ -359,9 +359,8 @@ def test_patch_lazy_constructors_does_not_hide_default_factory_failure():
     class LazyConfig:
         value: str = field(default_factory=fail_default)
 
-    with patch_lazy_constructors(types=[LazyConfig]):
-        with pytest.raises(RuntimeError, match="default factory failed"):
-            LazyConfig()
+    with pytest.raises(RuntimeError, match="default factory failed"):
+        ValueDeclaration.of(LazyConfig).construct({})
 
 
 def test_patch_lazy_constructors_preserves_nominal_validation_and_authored_fields():
@@ -372,13 +371,13 @@ def test_patch_lazy_constructors_preserves_nominal_validation_and_authored_field
 
     lazy_config_type = LazyDataclassFactory.make_lazy_simple(BaseConfig)
 
-    with patch_lazy_constructors(types=[lazy_config_type]):
-        candidate = lazy_config_type(count=3)
-        with pytest.raises(TypeError, match="LazyBaseConfig.count"):
-            lazy_config_type(count="invalid")
+    declaration = ValueDeclaration.of(lazy_config_type)
+    candidate = declaration.construct({'count': 3})
+    with pytest.raises(TypeError, match="LazyBaseConfig.count"):
+        declaration.construct({'count': 'invalid'})
 
     assert object.__getattribute__(candidate, "count") == 3
-    assert object.__getattribute__(candidate, "label") is None
+    assert isinstance(object.__getattribute__(candidate, "label"), Inherit)
     assert candidate.__dict__["_explicitly_set_fields"] == {"count"}
 
 
