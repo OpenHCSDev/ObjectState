@@ -481,7 +481,8 @@ class ObjectState:
         self._check_and_sync_delegate()
         self._ensure_saved_resolved()
         return self._reconstruct_from_resolved(
-            "", self._saved_resolved, self._extraction_target, self.parameter_structure
+            "", self._saved_resolved, self._extraction_target,
+            self._parameter_epoch(self._saved_parameters)[1],
         )
 
     @classmethod
@@ -508,9 +509,9 @@ class ObjectState:
         structure = ParameterStructure.for_target(target, None)
         parameters: dict[str, Any] = {}
         cls._extract_all_parameters_flat(target, parameters, structure)
+        structure.index(parameters)
         saved_parameters = cls._copy_parameters_for_saved_baseline(parameters)
         snapshot, provenance = cls._resolve_parameter_snapshot(
-            saved_parameters,
             saved_parameters,
             structure,
             target,
@@ -848,10 +849,13 @@ class ObjectState:
         if differing is None:
             return None
         own_values = self._saved_parameters if use_saved else self.parameters
+        structure = self.parameter_structure
+        if use_saved:
+            own_values, structure = self._parameter_epoch(own_values)
         return {
             path
             for config_type, field_name in differing
-            for path in self.inheritance_field_paths(config_type, field_name)
+            for path in structure.inheritance_field_paths(config_type, field_name)
             if own_values.get(path) is None
         }
 
@@ -905,37 +909,6 @@ class ObjectState:
 
         return UnifiedParameterAnalyzer.analyze(obj, exclude_params=exclude_params)
 
-    @staticmethod
-    def _get_nested_dataclass_type(param_type: Any) -> type | None:
-        """Get the nested dataclass type if param_type is a nested dataclass.
-
-        Args:
-            param_type: The parameter type to check
-
-        Returns:
-            The dataclass type if nested, None otherwise
-        """
-        from typing import Union, get_args, get_origin
-
-        # Check Optional[dataclass]
-        origin = get_origin(param_type)
-        if origin is Union:
-            args = get_args(param_type)
-            if len(args) == 2 and type(None) in args:
-                inner_type = next(arg for arg in args if arg is not type(None))
-                if is_dataclass(inner_type):
-                    return inner_type
-
-        # Check direct dataclass (but not the type itself)
-        if is_dataclass(param_type) and not isinstance(param_type, type):
-            # param_type is an instance, not a type - shouldn't happen but handle it
-            return type(param_type)
-
-        if is_dataclass(param_type):
-            return param_type
-
-        return None
-
     def reset_all_parameters(self) -> None:
         """Reset all parameters to defaults."""
         self._in_reset = True
@@ -945,98 +918,71 @@ class ObjectState:
         finally:
             self._in_reset = False
 
-    def _dataclass_parameter_updates(self, prefix: str, value: Any) -> dict[str, Any]:
-        """Flatten a dataclass container update into registered child parameters."""
-        if value is None or not is_dataclass(type(value)):
-            return {}
+    def _prepare_parameter_update(
+        self, prefix: str, value: Any
+    ) -> tuple[dict[str, Any], ParameterStructure]:
+        """Extract the actual new subtree before touching values or subscribers."""
 
-        prefix_dot = f"{prefix}."
-        if not any(
-            path.startswith(prefix_dot)
-            for path in self.parameters
-            if path != prefix
-        ):
-            return {}
+        structure = self.parameter_structure.without_descendants(prefix)
+        parameters = {
+            path: current for path, current in self.parameters.items()
+            if not path.startswith(f"{prefix}.")
+        }
+        parameters[prefix] = value
+        parent = DottedFieldPath(prefix).parent.value
+        owner = parameters[parent] if parent else self._extraction_target
+        structure.owner_paths[prefix] = owner if isinstance(owner, FunctionType) else type(owner)
+        if is_dataclass(type(value)):
+            structure.owner_paths[prefix] = type(value)
+            self._extract_all_parameters_flat(value, parameters, structure, prefix=prefix)
+        structure.index(parameters)
+        self._dataclass_ancestor_parameter_updates(prefix, parameters)
+        if is_dataclass(type(self._extraction_target)):
+            self._reconstruct_from_parameter_snapshot('', parameters)
+        return parameters, structure
 
-        updates: dict[str, Any] = {}
-        for field in dataclass_fields(value):
-            field_path = f"{prefix_dot}{field.name}"
-            field_value = DataclassFieldAccess.raw_value(value, field.name)
-            if field_path in self.parameters:
-                updates[field_path] = field_value
-            updates.update(self._dataclass_parameter_updates(field_path, field_value))
-        return updates
+    def _parameter_epoch(
+        self, values: dict[str, Any]
+    ) -> tuple[dict[str, Any], ParameterStructure]:
+        """Derive one raw epoch through the same declaration/value extractor.
+
+        Native containers in values select their own children. The current root
+        declaration still filters genuinely removed constructor fields.
+        """
+
+        parameters: dict[str, Any] = {}
+        structure = ParameterStructure.for_target(
+            self._extraction_target, self.parameter_structure.exclusions
+        )
+        self._extract_all_parameters_flat(
+            self._extraction_target, parameters, structure,
+            exclude_params=structure.exclusions, values=values,
+        )
+        structure.index(parameters)
+        for path in sorted(parameters, key=lambda name: name.count('.'), reverse=True):
+            if is_dataclass(type(parameters[path])):
+                parameters[path] = self._reconstruct_from_parameter_snapshot(path, parameters)
+        return parameters, structure
 
     def _dataclass_ancestor_parameter_updates(
         self,
         param_name: str,
         parameters: dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> None:
         """Rebuild dataclass container parameters that own a changed child path."""
-
-        updates: dict[str, Any] = {}
         for path in DottedFieldPath(param_name).parent.lineage:
             prefix = path.value
             if prefix not in parameters:
                 continue
-            prefix_type = self.parameter_structure.owner_paths.get(prefix)
-            if not (isinstance(prefix_type, type) and is_dataclass(prefix_type)):
+            if not is_dataclass(type(parameters[prefix])):
                 continue
 
             rebuilt_value = self._reconstruct_from_parameter_snapshot(
                 prefix,
                 parameters,
             )
-            if parameters.get(prefix) != rebuilt_value:
-                updates[prefix] = rebuilt_value
-                parameters[prefix] = rebuilt_value
-        return updates
+            parameters[prefix] = rebuilt_value
 
-
-    def inheritance_field_paths(
-        self,
-        target_type: ParameterOwner,
-        field_name: str,
-    ) -> tuple[str, ...]:
-        """Return flat field paths whose container type can inherit target_type."""
-
-        from objectstate.lazy_factory import get_base_type_for_lazy
-
-        if isinstance(target_type, type):
-            target_base_type = get_base_type_for_lazy(target_type) or target_type
-        else:
-            target_base_type = target_type
-
-        paths: list[str] = []
-        for dotted_path, container_type in self.parameter_structure.owner_paths.items():
-            if dotted_path not in self.parameters:
-                continue
-            if not (dotted_path.endswith(f".{field_name}") or dotted_path == field_name):
-                continue
-
-            if isinstance(container_type, type):
-                container_base_type = (
-                    get_base_type_for_lazy(container_type) or container_type
-                )
-            else:
-                container_base_type = container_type
-
-            type_matches = container_base_type == target_base_type
-            if (
-                not type_matches
-                and isinstance(container_base_type, type)
-                and isinstance(target_base_type, type)
-            ):
-                type_matches = any(
-                    (get_base_type_for_lazy(mro_class) or mro_class)
-                    == target_base_type
-                    for mro_class in container_base_type.__mro__
-                )
-
-            if type_matches:
-                paths.append(dotted_path)
-
-        return tuple(paths)
 
     def update_parameter(self, param_name: str, value: Any) -> set[str]:
         """Update parameter value in state.
@@ -1067,37 +1013,24 @@ class ObjectState:
             )
             return set()
 
-        child_updates = self._dataclass_parameter_updates(param_name, value)
-        pending_parameters = dict(self.parameters)
-        pending_parameters[param_name] = value
-        for child_path, child_value in child_updates.items():
-            pending_parameters[child_path] = child_value
-        ancestor_updates = self._dataclass_ancestor_parameter_updates(
-            param_name,
-            pending_parameters,
+        pending_parameters, pending_structure = self._prepare_parameter_update(param_name, value)
+        previous_structure = self.parameter_structure
+        changed_storage_params = {
+            path for path in self.parameters.keys() | pending_parameters.keys()
+            if path not in self.parameters or path not in pending_parameters
+            or self.parameters[path] != pending_parameters[path]
+            or type(self.parameters[path]) is not type(pending_parameters[path])
+        }
+        topology_changed = (
+            self.parameters.keys() != pending_parameters.keys()
+            or previous_structure.owner_paths != pending_structure.owner_paths
         )
-
-        # EARLY EXIT: No change, no invalidation, no flash
-        current_value = self.parameters[param_name]
-        changed_child_params = {
-            child_path
-            for child_path, child_value in child_updates.items()
-            if self.parameters.get(child_path) != child_value
-        }
-        changed_ancestor_params = {
-            ancestor_path
-            for ancestor_path, ancestor_value in ancestor_updates.items()
-            if self.parameters.get(ancestor_path) != ancestor_value
-        }
-        changed_storage_params = set(changed_child_params) | changed_ancestor_params
-        if current_value != value:
-            changed_storage_params.add(param_name)
-        if not changed_storage_params:
+        if not changed_storage_params and not topology_changed:
             return set()
-
-        changed_semantic_params = set(changed_child_params)
-        if current_value != value and not changed_child_params:
-            changed_semantic_params.add(param_name)
+        changed_semantic_params = {
+            path for path in changed_storage_params
+            if path == param_name or path.startswith(f'{param_name}.')
+        }
 
         changed_param_values = self._changed_parameter_values(
             changed_semantic_params,
@@ -1108,12 +1041,9 @@ class ObjectState:
         changed_before_the_edit = self._ensure_live_resolved(notify_flash=False)
         ObjectStateRegistry.ensure_baseline_snapshot()
 
-        # Update state directly (no type conversion - that's VIEW responsibility)
-        self.parameters[param_name] = value
-        for child_path, child_value in child_updates.items():
-            self.parameters[child_path] = child_value
-        for ancestor_path, ancestor_value in ancestor_updates.items():
-            self.parameters[ancestor_path] = ancestor_value
+        # Publish values and topology together; saved values remain their own epoch.
+        self.parameters = pending_parameters
+        self.parameter_structure = pending_structure
 
         # SELF-INVALIDATION: Mark changed fields and same-state inherited siblings.
         local_invalidations = set(changed_semantic_params)
@@ -1121,7 +1051,7 @@ class ObjectState:
             container_type = self.parameter_structure.owner_paths.get(changed_param, type(self.object_instance))
             leaf_field_name = DottedFieldPath(changed_param).field_name
             local_invalidations.update(
-                self.inheritance_field_paths(container_type, leaf_field_name)
+                self.parameter_structure.inheritance_field_paths(container_type, leaf_field_name)
             )
         self._invalid_fields.update(local_invalidations)
         self._cached_object = None  # Invalidate cached reconstructed object
@@ -1129,7 +1059,21 @@ class ObjectState:
 
         # Materialize the origin once after its live context is authoritative,
         # then cascade only to descendants.
-        changed_paths = self._ensure_live_resolved(notify_flash=False) | changed_before_the_edit
+        if topology_changed:
+            assert self._live_resolved is not None
+            previous_resolved = self._live_resolved
+            self._live_resolved = self._compute_resolved_snapshot()
+            self._invalid_fields.clear()
+            changed_paths = {
+                path for path in previous_resolved.keys() | self._live_resolved.keys()
+                if path not in previous_resolved or path not in self._live_resolved
+                or previous_resolved[path] != self._live_resolved[path]
+            }
+            changed_paths |= changed_storage_params
+        else:
+            changed_paths = self._ensure_live_resolved(notify_flash=False)
+        changed_paths |= changed_before_the_edit
+        changed_paths = self._most_specific_notification_fields(changed_paths)
         for changed_param in changed_semantic_params:
             # SCOPE + TYPE + FIELD AWARE INVALIDATION:
             # Get the CONTAINER type for this field (e.g., PartitionFilterConfig for
@@ -1137,18 +1081,18 @@ class ObjectState:
             # This is critical for sibling inheritance: when
             # PartitionFilterConfig.partition_filter changes, we need to invalidate
             # PathPlanningConfig.partition_filter (which inherits from PartitionFilterConfig)
-            container_type = self.parameter_structure.owner_paths.get(changed_param, type(self.object_instance))
-
-            # Extract leaf field name for invalidation matching
-            leaf_field_name = DottedFieldPath(changed_param).field_name
-
-
-            ObjectStateRegistry.invalidate_by_type_and_scope(
-                scope_id=self.scope_id,
-                changed_type=container_type,
-                field_name=leaf_field_name,
-                include_origin=False,
-            )
+            owners = {
+                structure.owner_paths[changed_param]
+                for structure in (previous_structure, pending_structure)
+                if changed_param in structure.owner_paths
+            }
+            for container_type in owners:
+                ObjectStateRegistry.invalidate_by_type_and_scope(
+                    scope_id=self.scope_id,
+                    changed_type=container_type,
+                    field_name=DottedFieldPath(changed_param).field_name,
+                    include_origin=False,
+                )
 
         # Increment global token for LiveContextService.collect() cache invalidation
         ObjectStateRegistry.increment_token(notify=False)
@@ -1197,22 +1141,10 @@ class ObjectState:
         self._ensure_live_resolved()
         assert self._live_resolved is not None  # Guaranteed by _ensure_live_resolved
 
-        # Check if this is a container/dataclass field (has subfields in _live_resolved)
-        prefix = f"{param_name}."
-        has_subfields = any(key.startswith(prefix) for key in self._live_resolved.keys())
-
-        if has_subfields:
-            # This is a container field - reconstruct's dataclass from live resolved values
-            field_type = self.parameter_structure.owner_paths.get(param_name)
-            if field_type is not None and is_dataclass(field_type):
-                return self._reconstruct_from_resolved(
-                    param_name, self._live_resolved, self._extraction_target, self.parameter_structure
-                )
-
-        result = self._live_resolved.get(param_name)
-
-
-        return result
+        return self._reconstruct_from_resolved(
+            param_name, self._live_resolved, self._extraction_target,
+            self.parameter_structure,
+        )
 
     def get_saved_resolved_value(self, param_name: str) -> Any:
         """Get saved resolved value for a field from the saved snapshot.
@@ -1237,20 +1169,10 @@ class ObjectState:
 
         self._ensure_saved_resolved()
 
-        # Check if this is a container/dataclass field (has subfields in _saved_resolved)
-        prefix = f"{param_name}."
-        has_subfields = any(key.startswith(prefix) for key in self._saved_resolved.keys())
-
-        if has_subfields:
-            # This is a container field - reconstruct's dataclass from saved resolved values
-            field_type = self.parameter_structure.owner_paths.get(param_name)
-            if field_type is not None and is_dataclass(field_type):
-                return self._reconstruct_from_resolved(
-                    param_name, self._saved_resolved, self._extraction_target, self.parameter_structure
-                )
-
-        # Return the simple value (or None if not found)
-        return self._saved_resolved.get(param_name)
+        return self._reconstruct_from_resolved(
+            param_name, self._saved_resolved, self._extraction_target,
+            self._parameter_epoch(self._saved_parameters)[1],
+        )
 
     def subfield_semantics(
         self,
@@ -1310,6 +1232,9 @@ class ObjectState:
         """
         from objectstate.lazy_factory import get_base_type_for_lazy
 
+        if prefix and not structure.direct_paths.get(DottedFieldPath(prefix)):
+            return resolved_snapshot.get(prefix)
+
         # Determine the type to reconstruct
         if not prefix:
             obj_type = type(target)
@@ -1349,6 +1274,8 @@ class ObjectState:
             )
             direct_fields[nested_name] = nested_obj
 
+        if not prefix:
+            direct_fields.update(structure.excluded_values)
         # Instantiate the dataclass with all resolved fields
         result = obj_type(**direct_fields)
 
@@ -1563,12 +1490,11 @@ class ObjectState:
         """Return old/new values for changed flat parameter paths."""
 
         changed_values: dict[str, tuple[Any, Any]] = {}
-        for param_path in pending_parameters:
-            if param_path not in changed_params:
-                continue
+        for param_path in changed_params:
             old_value = self.parameters.get(param_path)
             new_value = pending_parameters.get(param_path)
-            if old_value != new_value:
+            if (param_path not in self.parameters or param_path not in pending_parameters
+                or old_value != new_value or type(old_value) is not type(new_value)):
                 changed_values[param_path] = (old_value, new_value)
         return changed_values
 
@@ -2096,14 +2022,19 @@ class ObjectState:
             raise TypeError("ObjectState._saved_parameters must remain a canonical flat dictionary.")
         sources = self._resolution_sources(sync_delegates=True)[use_saved]
         self._resolved_from[use_saved] = sources
-        current_obj = (
-            self.saved_object if use_saved else self.to_object(update_delegate=False)
-        )
         parameters = self._saved_parameters if use_saved else self.parameters
+        structure = self.parameter_structure
+        if use_saved:
+            parameters, structure = self._parameter_epoch(parameters)
+            current_obj = (
+                self._reconstruct_from_parameter_snapshot('', parameters)
+                if is_dataclass(type(self._extraction_target)) else self.saved_object
+            )
+        else:
+            current_obj = self.to_object(update_delegate=False)
         snapshot, provenance = self._resolve_parameter_snapshot(
-            self.parameters,
             parameters,
-            self.parameter_structure,
+            structure,
             current_obj,
             self.scope_id,
             sources.ancestors,
@@ -2117,7 +2048,6 @@ class ObjectState:
     def _resolve_parameter_snapshot(
         cls,
         parameters: dict[str, Any],
-        values: dict[str, Any],
         structure: ParameterStructure,
         current_obj: Any,
         scope_id: str | None,
@@ -2142,7 +2072,7 @@ class ObjectState:
             use_live=not use_saved,
         ):
             for dotted_path in parameters.keys():
-                raw_value = values.get(dotted_path)
+                raw_value = parameters[dotted_path]
                 container_type = structure.owner_paths.get(dotted_path)
 
                 # Check if this path is a CONTAINER entry (value is a nested dataclass)
@@ -2485,6 +2415,7 @@ class ObjectState:
         structure: ParameterStructure,
         prefix: str = '',
         exclude_params: list[str] | None = None,
+        values: dict[str, Any] | None = None,
     ) -> None:
         """Recursively extract parameters into flat dict with dotted paths.
 
@@ -2528,28 +2459,22 @@ class ObjectState:
                 except AttributeError:
                     current_value = info.default_value
 
+            if values is not None and dotted_path in values:
+                current_value = values[dotted_path]
             structure.declarations[dotted_path] = info
 
-            # Check if this is a nested dataclass
-            # First try from type annotation, then fall back to checking actual value
-            nested_type = cls._get_nested_dataclass_type(info.param_type)
-
-            # The actual dataclass owns both its flattened fields and their
-            # reconstruction, including concrete nominal subtypes and lazy
-            # overlays. An annotation supplies the owner only without a value.
-            if current_value is not None and is_dataclass(type(current_value)):
-                nested_type = type(current_value)
-
-            if nested_type is not None and current_value is not None:
-                # Store the nested config type reference at this path
-                structure.owner_paths[dotted_path] = nested_type
+            # The actual native value, never a previous member or annotation,
+            # owns the subtree (including zero-child dataclasses).
+            if is_dataclass(type(current_value)):
+                structure.owner_paths[dotted_path] = type(current_value)
 
                 # Store the nested dataclass instance in parameters (needed for UI rendering)
                 parameters[dotted_path] = current_value
 
                 # Recurse into nested dataclass for child fields
                 cls._extract_all_parameters_flat(
-                    current_value, parameters, structure, prefix=dotted_path, exclude_params=[]
+                    current_value, parameters, structure, prefix=dotted_path,
+                    exclude_params=[], values=values,
                 )
             else:
                 # Leaf field - store value and container type
@@ -2573,27 +2498,9 @@ class ObjectState:
             self.parameters,
             self.parameter_structure,
             prefix="",
-            exclude_params=exclude_params,
+            exclude_params=exclude_params, values=initial_values,
         )
-        if initial_values:
-            for param_name, value in initial_values.items():
-                self.parameters[param_name] = value
-                self.parameters.update(
-                    self._dataclass_parameter_updates(param_name, value)
-                )
-        self._index_parameter_paths()
-
-    def _index_parameter_paths(self) -> None:
-        """Index immutable direct-child topology from canonical flat parameters."""
-
-        paths_by_owner: dict[DottedFieldPath, list[DottedFieldPath]] = {}
-        for dotted_path in self.parameters:
-            path = DottedFieldPath(dotted_path)
-            paths_by_owner.setdefault(path.parent, []).append(path)
-        self.parameter_structure.direct_paths = {
-            owner_path: tuple(parameter_paths)
-            for owner_path, parameter_paths in paths_by_owner.items()
-        }
+        self.parameter_structure.index(self.parameters)
 
     def to_object(self, *, update_delegate: bool = False, sync_delegate: bool = True) -> Any:
         """Reconstruct object from flat parameters with updated nested configs.
@@ -2643,41 +2550,13 @@ class ObjectState:
         # For delegation, work with the extraction target (delegate), not object_instance
         target = self._extraction_target
 
-        # Collect ALL top-level field updates from self.parameters
-        # This includes both primitive fields AND nested dataclass fields
         field_updates = {}
-        root_type = type(target)
-        for field_name in self.parameter_structure.owner_paths:
-            if '.' not in field_name:
-                # Check if this field's TYPE is a dataclass (not the instance value)
-                # We need to check the TYPE because the instance value might be stale
-                # (e.g., self.parameters['partition_filter_config'] might have partition_filter=2
-                # even though self.parameters['partition_filter_config.partition_filter'] = None)
-                field_type = self.parameter_structure.owner_paths.get(field_name)
-                # CRITICAL FIX: _path_to_type stores CONTAINER type for leaf fields,
-                # but FIELD type for nested dataclass fields. We must distinguish:
-                # - If field_type == root_type, it's a leaf field (container type stored)
-                # - If field_type != root_type AND is_dataclass, it's a nested dataclass
-                is_nested_dataclass = (
-                    field_type is not None and
-                    is_dataclass(field_type) and
-                    field_type != root_type  # Not the container type
-                )
-                if is_nested_dataclass:
-                    # Nested dataclass: ALWAYS recursively reconstruct from flat storage
-                    # This ensures we pick up changes to nested fields like
-                    # 'partition_filter_config.partition_filter'
-                    logger.debug(f"🔧 to_object: Reconstructing nested dataclass '{field_name}' from flat storage")
-                    reconstructed = self._reconstruct_from_prefix(field_name)
-                    logger.debug(f"🔧 to_object: Reconstructed '{field_name}' type={type(reconstructed).__name__}")
-                    # Log some field values for debugging
-                    if hasattr(reconstructed, 'enabled'):
-                        logger.debug(f"🔧 to_object: '{field_name}'.enabled = {reconstructed.enabled}")
-                    field_updates[field_name] = reconstructed
-                else:
-                    # Primitive field: use value directly from parameters
-                    value = self.parameters.get(field_name)
-                    field_updates[field_name] = value
+        for path in self.parameter_structure.direct_paths.get(DottedFieldPath(''), ()):
+            value = self.parameters[path.value]
+            field_updates[path.value] = (
+                self._reconstruct_from_prefix(path.value)
+                if is_dataclass(type(value)) else value
+            )
 
         # Reconstruct the target object (either object_instance or delegate)
         reconstructed = None
@@ -2753,10 +2632,8 @@ class ObjectState:
             # Root level - use extraction target type (handles delegation)
             obj_type = type(self._extraction_target)
         else:
-            # Nested level - look up type from _path_to_type
-            obj_type = self.parameter_structure.owner_paths.get(prefix)
-            if obj_type is None:
-                raise ValueError(f"No type mapping for prefix: {prefix}")
+            # Each raw epoch retains the actual native container identity.
+            obj_type = type(parameters[prefix])
 
         prefix_dot = f'{prefix}.' if prefix else ''
 

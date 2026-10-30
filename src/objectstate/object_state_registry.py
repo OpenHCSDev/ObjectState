@@ -879,7 +879,7 @@ class ObjectStateRegistry:
             logger.debug(f"🔍 _invalidate_field_in_matching_states: state_scope={state.scope_id}, target_base_type={target_base_type.__name__}, field_name={field_name}")
             logger.debug(f"🔍   state.parameter_structure.owner_paths has {len(state.parameter_structure.owner_paths)} entries")
 
-        for dotted_path in state.inheritance_field_paths(
+        for dotted_path in state.parameter_structure.inheritance_field_paths(
             target_base_type,
             field_name,
         ):
@@ -888,7 +888,13 @@ class ObjectStateRegistry:
             state.invalidate_field(dotted_path)
             invalidated_paths.add(dotted_path)
 
-        if invalidated_paths:
+        saved_invalidated_paths: tuple[str, ...] = ()
+        if invalidate_saved:
+            _, saved_structure = state._parameter_epoch(state._saved_parameters)
+            saved_invalidated_paths = saved_structure.inheritance_field_paths(
+                target_base_type, field_name
+            )
+        if invalidated_paths or saved_invalidated_paths:
             if invalidate_saved:
                 # Without recorded sources the saved snapshot is resolved again in full.
                 state._resolved_from.pop(True, None)
@@ -1545,25 +1551,31 @@ class ObjectStateRegistry:
                 for key, value in current.items()
             }
 
+        live_parameters, live_structure = schema._parameter_epoch(snapshot.parameters)
+        saved_parameters, saved_structure = schema._parameter_epoch(snapshot.saved_parameters)
+
+        live_leaves = {
+            path.value: live_parameters[path.value]
+            for path in live_structure.leaf_paths()
+        }
+        saved_leaves = {
+            path.value: saved_parameters[path.value]
+            for path in saved_structure.leaf_paths()
+        }
+        # This is still a detached PreparedStateRestore schema. Publish its
+        # historical live topology only with the validated restoration graph.
+        schema.parameters = live_parameters
+        schema.parameter_structure = live_structure
         return replace(
             snapshot,
-            parameters=reconcile(schema.parameters, snapshot.parameters),
-            saved_parameters=reconcile(
-                schema._saved_parameters,
-                snapshot.saved_parameters,
-            ),
-            saved_resolved=reconcile(
-                schema._saved_resolved,
-                snapshot.saved_resolved,
-            ),
-            live_resolved=reconcile(
-                schema._live_resolved,
-                snapshot.live_resolved,
-            ),
-            provenance=reconcile(
-                schema._live_provenance,
-                snapshot.provenance,
-            ),
+            parameters=live_parameters,
+            saved_parameters=saved_parameters,
+            saved_resolved=reconcile(saved_leaves, snapshot.saved_resolved),
+            live_resolved=reconcile(live_leaves, snapshot.live_resolved),
+            provenance={
+                path: value for path, value in snapshot.provenance.items()
+                if path in live_leaves
+            },
         )
 
     @classmethod
@@ -1844,7 +1856,7 @@ class ObjectStateRegistry:
         state._live_resolved = state_snap.live_resolved
         state._live_provenance = state_snap.provenance
         state.parameters = state_snap.parameters
-        state._index_parameter_paths()
+        state.parameter_structure.index(state.parameters)
         state._saved_parameters = state_snap.saved_parameters
         state._cached_object = None
         state._cached_object_applied = False

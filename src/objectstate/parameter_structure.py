@@ -37,6 +37,32 @@ class ParameterStructure:
 
         return {path: info.description for path, info in self.declarations.items()}
 
+    def index(self, parameters: dict[str, Any]) -> None:
+        """Derive direct-child topology from this epoch's admitted values."""
+
+        paths_by_owner: dict[DottedFieldPath, list[DottedFieldPath]] = {}
+        for name in parameters:
+            path = DottedFieldPath(name)
+            paths_by_owner.setdefault(path.parent, []).append(path)
+        self.direct_paths = {
+            owner: tuple(paths) for owner, paths in paths_by_owner.items()
+        }
+
+    def without_descendants(self, prefix: str) -> ParameterStructure:
+        """Prepare a subtree replacement without publishing live metadata."""
+
+        prepared = self.clone()
+        descendant = f"{prefix}."
+        prepared.declarations = {
+            path: info for path, info in self.declarations.items()
+            if not path.startswith(descendant)
+        }
+        prepared.owner_paths = {
+            path: owner for path, owner in self.owner_paths.items()
+            if not path.startswith(descendant)
+        }
+        return prepared
+
     def path(self, name: str) -> DottedFieldPath:
         """Resolve a name to its admitted path, without analyzing declarations."""
 
@@ -59,6 +85,34 @@ class ParameterStructure:
                 yield from self.leaf_paths(path.value)
             else:
                 yield path
+
+    def inheritance_field_paths(
+        self, target_type: ParameterOwner, field_name: str
+    ) -> tuple[str, ...]:
+        """Find inheriting fields in this structure's epoch, not another one."""
+        from objectstate.lazy_factory import get_base_type_for_lazy
+
+        target_base = (
+            get_base_type_for_lazy(target_type) or target_type
+            if isinstance(target_type, type) else target_type
+        )
+        paths: list[str] = []
+        for path, owner in self.owner_paths.items():
+            if DottedFieldPath(path).field_name != field_name:
+                continue
+            owner_base = (
+                get_base_type_for_lazy(owner) or owner
+                if isinstance(owner, type) else owner
+            )
+            matches = owner_base == target_base
+            if not matches and isinstance(owner_base, type) and isinstance(target_base, type):
+                matches = any(
+                    (get_base_type_for_lazy(base) or base) == target_base
+                    for base in owner_base.__mro__
+                )
+            if matches:
+                paths.append(path)
+        return tuple(paths)
 
     def is_container_parameter(
         self, name: str, value: Any, parameters: dict[str, Any]

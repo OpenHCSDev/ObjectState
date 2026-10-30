@@ -124,7 +124,7 @@ class ObjectStateTransactionCheckpoint:
         state._parent_field_name = self.construction.parent_field
         state.parameter_structure = self.structure.clone()
         state.parameters = copied["parameters"]
-        state._index_parameter_paths()
+        state.parameter_structure.index(state.parameters)
         state._saved_parameters = copied["saved_parameters"]
         state._live_resolved = copied["live_resolved"]
         state._saved_resolved = copied["saved_resolved"]
