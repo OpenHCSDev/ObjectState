@@ -71,7 +71,7 @@ class ParameterStructure:
         """Resolve a name to its admitted path, without analyzing declarations."""
 
         requested = DottedFieldPath(name)
-        for path in self.direct_paths.get(requested.parent, ()):
+        for path in self.children(requested.parent.value):
             if path.value == name:
                 return path
         raise KeyError(f"ObjectState path is not registered: {name!r}")
@@ -81,13 +81,41 @@ class ParameterStructure:
 
         return tuple(self.path(step.value) for step in reversed(path.lineage))
 
-    def leaf_paths(self, parent: str = "") -> Iterator[DottedFieldPath]:
-        """Enumerate leaves through the extracted topology, never the source type."""
+    def children(self, parent: str = "") -> tuple[DottedFieldPath, ...]:
+        """Return this epoch's admitted direct fields."""
 
-        for path in self.direct_paths.get(DottedFieldPath(parent), ()):
-            if self.direct_paths.get(path):
+        return self.direct_paths.get(DottedFieldPath(parent), ())
+
+    def leaf_paths(self, parent: str = "") -> Iterator[DottedFieldPath]:
+        """Enumerate values, including childless records that also reconstruct."""
+
+        for path in self.children(parent):
+            children = self.children(path.value)
+            if children:
                 yield from self.leaf_paths(path.value)
             else:
+                yield path
+
+    @property
+    def value_paths(self) -> frozenset[str]:
+        """The flat value surface; populated containers reconstruct their leaves."""
+
+        return frozenset(path.value for path in self.leaf_paths())
+
+    def reconstruction_paths(self) -> tuple[DottedFieldPath, ...]:
+        """Admitted records deepest first, excluding the separately rebuilt root."""
+
+        return tuple(sorted(
+            (path for path in self.container_paths if path.value),
+            key=lambda path: len(path.lineage),
+            reverse=True,
+        ))
+
+    def reconstruction_ancestors(self, name: str) -> Iterator[DottedFieldPath]:
+        """Records containing an edited field, nearest first."""
+
+        for path in DottedFieldPath(name).parent.lineage:
+            if self.is_container_parameter(path.value):
                 yield path
 
     def inheritance_field_paths(

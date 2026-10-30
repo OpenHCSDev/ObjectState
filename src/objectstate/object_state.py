@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import copy
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import fields as dataclass_fields
 from dataclasses import is_dataclass
 from types import FunctionType
@@ -518,6 +518,7 @@ class ObjectState:
             target,
             scope_id,
             ancestor_objects_with_scopes,
+            paths=structure.leaf_paths(),
             use_saved=True,
         )
         # A compilation capture owns inherited mutable values too. The editor's
@@ -562,7 +563,7 @@ class ObjectState:
         never cached in this projection.
         """
 
-        return self.parameter_structure.direct_paths.get(DottedFieldPath(field_path), ())
+        return self.parameter_structure.children(field_path)
 
     def has_parameter_descendants(self, field_path: str) -> bool:
         """Return whether an authoritative flat parameter owns child paths."""
@@ -760,11 +761,9 @@ class ObjectState:
             previous = self._live_resolved
             self._live_resolved = self._compute_resolved_snapshot()
             self._invalid_fields.clear()
-            changed_values = {
-                path: (previous.get(path), value)
-                for path, value in self._live_resolved.items()
-                if previous.get(path) != value
-            }
+            changed_values = self._changed_parameter_values(
+                previous, self._live_resolved
+            )
             if changed_values:
                 self._set_last_changed_values(changed_values)
             changed_paths = self.notification_fields_for_value_changes(changed_values)
@@ -953,11 +952,10 @@ class ObjectState:
             exclude_params=structure.exclusions, values=values,
         )
         structure.index(parameters)
-        for path in sorted(structure.container_paths, key=lambda path: len(path.lineage), reverse=True):
-            if path.value:
-                parameters[path.value] = self._reconstruct_from_parameter_snapshot(
-                    path.value, parameters, structure
-                )
+        for path in structure.reconstruction_paths():
+            parameters[path.value] = self._reconstruct_from_parameter_snapshot(
+                path.value, parameters, structure
+            )
         return parameters, structure
 
     def _dataclass_ancestor_parameter_updates(
@@ -967,11 +965,10 @@ class ObjectState:
         structure: ParameterStructure,
     ) -> Any:
         """Rebuild the admitted ancestors, returning the validated root for use."""
-        for path in DottedFieldPath(param_name).parent.lineage:
-            if path in structure.container_paths:
-                parameters[path.value] = self._reconstruct_from_parameter_snapshot(
-                    path.value, parameters, structure
-                )
+        for path in structure.reconstruction_ancestors(param_name):
+            parameters[path.value] = self._reconstruct_from_parameter_snapshot(
+                path.value, parameters, structure
+            )
         if structure.is_container_parameter(''):
             return self._reconstruct_from_parameter_snapshot('', parameters, structure)
         return None
@@ -1006,29 +1003,29 @@ class ObjectState:
             )
             return set()
 
-        pending_parameters, pending_structure, pending_object = self._prepare_parameter_update(param_name, value)
+        pending_parameters, pending_structure, pending_object = (
+            self._prepare_parameter_update(param_name, value)
+        )
         previous_structure = self.parameter_structure
-        changed_storage_params = {
-            path for path in self.parameters.keys() | pending_parameters.keys()
-            if path not in self.parameters or path not in pending_parameters
-            or self.parameters[path] != pending_parameters[path]
-            or type(self.parameters[path]) is not type(pending_parameters[path])
-        }
+        changed_storage_values = self._changed_parameter_values(
+            self.parameters, pending_parameters
+        )
+        changed_storage_params = changed_storage_values.keys()
         topology_changed = (
             self.parameters.keys() != pending_parameters.keys()
             or previous_structure.owner_paths != pending_structure.owner_paths
         )
         if not changed_storage_params and not topology_changed:
             return set()
+        value_paths = previous_structure.value_paths | pending_structure.value_paths
         changed_semantic_params = {
-            path for path in changed_storage_params
+            path for path in changed_storage_params & value_paths
             if DottedFieldPath(param_name).contains_path(path)
         }
 
-        changed_param_values = self._changed_parameter_values(
-            changed_semantic_params,
-            pending_parameters,
-        )
+        changed_param_values = {
+            path: changed_storage_values[path] for path in changed_semantic_params
+        }
         # Establish the pre-mutation resolved authority even for a state that
         # has not yet been displayed. Raw edits can preserve the resolved value.
         changed_before_the_edit = self._ensure_live_resolved(notify_flash=False)
@@ -1053,18 +1050,10 @@ class ObjectState:
         # Materialize the origin once after its live context is authoritative,
         # then cascade only to descendants.
         if topology_changed:
-            assert self._live_resolved is not None
-            previous_resolved = self._live_resolved
-            self._live_resolved = self._compute_resolved_snapshot()
-            self._invalid_fields.clear()
-            changed_paths = {
-                path for path in previous_resolved.keys() | self._live_resolved.keys()
-                if path not in previous_resolved or path not in self._live_resolved
-                or previous_resolved[path] != self._live_resolved[path]
-            }
-            changed_paths |= changed_storage_params
-        else:
-            changed_paths = self._ensure_live_resolved(notify_flash=False)
+            # The old sources described another field surface. Keep their values
+            # for the diff; the refresh owner retires paths and provenance.
+            self._resolved_from.pop(False, None)
+        changed_paths = self._ensure_live_resolved(notify_flash=False)
         changed_paths |= changed_before_the_edit
         changed_paths = self._most_specific_notification_fields(changed_paths)
         for changed_param in changed_semantic_params:
@@ -1101,15 +1090,10 @@ class ObjectState:
         # Leaf edits record directly. Dataclass-container edits record when they
         # materialize changed flat child fields; those child paths are the UI and
         # time-travel navigation authority for inline editors.
-        # A field is a container if there are other params that start with "param_name."
-        param_path = DottedFieldPath(param_name)
-        is_container = any(
-            p != param_name and param_path.contains_path(p)
-            for p in self.parameters.keys()
-        )
         snapshot_field = (
             self._select_changed_field(changed_semantic_params)
-            if is_container and changed_semantic_params
+            if self.parameter_structure.is_container_parameter(param_name)
+            and changed_semantic_params
             else param_name
         )
         if snapshot_field:
@@ -1243,7 +1227,7 @@ class ObjectState:
             path.field_name: cls._reconstruct_from_resolved(
                 path.value, resolved_snapshot, target, structure
             )
-            for path in structure.direct_paths.get(DottedFieldPath(prefix), ())
+            for path in structure.children(prefix)
         }
 
         if not prefix:
@@ -1436,7 +1420,10 @@ class ObjectState:
         """Choose a stable representative changed path for navigation."""
         if not changed_paths:
             return None
-        return sorted(changed_paths, key=lambda path: (-path.count("."), path))[0]
+        return min(
+            changed_paths,
+            key=lambda path: (-len(DottedFieldPath(path).lineage), path),
+        )
 
     def _set_last_changed_values(
         self,
@@ -1454,21 +1441,20 @@ class ObjectState:
             self._last_changed_paths
         )
 
+    @staticmethod
     def _changed_parameter_values(
-        self,
-        changed_params: set[str],
-        pending_parameters: dict[str, Any],
+        previous: dict[str, Any],
+        current: dict[str, Any],
     ) -> dict[str, tuple[Any, Any]]:
-        """Return old/new values for changed flat parameter paths."""
+        """Compare raw or resolved epochs without conflating absence with None."""
 
-        changed_values: dict[str, tuple[Any, Any]] = {}
-        for param_path in changed_params:
-            old_value = self.parameters.get(param_path)
-            new_value = pending_parameters.get(param_path)
-            if (param_path not in self.parameters or param_path not in pending_parameters
-                or old_value != new_value or type(old_value) is not type(new_value)):
-                changed_values[param_path] = (old_value, new_value)
-        return changed_values
+        return {
+            path: (previous.get(path), current.get(path))
+            for path in previous.keys() | current.keys()
+            if path not in previous or path not in current
+            or previous[path] != current[path]
+            or type(previous[path]) is not type(current[path])
+        }
 
     def notification_fields_for_value_changes(
         self,
@@ -1477,9 +1463,9 @@ class ObjectState:
         """Return ObjectState display paths affected by concrete value changes."""
 
         fields: set[str] = set()
-        for param_path, (old_value, new_value) in changed_values.items():
-            if self.parameter_structure.direct_paths.get(DottedFieldPath(param_path)):
-                continue
+        containers = self.parameters.keys() - self.parameter_structure.value_paths
+        for param_path in changed_values.keys() - containers:
+            old_value, new_value = changed_values[param_path]
             fields.add(param_path)
             fields.update(
                 changed_structural_leaf_paths(
@@ -1656,109 +1642,30 @@ class ObjectState:
         Returns:
             Set of paths whose resolved values actually changed (for UI notification).
         """
-        from objectstate.context_manager import build_context_stack
-
-        changed_paths: set[str] = set()
-        changed_values: dict[str, tuple[Any, Any]] = {}
-
-        # _live_resolved must exist when this is called (from _ensure_live_resolved)
-        if self._live_resolved is None:
-            return changed_paths
-
-        # Separate explicit vs inherited fields, skipping container entries
-        explicit_fields = []
-        inherited_fields = []
-        for name in self._invalid_fields:
-            if name not in self.parameters:
-                continue
-            # Safety check: skip any container entries that might have leaked in
-            # (containers should NOT be in parameters — only leaf fields are tracked)
-            raw_value = self.parameters[name]
-            if self.parameter_structure.direct_paths.get(DottedFieldPath(name)):
-                continue
-            if raw_value is not None:
-                explicit_fields.append(name)
-            else:
-                inherited_fields.append(name)
-
-        # Explicit values: use parameters directly (no resolution needed)
-        for name in explicit_fields:
-            old_val = self._live_resolved.get(name)
-            explicit_val = self.parameters[name]
-            if old_val != explicit_val:
-                changed_paths.add(name)
-                changed_values[name] = (old_val, explicit_val)
-                logger.debug(
-                    f"RECOMPUTE EXPLICIT CHANGED [{self.scope_id}] {name}: "
-                    f"old={old_val!r} -> new={explicit_val!r}"
-                )
-            self._live_resolved[name] = explicit_val
-            # Clear provenance for explicit values - they're no longer inherited
-            if name in self._live_provenance:
-                del self._live_provenance[name]
-
-        # Inherited values: need context stack for lazy resolution + provenance
-        if inherited_fields:
-            from objectstate.dual_axis_resolver import resolve_with_provenance
-            from objectstate.lazy_factory import has_lazy_resolution
-
-            # ARCHITECTURAL FIX: Reconstruct current object from parameters for real-time MRO.
-            # Using object_instance (original saved state) gives stale values, breaking inheritance.
-            # Calling to_object() with sync_delegate=False reconstructs from CURRENT parameters
-            # without triggering delegate sync that would invalidate our cache mid-computation.
-            current_obj = self.to_object(update_delegate=False, sync_delegate=False)
-
-            with build_context_stack(
-                object_instance=current_obj,
-                ancestor_objects_with_scopes=sources.ancestors,
-                current_scope_id=self.scope_id,
-            ):
-                # For each inherited field, resolve using dual-axis resolution with provenance
-                for dotted_path in inherited_fields:
-                    container_type = self.parameter_structure.owner_paths.get(dotted_path)
-                    if container_type is None:
-                        logger.debug(f"⚠️ _recompute: {dotted_path} has no container_type in _path_to_type")
-                        continue
-                    # Non-lazy fields with None stay as None rather than
-                    # participating in contextual inheritance.
-                    if not is_dataclass(container_type) or not has_lazy_resolution(container_type):
-                        # Non-lazy field: just use raw value (None)
-                        logger.debug(f"⚠️ _recompute: {dotted_path} has non-lazy container_type={container_type.__name__}, using raw value=None")
-                        old_val = self._live_resolved.get(dotted_path)
-                        raw_val = self.parameters.get(dotted_path)
-                        if old_val != raw_val:
-                            changed_paths.add(dotted_path)
-                            changed_values[dotted_path] = (old_val, raw_val)
-                        self._live_resolved[dotted_path] = raw_val
-                        continue
-                    field_name = DottedFieldPath(dotted_path).field_name
-
-                    # Use resolve_with_provenance for SINGLE walk that gets both value AND source
-                    value, source_scope_id, source_type = resolve_with_provenance(container_type, field_name)
-
-                    old_val = self._live_resolved.get(dotted_path)
-                    if old_val != value:
-                        changed_paths.add(dotted_path)
-                        changed_values[dotted_path] = (old_val, value)
-                        logger.debug(
-                            f"RECOMPUTE INHERITED CHANGED [{self.scope_id}] {dotted_path}: "
-                            f"old={old_val!r} -> new={value!r}"
-                        )
-                    else:
-                        logger.debug(
-                            f"RECOMPUTE INHERITED UNCHANGED [{self.scope_id}] {dotted_path}: "
-                            f"old={old_val!r} == new={value!r}"
-                        )
-                    self._live_resolved[dotted_path] = value
-
-                    # Update provenance for this field
-                    self._live_provenance[dotted_path] = (source_scope_id, source_type)
-
-        # Store for navigation only when recomputation observed concrete deltas.
-        # First-populate paths legitimately have no resolved delta; preserving the
-        # raw update_parameter() paths keeps time-travel/flash navigation precise.
-        if changed_values:
-            self._set_last_changed_values(changed_values)
+        assert self._live_resolved is not None
+        paths = tuple(
+            path for path in self.parameter_structure.leaf_paths()
+            if path.value in self._invalid_fields
+        )
+        previous = {
+            path.value: self._live_resolved[path.value]
+            for path in paths if path.value in self._live_resolved
+        }
+        resolved, provenance = self._resolve_parameter_snapshot(
+            self.parameters,
+            self.parameter_structure,
+            self.to_object(update_delegate=False, sync_delegate=False),
+            self.scope_id,
+            sources.ancestors,
+            paths=paths,
+            use_saved=False,
+        )
+        changed_values = self._changed_parameter_values(previous, resolved)
+        self._live_resolved.update(resolved)
+        for path in paths:
+            self._live_provenance.pop(path.value, None)
+        self._live_provenance.update(provenance)
+        self._set_last_changed_values(changed_values)
         return self.notification_fields_for_value_changes(changed_values)
 
     @property
@@ -1819,7 +1726,7 @@ class ObjectState:
                 if self.parameter_structure.is_container_parameter(path.value)
                 else self.parameters[path.value]
             )
-            for path in self.parameter_structure.direct_paths.get(DottedFieldPath(''), ())
+            for path in self.parameter_structure.children()
         }
 
     # ==================== MATERIALIZED DIFFS ====================
@@ -1876,7 +1783,10 @@ class ObjectState:
             live_val = _normalize_callable_value(self._live_resolved.get(k))
             saved_val = _normalize_callable_value(self._saved_resolved.get(k))
 
-            if live_val != saved_val:
+            if (
+                k not in self._live_resolved or k not in self._saved_resolved
+                or live_val != saved_val
+            ):
                 dirty.add(k)
                 logger.debug(f"🔴 DIRTY_FIELD: scope={self.scope_id!r} field={k!r} live={live_val!r} saved={saved_val!r}")
         if dirty:
@@ -1981,6 +1891,10 @@ class ObjectState:
 
     def _compute_resolved_snapshot(self) -> dict[str, Any]:
         """Resolve the current live graph through its admitted topology."""
+        if not isinstance(self.parameters, dict):
+            raise TypeError(
+                "ObjectState.parameters must remain a canonical flat dictionary."
+            )
         snapshot, self._live_provenance = self._resolve_epoch(
             self.parameters, self.parameter_structure,
             self.to_object(update_delegate=False), use_saved=False,
@@ -1994,7 +1908,9 @@ class ObjectState:
             self._reconstruct_from_parameter_snapshot('', parameters, structure)
             if structure.is_container_parameter('') else self.saved_object
         )
-        snapshot, _ = self._resolve_epoch(parameters, structure, current_obj, use_saved=True)
+        snapshot, _ = self._resolve_epoch(
+            parameters, structure, current_obj, use_saved=True
+        )
         self._saved_resolved, self._saved_structure = snapshot, structure
 
     def _resolve_epoch(
@@ -2009,7 +1925,7 @@ class ObjectState:
         sources = self._resolution_sources(sync_delegates=True)[use_saved]
         resolved = self._resolve_parameter_snapshot(
             parameters, structure, current_obj, self.scope_id,
-            sources.ancestors, use_saved=use_saved,
+            sources.ancestors, paths=structure.leaf_paths(), use_saved=use_saved,
         )
         self._resolved_from[use_saved] = sources
         return resolved
@@ -2023,62 +1939,41 @@ class ObjectState:
         scope_id: str | None,
         ancestor_objects_with_scopes: Sequence[tuple[str, Any]],
         *,
+        paths: Iterable[DottedFieldPath],
         use_saved: bool,
     ) -> tuple[dict[str, Any], dict[str, tuple[str | None, type | None]]]:
-        """Resolve raw fields and their provenance in one scoped semantic epoch."""
+        """Resolve admitted values in one epoch, shared by full and partial refresh."""
         from objectstate.context_manager import build_context_stack
         from objectstate.dual_axis_resolver import resolve_with_provenance
         from objectstate.lazy_factory import has_lazy_resolution
 
         snapshot: dict[str, Any] = {}
         provenance: dict[str, tuple[str | None, type | None]] = {}
+        inherited: list[DottedFieldPath] = []
+        for path in paths:
+            value = parameters[path.value]
+            snapshot[path.value] = value
+            owner = structure.owner_paths[path.value]
+            # Extraction supplies the foreign declaration. Only lazy dataclass
+            # None fields inherit; ordinary None and concrete values stay native.
+            if value is None and is_dataclass(owner) and has_lazy_resolution(owner):
+                inherited.append(path)
 
-        # UNIFIED: Resolve ALL fields in single context stack
-        # For each path, check if it has a lazy dataclass container type
+        if not inherited:
+            return snapshot, provenance
+
         with build_context_stack(
             object_instance=current_obj,
             ancestor_objects_with_scopes=ancestor_objects_with_scopes,
             current_scope_id=scope_id,
             use_live=not use_saved,
         ):
-            for path in structure.leaf_paths():
-                dotted_path = path.value
-                raw_value = parameters[dotted_path]
-                container_type = structure.owner_paths.get(dotted_path)
-                if (
-                    container_type is not None
-                    and is_dataclass(container_type)
-                    and has_lazy_resolution(container_type)
-                ):
-                    # Leaf field inside a LAZY dataclass - resolve value AND provenance in ONE walk
-                    # CRITICAL: Only resolve for lazy dataclasses! Non-lazy dataclasses with None
-                    # defaults should keep None as-is, not trigger inheritance resolution.
-                    # This handles both:
-                    # - Nested fields (processing_config.group_by)
-                    # - Top-level fields on root (num_workers on PipelineConfig)
-                    field_name = DottedFieldPath(dotted_path).field_name
-
-                    if raw_value is None:
-                        # Field needs resolution - use combined resolve + provenance walk
-                        resolved_val, source_scope, source_type = resolve_with_provenance(container_type, field_name)
-                        snapshot[dotted_path] = resolved_val
-
-                        # Keep provenance in the same epoch as the resolved value.
-                        provenance[dotted_path] = (source_scope, source_type)
-                    else:
-                        # Field has concrete local value - no resolution needed
-                        resolved_val = raw_value
-                        snapshot[dotted_path] = resolved_val
-
-                    logger.debug(
-                        f"SNAPSHOT [{scope_id}] {dotted_path}: "
-                        f"raw={raw_value!r} -> resolved={resolved_val!r} (type={type(resolved_val).__name__})"
-                    )
-                else:
-                    # Non-lazy field (regular dataclass, class instance, callable) - use raw value directly
-                    # None stays as None, no inheritance resolution
-                    snapshot[dotted_path] = raw_value
-
+            for path in inherited:
+                value, source_scope, source_type = resolve_with_provenance(
+                    structure.owner_paths[path.value], path.field_name
+                )
+                snapshot[path.value] = value
+                provenance[path.value] = (source_scope, source_type)
         return snapshot, provenance
 
     def mark_saved(self) -> None:
@@ -2104,11 +1999,8 @@ class ObjectState:
         old_instance_values = {}
         if not isinstance(self.object_instance, type):
             # Extract raw attribute values from the old object_instance
-            for param_name in self.parameters.keys():
-                # Skip container entries (nested dataclass instances)
-                if self.parameter_structure.direct_paths.get(DottedFieldPath(param_name)):
-                    continue
-
+            for path in self.parameter_structure.leaf_paths():
+                param_name = path.value
                 # Get the old value by navigating dotted path on the extraction target
                 # For delegation, parameters are on the delegate, not object_instance
                 try:
@@ -2125,11 +2017,8 @@ class ObjectState:
         # Find parameters that differ between old object_instance and new live parameters
         # These are the fields that changed and need descendant invalidation
         changed_params = []
-        for param_name in self.parameters.keys():
-            # Skip container entries
-            if self.parameter_structure.direct_paths.get(DottedFieldPath(param_name)):
-                continue
-
+        for path in self.parameter_structure.leaf_paths():
+            param_name = path.value
             old_value = old_instance_values.get(param_name)
             new_value = self.parameters.get(param_name)
             if old_value != new_value:
@@ -2419,7 +2308,9 @@ class ObjectState:
                 current_value = values[dotted_path]
             structure.declarations[dotted_path] = info
 
-            cls._admit_parameter(obj, dotted_path, current_value, parameters, structure, values=values)
+            cls._admit_parameter(
+                obj, dotted_path, current_value, parameters, structure, values=values
+            )
 
     @classmethod
     def _admit_parameter(
@@ -2579,7 +2470,7 @@ class ObjectState:
                 self._reconstruct_from_parameter_snapshot(path.value, parameters, structure)
                 if structure.is_container_parameter(path.value) else parameters[path.value]
             )
-            for path in structure.direct_paths.get(DottedFieldPath(prefix), ())
+            for path in structure.children(prefix)
         }
         if not prefix:
             direct_fields.update(structure.excluded_values)

@@ -1561,9 +1561,8 @@ class ObjectStateRegistry:
             path.value: saved_parameters[path.value]
             for path in saved_structure.leaf_paths()
         }
-        # This is still a detached PreparedStateRestore schema. Publish its
-        # historical live topology only with the validated restoration graph.
-        schema.parameters = live_parameters
+        # Attach historical topology to the detached restoration schema; the
+        # snapshot application below publishes its corresponding values once.
         schema.parameter_structure = live_structure
         schema._saved_structure = saved_structure
         return replace(
