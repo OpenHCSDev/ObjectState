@@ -1541,6 +1541,7 @@ class ObjectState:
         self._parent_state = parent
         self._parent_field_name = binding.parent_field
         self.parameter_structure = prepared.parameter_structure.clone()
+        self._saved_structure = prepared._saved_structure.clone()
         self._cached_object = None
         self._cached_object_applied = False
         self._invalid_fields.clear()

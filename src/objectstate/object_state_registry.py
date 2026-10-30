@@ -26,7 +26,6 @@ from objectstate.object_state_metadata import ObjectStateMetadataStore
 from objectstate.construction_binding import StateConstructionBinding
 from objectstate.scope_key import ScopeKey
 from objectstate.parameter_owner import ParameterOwner
-from objectstate.parameter_structure import ParameterStructure
 from objectstate.snapshot_model import Snapshot, StateSnapshot, Timeline
 from objectstate.time_travel_profile import TimeTravelProfiler
 from objectstate.transaction_checkpoint import ObjectStateTransactionCheckpoint
@@ -1510,9 +1509,7 @@ class ObjectStateRegistry:
                     schema,
                     state_snapshot,
                 )
-                cls._apply_time_travel_snapshot_state(
-                    schema, state_snapshot, saved_structure=schema._saved_structure, materialize=False
-                )
+                cls._apply_time_travel_snapshot_state(schema, state_snapshot, materialize=False)
                 binding.validate_scope_membership(schema, values.keys())
                 schema._raw_dirty = schema.parameters != schema._saved_parameters
                 schema._dirty_fields = schema._compute_dirty_fields()
@@ -1602,7 +1599,6 @@ class ObjectStateRegistry:
                     scope_key=scope_key,
                     state=state,
                     state_snap=state_snap,
-                    saved_structure=restoration.schema._saved_structure,
                     was_restored_from_limbo=scope_key in reconciliation.restored_scopes,
                     construction_changed=restoration.construction_changed,
                     diff=restoration.diff,
@@ -1620,7 +1616,6 @@ class ObjectStateRegistry:
         scope_key: str,
         state: "ObjectState",
         state_snap: StateSnapshot,
-        saved_structure: ParameterStructure,
         was_restored_from_limbo: bool,
         diff: TimeTravelStateDiff,
         construction_changed: bool = False,
@@ -1655,7 +1650,7 @@ class ObjectStateRegistry:
             changed_paths=len(diff.changed_paths),
         ):
             cls._apply_time_travel_snapshot_state(
-                state, state_snap, saved_structure=saved_structure,
+                state, state_snap,
                 materialize=(diff.requires_snapshot_apply or was_restored_from_limbo or construction_changed),
             )
         is_concrete_dirty = state.parameters != state._saved_parameters
@@ -1854,11 +1849,10 @@ class ObjectStateRegistry:
         state: "ObjectState",
         state_snap: StateSnapshot,
         *,
-        saved_structure: ParameterStructure,
         materialize: bool = True,
     ) -> None:
         # The complete historical graph was copied once during preparation.
-        state._saved_resolved, state._saved_structure = state_snap.saved_resolved, saved_structure
+        state._saved_resolved = state_snap.saved_resolved
         state._live_resolved = state_snap.live_resolved
         state._live_provenance = state_snap.provenance
         state.parameters = state_snap.parameters
