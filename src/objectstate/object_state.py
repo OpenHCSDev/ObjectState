@@ -1798,7 +1798,7 @@ class ObjectState:
         self._check_and_sync_delegate()
         return dict(self.parameters)
 
-    def reconstruct_top_level_parameters(self, *, sync_delegate: bool = True) -> dict[str, Any]:
+    def reconstruct_top_level_parameters(self) -> dict[str, Any]:
         """Return top-level parameters with nested dataclass values rebuilt.
 
         ObjectState stores nested fields in a flat dotted-path mapping. Function
@@ -1806,8 +1806,11 @@ class ObjectState:
         storage shape. This method exposes that boundary without requiring UI
         widgets or service code to reach into ObjectState private helpers.
         """
-        if sync_delegate:
-            self._check_and_sync_delegate()
+        self._check_and_sync_delegate()
+        return self._top_level_values()
+
+    def _top_level_values(self) -> dict[str, Any]:
+        """Reconstruct admitted values without synchronizing a delegate."""
         return {
             path.value: (
                 self._reconstruct_from_parameter_snapshot(
@@ -2508,7 +2511,7 @@ class ObjectState:
         # For delegation, work with the extraction target (delegate), not object_instance
         target = self._extraction_target
 
-        field_updates = self.reconstruct_top_level_parameters(sync_delegate=False)
+        field_updates = self._top_level_values()
 
         # Reconstruct the target object (either object_instance or delegate)
         reconstructed = None
