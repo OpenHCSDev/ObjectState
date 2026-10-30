@@ -29,6 +29,7 @@ class ObjectStateTransactionCheckpoint:
     construction: StateConstructionBinding
     parent_state: ObjectState | None
     structure: ParameterStructure
+    saved_structure: ParameterStructure
     preserve_value_identity: bool
     parameters: dict[str, Any]
     saved_parameters: dict[str, Any]
@@ -74,6 +75,7 @@ class ObjectStateTransactionCheckpoint:
             construction=state.construction_binding(),
             parent_state=state._parent_state,
             structure=state.parameter_structure.clone(),
+            saved_structure=state._saved_structure.clone(),
             preserve_value_identity=preserve_value_identity,
             parameters=copied["parameters"],
             saved_parameters=copied["saved_parameters"],
@@ -124,10 +126,11 @@ class ObjectStateTransactionCheckpoint:
         state._parent_field_name = self.construction.parent_field
         state.parameter_structure = self.structure.clone()
         state.parameters = copied["parameters"]
-        state._index_parameter_paths()
         state._saved_parameters = copied["saved_parameters"]
         state._live_resolved = copied["live_resolved"]
-        state._saved_resolved = copied["saved_resolved"]
+        state._saved_resolved, state._saved_structure = (
+            copied["saved_resolved"], self.saved_structure.clone()
+        )
         state._live_provenance = copied["live_provenance"]
         state.metadata = ObjectStateMetadataStore.from_snapshot(
             scope_id=state.scope_id,

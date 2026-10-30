@@ -409,7 +409,7 @@ def test_history_restores_saved_live_global_context_after_real_invalidation(
         assert get_live_global_config(ContextConfig).threshold == live
         child.invalidate_cache()
         assert child.get_resolved_value("threshold") == live
-        assert child._compute_resolved_snapshot(use_saved=True)["threshold"] == 3
+        assert child.get_saved_resolved_value("threshold") == 3
 
 
 def test_failed_attachment_rolls_back_complete_graph_and_loaded_history(tmp_path: Path):

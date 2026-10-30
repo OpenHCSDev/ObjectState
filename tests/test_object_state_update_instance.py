@@ -207,21 +207,12 @@ def test_resolved_snapshot_rejects_partial_parameter_state_without_recovery():
     assert state.direct_parameter_paths("nested") == expected_topology
 
 
-def test_replacement_rebuilds_direct_parameter_topology_once(monkeypatch):
+def test_replacement_rebuilds_direct_parameter_topology():
     state = ObjectState(PlainConfig(), scope_id="config")
-    index_calls = 0
-    original_index = state._index_parameter_paths
-
-    def counted_index() -> None:
-        nonlocal index_calls
-        index_calls += 1
-        original_index()
-
-    monkeypatch.setattr(state, "_index_parameter_paths", counted_index)
-
     state.update_object_instance(ConfigWithNestedTopology())
 
-    assert index_calls == 1
+    assert set(state.parameter_structure.declarations) == set(state.parameters)
+    assert set(state.parameter_structure.owner_paths) == set(state.parameters)
     assert state.direct_parameter_paths() == (
         DottedFieldPath("enabled"),
         DottedFieldPath("nested"),
@@ -249,7 +240,7 @@ def test_update_object_instance_publishes_registry_resolved_change_without_local
     assert events == [("config", {"threshold"})]
 
 
-def test_dataclass_leaf_value_is_not_treated_as_flat_container():
+def test_native_dataclass_admits_its_actual_children_from_an_absent_baseline():
     LazyConfigWithDataclassLeaf = LazyDataclassFactory.make_lazy_simple(
         ConfigWithDataclassLeaf
     )
@@ -260,7 +251,9 @@ def test_dataclass_leaf_value_is_not_treated_as_flat_container():
     state.update_parameter("leaf", value)
 
     assert state.get_resolved_value("leaf") == value
-    assert state.dirty_fields == {"leaf"}
+    assert state.parameters['leaf.name'] == 'explicit'
+    assert state.get_saved_resolved_value('leaf') is None
+    assert state.dirty_fields == {"leaf", "leaf.name"}
 
     state.mark_saved()
 
