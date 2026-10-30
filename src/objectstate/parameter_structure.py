@@ -22,6 +22,7 @@ class ParameterStructure:
         default_factory=dict
     )
     declarations: dict[str, ParameterInfo] = field(default_factory=dict)
+    container_paths: set[DottedFieldPath] = field(default_factory=set)
     exclusions: list[str] = field(default_factory=list)
     excluded_values: dict[str, Any] = field(default_factory=dict)
 
@@ -52,14 +53,17 @@ class ParameterStructure:
         """Prepare a subtree replacement without publishing live metadata."""
 
         prepared = self.clone()
-        descendant = f"{prefix}."
+        parent = DottedFieldPath(prefix)
         prepared.declarations = {
             path: info for path, info in self.declarations.items()
-            if not path.startswith(descendant)
+            if path == prefix or not parent.contains_path(path)
         }
         prepared.owner_paths = {
             path: owner for path, owner in self.owner_paths.items()
-            if not path.startswith(descendant)
+            if path == prefix or not parent.contains_path(path)
+        }
+        prepared.container_paths = {
+            path for path in self.container_paths if not parent.contains_path(path)
         }
         return prepared
 
@@ -114,15 +118,18 @@ class ParameterStructure:
                 paths.append(path)
         return tuple(paths)
 
-    def is_container_parameter(
-        self, name: str, value: Any, parameters: dict[str, Any]
-    ) -> bool:
-        """Identify a nested dataclass entry from its actual extracted children."""
+    def admit_container(self, path: str, value: object) -> bool:
+        """Classify foreign values once during extraction, including empty records."""
 
-        if value is None or not is_dataclass(type(value)):
+        if not is_dataclass(type(value)):
             return False
-        prefix = f"{name}."
-        return any(path.startswith(prefix) for path in parameters)
+        self.container_paths.add(DottedFieldPath(path))
+        return True
+
+    def is_container_parameter(self, name: str) -> bool:
+        """Read the container membership recorded by extraction."""
+
+        return DottedFieldPath(name) in self.container_paths
 
     @classmethod
     def for_target(
@@ -131,12 +138,14 @@ class ParameterStructure:
         """Start extraction from the actual target's excluded constructor values."""
 
         names = list(exclusions or [])
-        return cls(
+        structure = cls(
             exclusions=names,
             excluded_values={
                 name: getattr(target, name) for name in names if hasattr(target, name)
             },
         )
+        structure.admit_container('', target)
+        return structure
 
     def clone(self) -> ParameterStructure:
         """Detach owned maps without cloning declaration/target identities.

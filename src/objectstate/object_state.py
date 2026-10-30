@@ -231,8 +231,9 @@ class ObjectState:
         # same objects; a snapshot without an entry is resolved again in full.
         self._resolved_from: dict[bool, ResolutionSources] = {}
 
-        # === Saved baseline (2 attributes) ===
+        # === Saved baseline ===
         self._saved_resolved: dict[str, Any] = {}
+        self._saved_structure = self.parameter_structure.clone()
         self._saved_parameters: dict[str, Any] = {}  # Immutable snapshot for diff on restore
 
         # === Materialized diffs (3 attributes) ===
@@ -271,7 +272,7 @@ class ObjectState:
         # Initialize baselines (nothing to tell anyone during init)
         self._live_resolved = self._compute_resolved_snapshot()
 
-        # CRITICAL: Initialize _saved_parameters BEFORE _compute_resolved_snapshot(use_saved=True)
+        # Initialize saved raw values before resolving their saved epoch.
         # because that method reads from _saved_parameters to get raw values.
         self._saved_parameters = self._copy_parameters_for_saved_baseline(self.parameters)
 
@@ -282,7 +283,7 @@ class ObjectState:
         #
         # If we used copy.deepcopy(_live_resolved), we'd bake in ancestor's unsaved
         # edits, causing inverted dirty state when ancestor is saved/reset.
-        self._saved_resolved = self._compute_resolved_snapshot(use_saved=True)
+        self._refresh_saved_resolved()
 
         # DEBUG: Log live vs saved at registration
         logger.debug(f"🔵 INIT_RESOLVED: scope={self.scope_id!r} obj_type={type(self.object_instance).__name__}")
@@ -482,7 +483,7 @@ class ObjectState:
         self._ensure_saved_resolved()
         return self._reconstruct_from_resolved(
             "", self._saved_resolved, self._extraction_target,
-            self._parameter_epoch(self._saved_parameters)[1],
+            self._saved_structure,
         )
 
     @classmethod
@@ -849,9 +850,7 @@ class ObjectState:
         if differing is None:
             return None
         own_values = self._saved_parameters if use_saved else self.parameters
-        structure = self.parameter_structure
-        if use_saved:
-            own_values, structure = self._parameter_epoch(own_values)
+        structure = self._saved_structure if use_saved else self.parameter_structure
         return {
             path
             for config_type, field_name in differing
@@ -870,7 +869,7 @@ class ObjectState:
         if stale is not None and not stale:
             self._resolved_from[True] = sources
             return False
-        self._saved_resolved = self._compute_resolved_snapshot(use_saved=True)
+        self._refresh_saved_resolved()
         return True
 
     def resolve_again_if_sources_changed(self) -> None:
@@ -887,7 +886,7 @@ class ObjectState:
         if self._live_resolved is not None:
             self._ensure_live_resolved()
         elif not self._saved_resolved:
-            self._saved_resolved = self._compute_resolved_snapshot(use_saved=True)
+            self._refresh_saved_resolved()
 
     # DELETED: _create_nested_states() - No longer needed with flat storage
     # Nested ObjectStates are no longer created - flat storage handles all parameters
@@ -920,26 +919,21 @@ class ObjectState:
 
     def _prepare_parameter_update(
         self, prefix: str, value: Any
-    ) -> tuple[dict[str, Any], ParameterStructure]:
-        """Extract the actual new subtree before touching values or subscribers."""
+    ) -> tuple[dict[str, Any], ParameterStructure, object]:
+        """Prepare the subtree and rebuilt root before publishing any edit."""
 
         structure = self.parameter_structure.without_descendants(prefix)
+        changed = DottedFieldPath(prefix)
         parameters = {
             path: current for path, current in self.parameters.items()
-            if not path.startswith(f"{prefix}.")
+            if path == prefix or not changed.contains_path(path)
         }
-        parameters[prefix] = value
-        parent = DottedFieldPath(prefix).parent.value
+        parent = changed.parent.value
         owner = parameters[parent] if parent else self._extraction_target
-        structure.owner_paths[prefix] = owner if isinstance(owner, FunctionType) else type(owner)
-        if is_dataclass(type(value)):
-            structure.owner_paths[prefix] = type(value)
-            self._extract_all_parameters_flat(value, parameters, structure, prefix=prefix)
+        self._admit_parameter(owner, prefix, value, parameters, structure)
         structure.index(parameters)
-        self._dataclass_ancestor_parameter_updates(prefix, parameters)
-        if is_dataclass(type(self._extraction_target)):
-            self._reconstruct_from_parameter_snapshot('', parameters)
-        return parameters, structure
+        rebuilt = self._dataclass_ancestor_parameter_updates(prefix, parameters, structure)
+        return parameters, structure, rebuilt
 
     def _parameter_epoch(
         self, values: dict[str, Any]
@@ -959,29 +953,28 @@ class ObjectState:
             exclude_params=structure.exclusions, values=values,
         )
         structure.index(parameters)
-        for path in sorted(parameters, key=lambda name: name.count('.'), reverse=True):
-            if is_dataclass(type(parameters[path])):
-                parameters[path] = self._reconstruct_from_parameter_snapshot(path, parameters)
+        for path in sorted(structure.container_paths, key=lambda path: len(path.lineage), reverse=True):
+            if path.value:
+                parameters[path.value] = self._reconstruct_from_parameter_snapshot(
+                    path.value, parameters, structure
+                )
         return parameters, structure
 
     def _dataclass_ancestor_parameter_updates(
         self,
         param_name: str,
         parameters: dict[str, Any],
-    ) -> None:
-        """Rebuild dataclass container parameters that own a changed child path."""
+        structure: ParameterStructure,
+    ) -> Any:
+        """Rebuild the admitted ancestors, returning the validated root for use."""
         for path in DottedFieldPath(param_name).parent.lineage:
-            prefix = path.value
-            if prefix not in parameters:
-                continue
-            if not is_dataclass(type(parameters[prefix])):
-                continue
-
-            rebuilt_value = self._reconstruct_from_parameter_snapshot(
-                prefix,
-                parameters,
-            )
-            parameters[prefix] = rebuilt_value
+            if path in structure.container_paths:
+                parameters[path.value] = self._reconstruct_from_parameter_snapshot(
+                    path.value, parameters, structure
+                )
+        if structure.is_container_parameter(''):
+            return self._reconstruct_from_parameter_snapshot('', parameters, structure)
+        return None
 
 
     def update_parameter(self, param_name: str, value: Any) -> set[str]:
@@ -1013,7 +1006,7 @@ class ObjectState:
             )
             return set()
 
-        pending_parameters, pending_structure = self._prepare_parameter_update(param_name, value)
+        pending_parameters, pending_structure, pending_object = self._prepare_parameter_update(param_name, value)
         previous_structure = self.parameter_structure
         changed_storage_params = {
             path for path in self.parameters.keys() | pending_parameters.keys()
@@ -1029,7 +1022,7 @@ class ObjectState:
             return set()
         changed_semantic_params = {
             path for path in changed_storage_params
-            if path == param_name or path.startswith(f'{param_name}.')
+            if DottedFieldPath(param_name).contains_path(path)
         }
 
         changed_param_values = self._changed_parameter_values(
@@ -1054,7 +1047,7 @@ class ObjectState:
                 self.parameter_structure.inheritance_field_paths(container_type, leaf_field_name)
             )
         self._invalid_fields.update(local_invalidations)
-        self._cached_object = None  # Invalidate cached reconstructed object
+        self._cached_object = pending_object  # Reuse the root validated during preparation
         self._cached_object_applied = False
 
         # Materialize the origin once after its live context is authoritative,
@@ -1171,7 +1164,7 @@ class ObjectState:
 
         return self._reconstruct_from_resolved(
             param_name, self._saved_resolved, self._extraction_target,
-            self._parameter_epoch(self._saved_parameters)[1],
+            self._saved_structure,
         )
 
     def subfield_semantics(
@@ -1232,7 +1225,7 @@ class ObjectState:
         """
         from objectstate.lazy_factory import get_base_type_for_lazy
 
-        if prefix and not structure.direct_paths.get(DottedFieldPath(prefix)):
+        if prefix and not structure.is_container_parameter(prefix):
             return resolved_snapshot.get(prefix)
 
         # Determine the type to reconstruct
@@ -1246,33 +1239,12 @@ class ObjectState:
         # Normalize to base type for lazy dataclasses
         obj_type = get_base_type_for_lazy(obj_type) or obj_type
 
-        prefix_dot = f'{prefix}.' if prefix else ''
-
-        # Collect direct fields and nested prefixes from resolved snapshot
-        direct_fields = {}
-        nested_prefixes = set()
-
-        for path, value in resolved_snapshot.items():
-            if not path.startswith(prefix_dot):
-                continue
-
-            remainder = path[len(prefix_dot):]
-
-            if '.' in remainder:
-                # This is a nested field - collect the first component
-                first_component = remainder.split('.')[0]
-                nested_prefixes.add(first_component)
-            else:
-                # Direct field of this object
-                direct_fields[remainder] = value
-
-        # Reconstruct nested dataclasses first
-        for nested_name in nested_prefixes:
-            nested_path = f'{prefix_dot}{nested_name}'
-            nested_obj = cls._reconstruct_from_resolved(
-                nested_path, resolved_snapshot, target, structure
+        direct_fields = {
+            path.field_name: cls._reconstruct_from_resolved(
+                path.value, resolved_snapshot, target, structure
             )
-            direct_fields[nested_name] = nested_obj
+            for path in structure.direct_paths.get(DottedFieldPath(prefix), ())
+        }
 
         if not prefix:
             direct_fields.update(structure.excluded_values)
@@ -1506,7 +1478,7 @@ class ObjectState:
 
         fields: set[str] = set()
         for param_path, (old_value, new_value) in changed_values.items():
-            if self.parameter_structure.is_container_parameter(param_path, new_value, self.parameters):
+            if self.parameter_structure.direct_paths.get(DottedFieldPath(param_path)):
                 continue
             fields.add(param_path)
             fields.update(
@@ -1628,8 +1600,8 @@ class ObjectState:
         self._cached_object_applied = False
         self._invalid_fields.clear()
 
-        self._live_resolved = self._compute_resolved_snapshot(use_saved=False)
-        self._saved_resolved = self._compute_resolved_snapshot(use_saved=True)
+        self._live_resolved = self._compute_resolved_snapshot()
+        self._refresh_saved_resolved()
 
         missing = object()
         changed_paths = {
@@ -1701,7 +1673,7 @@ class ObjectState:
             # Safety check: skip any container entries that might have leaked in
             # (containers should NOT be in parameters — only leaf fields are tracked)
             raw_value = self.parameters[name]
-            if self.parameter_structure.is_container_parameter(name, raw_value, self.parameters):
+            if self.parameter_structure.direct_paths.get(DottedFieldPath(name)):
                 continue
             if raw_value is not None:
                 explicit_fields.append(name)
@@ -1825,7 +1797,7 @@ class ObjectState:
         self._check_and_sync_delegate()
         return dict(self.parameters)
 
-    def reconstruct_top_level_parameters(self) -> dict[str, Any]:
+    def reconstruct_top_level_parameters(self, *, sync_delegate: bool = True) -> dict[str, Any]:
         """Return top-level parameters with nested dataclass values rebuilt.
 
         ObjectState stores nested fields in a flat dotted-path mapping. Function
@@ -1833,29 +1805,18 @@ class ObjectState:
         storage shape. This method exposes that boundary without requiring UI
         widgets or service code to reach into ObjectState private helpers.
         """
-        self._check_and_sync_delegate()
-
-        values: dict[str, Any] = {}
-        root_type = type(self._extraction_target)
-        top_level_params = {
-            key
-            for key in self.parameters
-            if "." not in key
-        }
-
-        for param_name in top_level_params:
-            param_type = self.parameter_structure.owner_paths.get(param_name)
-            nested_dataclass = (
-                param_type is not None
-                and is_dataclass(param_type)
-                and param_type != root_type
+        if sync_delegate:
+            self._check_and_sync_delegate()
+        return {
+            path.value: (
+                self._reconstruct_from_parameter_snapshot(
+                    path.value, self.parameters, self.parameter_structure
+                )
+                if self.parameter_structure.is_container_parameter(path.value)
+                else self.parameters[path.value]
             )
-            if nested_dataclass:
-                values[param_name] = self._reconstruct_from_prefix(param_name)
-            else:
-                values[param_name] = self.parameters[param_name]
-
-        return values
+            for path in self.parameter_structure.direct_paths.get(DottedFieldPath(''), ())
+        }
 
     # ==================== MATERIALIZED DIFFS ====================
 
@@ -2014,35 +1975,40 @@ class ObjectState:
 
     # ==================== SAVED STATE / DIRTY TRACKING ====================
 
-    def _compute_resolved_snapshot(self, use_saved: bool = False) -> dict[str, Any]:
-        """Resolve editor fields using the selected live or saved ancestor epoch."""
-        if not isinstance(self.parameters, dict):
-            raise TypeError("ObjectState.parameters must remain a canonical flat dictionary.")
-        if not isinstance(self._saved_parameters, dict):
-            raise TypeError("ObjectState._saved_parameters must remain a canonical flat dictionary.")
-        sources = self._resolution_sources(sync_delegates=True)[use_saved]
-        self._resolved_from[use_saved] = sources
-        parameters = self._saved_parameters if use_saved else self.parameters
-        structure = self.parameter_structure
-        if use_saved:
-            parameters, structure = self._parameter_epoch(parameters)
-            current_obj = (
-                self._reconstruct_from_parameter_snapshot('', parameters)
-                if is_dataclass(type(self._extraction_target)) else self.saved_object
-            )
-        else:
-            current_obj = self.to_object(update_delegate=False)
-        snapshot, provenance = self._resolve_parameter_snapshot(
-            parameters,
-            structure,
-            current_obj,
-            self.scope_id,
-            sources.ancestors,
-            use_saved=use_saved,
+    def _compute_resolved_snapshot(self) -> dict[str, Any]:
+        """Resolve the current live graph through its admitted topology."""
+        snapshot, self._live_provenance = self._resolve_epoch(
+            self.parameters, self.parameter_structure,
+            self.to_object(update_delegate=False), use_saved=False,
         )
-        if not use_saved:
-            self._live_provenance = provenance
         return snapshot
+
+    def _refresh_saved_resolved(self) -> None:
+        """Resolve and publish saved values and topology as one epoch."""
+        parameters, structure = self._parameter_epoch(self._saved_parameters)
+        current_obj = (
+            self._reconstruct_from_parameter_snapshot('', parameters, structure)
+            if structure.is_container_parameter('') else self.saved_object
+        )
+        snapshot, _ = self._resolve_epoch(parameters, structure, current_obj, use_saved=True)
+        self._saved_resolved, self._saved_structure = snapshot, structure
+
+    def _resolve_epoch(
+        self,
+        parameters: dict[str, Any],
+        structure: ParameterStructure,
+        current_obj: object,
+        *,
+        use_saved: bool,
+    ) -> tuple[dict[str, Any], dict[str, tuple[str | None, type | None]]]:
+        """Resolve either graph against its corresponding ancestor sources."""
+        sources = self._resolution_sources(sync_delegates=True)[use_saved]
+        resolved = self._resolve_parameter_snapshot(
+            parameters, structure, current_obj, self.scope_id,
+            sources.ancestors, use_saved=use_saved,
+        )
+        self._resolved_from[use_saved] = sources
+        return resolved
 
     @classmethod
     def _resolve_parameter_snapshot(
@@ -2071,18 +2037,11 @@ class ObjectState:
             current_scope_id=scope_id,
             use_live=not use_saved,
         ):
-            for dotted_path in parameters.keys():
+            for path in structure.leaf_paths():
+                dotted_path = path.value
                 raw_value = parameters[dotted_path]
                 container_type = structure.owner_paths.get(dotted_path)
-
-                # Check if this path is a CONTAINER entry (value is a nested dataclass)
-                # vs a LEAF field (value is primitive, even if container_type is a dataclass)
-                if structure.is_container_parameter(dotted_path, raw_value, parameters):
-                    # Container-level entry - SKIP from snapshot
-                    # Containers are kept in parameters for UI rendering but excluded from
-                    # dirty comparison since we compare leaf fields instead
-                    pass
-                elif (
+                if (
                     container_type is not None
                     and is_dataclass(container_type)
                     and has_lazy_resolution(container_type)
@@ -2143,10 +2102,8 @@ class ObjectState:
             # Extract raw attribute values from the old object_instance
             for param_name in self.parameters.keys():
                 # Skip container entries (nested dataclass instances)
-                if param_name in self.parameters:
-                    raw_value = self.parameters.get(param_name)
-                    if self.parameter_structure.is_container_parameter(param_name, raw_value, self.parameters):
-                        continue
+                if self.parameter_structure.direct_paths.get(DottedFieldPath(param_name)):
+                    continue
 
                 # Get the old value by navigating dotted path on the extraction target
                 # For delegation, parameters are on the delegate, not object_instance
@@ -2166,8 +2123,7 @@ class ObjectState:
         changed_params = []
         for param_name in self.parameters.keys():
             # Skip container entries
-            raw_value = self.parameters.get(param_name)
-            if self.parameter_structure.is_container_parameter(param_name, raw_value, self.parameters):
+            if self.parameter_structure.direct_paths.get(DottedFieldPath(param_name)):
                 continue
 
             old_value = old_instance_values.get(param_name)
@@ -2210,11 +2166,8 @@ class ObjectState:
         # Compute new saved resolved using SAVED ancestor baselines (use_saved=True)
         # This ensures saved baseline is computed relative to other saved baselines
         logger.debug(f"🔧 mark_saved: Computing new saved_resolved for scope={self.scope_id!r}")
-        new_saved_resolved = self._compute_resolved_snapshot(use_saved=True)
-        logger.debug(f"🔧 mark_saved: New saved_resolved computed, keys={list(new_saved_resolved.keys())[:5]}...")
-
-        # Update saved resolved baseline
-        self._saved_resolved = new_saved_resolved
+        self._refresh_saved_resolved()
+        logger.debug(f"🔧 mark_saved: New saved epoch computed, keys={list(self._saved_resolved.keys())[:5]}...")
 
         # Invalidate cached object so next to_object() call rebuilds
         self._cached_object = None
@@ -2251,7 +2204,7 @@ class ObjectState:
                 logger.debug(f"🔧 mark_saved: BEFORE recompute - dirty_fields={state._dirty_fields}, _saved_resolved_keys={list(state._saved_resolved.keys())[:3]}")
                 # Recompute descendant's saved_resolved using new ancestor saved values
                 try:
-                    state._saved_resolved = state._compute_resolved_snapshot(use_saved=True)
+                    state._refresh_saved_resolved()
                 except AttributeError as e:
                     logger.error(f"🐛 mark_saved descendant: ERROR in _compute_resolved_snapshot for scope={descendant_scope!r}! Error: {e}")
                     logger.error(f"🐛 mark_saved descendant: state._saved_parameters type={type(state._saved_parameters).__name__}, is None={state._saved_parameters is None}")
@@ -2337,12 +2290,12 @@ class ObjectState:
 
         # CRITICAL: Recompute _saved_resolved to match the restored state
         # Time travel may have overwritten _saved_resolved with snapshot values,
-        # but after restore_saved(), _saved_resolved should reflect object_instance
-        self._saved_resolved = self._compute_resolved_snapshot(use_saved=True)
+        # but after restore_saved(), the saved epoch should reflect object_instance
+        self._refresh_saved_resolved()
 
         # Recompute _live_resolved to reflect any unsaved changes from higher-level ObjectStates
         # This ensures that unsaved resolved changes from other windows are preserved
-        self._live_resolved = self._compute_resolved_snapshot(use_saved=False)
+        self._live_resolved = self._compute_resolved_snapshot()
 
         # NOW invalidate descendant caches for each changed parameter
         # This must happen AFTER restoring parameters so descendants see restored values
@@ -2431,7 +2384,6 @@ class ObjectState:
 
         obj_type = type(obj)
         is_function = isinstance(obj, FunctionType)
-        owner_target: ParameterOwner = obj if is_function else obj_type
 
         # Delegate signature default extraction to python_introspect (it must derive
         # defaults from the type/signature and avoid instance attribute reads).
@@ -2463,24 +2415,29 @@ class ObjectState:
                 current_value = values[dotted_path]
             structure.declarations[dotted_path] = info
 
-            # The actual native value, never a previous member or annotation,
-            # owns the subtree (including zero-child dataclasses).
-            if is_dataclass(type(current_value)):
-                structure.owner_paths[dotted_path] = type(current_value)
+            cls._admit_parameter(obj, dotted_path, current_value, parameters, structure, values=values)
 
-                # Store the nested dataclass instance in parameters (needed for UI rendering)
-                parameters[dotted_path] = current_value
+    @classmethod
+    def _admit_parameter(
+        cls,
+        owner: object,
+        path: str,
+        value: object,
+        parameters: dict[str, Any],
+        structure: ParameterStructure,
+        *,
+        values: dict[str, Any] | None = None,
+    ) -> None:
+        """One admission operation for extraction and native subtree replacement."""
 
-                # Recurse into nested dataclass for child fields
-                cls._extract_all_parameters_flat(
-                    current_value, parameters, structure, prefix=dotted_path,
-                    exclude_params=[], values=values,
-                )
-            else:
-                # Leaf field - store value and container type
-                parameters[dotted_path] = current_value
-                # Store the owner target that has this field.
-                structure.owner_paths[dotted_path] = owner_target
+        parameters[path] = value
+        if structure.admit_container(path, value):
+            structure.owner_paths[path] = type(value)
+            cls._extract_all_parameters_flat(
+                value, parameters, structure, prefix=path, values=values,
+            )
+        else:
+            structure.owner_paths[path] = owner if isinstance(owner, FunctionType) else type(owner)
 
     def _replace_parameter_structure(
         self,
@@ -2550,13 +2507,7 @@ class ObjectState:
         # For delegation, work with the extraction target (delegate), not object_instance
         target = self._extraction_target
 
-        field_updates = {}
-        for path in self.parameter_structure.direct_paths.get(DottedFieldPath(''), ()):
-            value = self.parameters[path.value]
-            field_updates[path.value] = (
-                self._reconstruct_from_prefix(path.value)
-                if is_dataclass(type(value)) else value
-            )
+        field_updates = self.reconstruct_top_level_parameters(sync_delegate=False)
 
         # Reconstruct the target object (either object_instance or delegate)
         reconstructed = None
@@ -2610,77 +2561,26 @@ class ObjectState:
 
         return self._cached_object
 
-    def _reconstruct_from_prefix(self, prefix: str) -> Any:
-        """Recursively reconstruct dataclass from flat parameters.
-
-        Args:
-            prefix: Current path prefix (e.g., 'partition_filter_config')
-
-        Returns:
-            Reconstructed dataclass instance
-        """
-        return self._reconstruct_from_parameter_snapshot(prefix, self.parameters)
-
     def _reconstruct_from_parameter_snapshot(
         self,
         prefix: str,
         parameters: dict[str, Any],
+        structure: ParameterStructure,
     ) -> Any:
-        """Recursively reconstruct dataclass from a flat parameter snapshot."""
-        # Determine the type to reconstruct
-        if not prefix:
-            # Root level - use extraction target type (handles delegation)
-            obj_type = type(self._extraction_target)
-        else:
-            # Each raw epoch retains the actual native container identity.
-            obj_type = type(parameters[prefix])
+        """Reconstruct raw values through this epoch's admitted topology."""
 
-        prefix_dot = f'{prefix}.' if prefix else ''
-
-        # Collect direct fields and nested prefixes
-        direct_fields = {}
-        nested_prefixes = set()
-
-        for path, value in parameters.items():
-            if not path.startswith(prefix_dot):
-                continue
-
-            remainder = path[len(prefix_dot):]
-
-            if '.' in remainder:
-                # This is a nested field - collect the first component
-                first_component = remainder.split('.')[0]
-                nested_prefixes.add(first_component)
-            else:
-                # Direct field of this object
-                direct_fields[remainder] = value
-
-        # Reconstruct nested dataclasses first
-        for nested_name in nested_prefixes:
-            nested_path = f'{prefix_dot}{nested_name}'
-            nested_obj = self._reconstruct_from_parameter_snapshot(
-                nested_path,
-                parameters,
+        obj_type = type(self._extraction_target) if not prefix else structure.owner_paths[prefix]
+        direct_fields = {
+            path.field_name: (
+                self._reconstruct_from_parameter_snapshot(path.value, parameters, structure)
+                if structure.is_container_parameter(path.value) else parameters[path.value]
             )
-            direct_fields[nested_name] = nested_obj
-
-        # CRITICAL: Do NOT filter out None values!
-        # None can be a semantic value, such as "inherit from parent context".
-        # When a user explicitly resets a field to None, we MUST pass that None
-        # to the dataclass constructor so lazy resolution can walk up the MRO.
-        # Filtering None would cause the dataclass to use its class-level default
-        # instead of the user's explicit None, breaking inheritance.
-
-        # At root level, include constructor params excluded from editing.
+            for path in structure.direct_paths.get(DottedFieldPath(prefix), ())
+        }
         if not prefix:
-            direct_fields.update(self.parameter_structure.excluded_values)
-
-
-        # Instantiate the dataclass with ALL fields including None values
-        result = obj_type(**direct_fields)
-
-
-        return result
+            direct_fields.update(structure.excluded_values)
+        # Raw None is meaningful; never replace it with the signature default.
+        return obj_type(**direct_fields)
 
     def _get_changed_params_with_types(
         self, old_target: Any, new_target: Any

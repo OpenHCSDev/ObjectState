@@ -70,8 +70,13 @@ def test_unrelated_members_replace_all_live_metadata_but_not_saved_epoch():
     assert changed == {'member.text', 'member.lower', 'member.upper'}
     assert events == [changed]
     assert_epoch(state, RangeMember(), {'lower', 'upper'})
-    assert state.get_saved_resolved_value('member') == TextMember()
-    assert state.to_saved_resolved_object().member == TextMember()
+    saved_structure = state._saved_structure
+    saved_values = state._saved_resolved
+    for _ in range(3):
+        assert state.get_saved_resolved_value('member') == TextMember()
+        assert state.to_saved_resolved_object().member == TextMember()
+        assert state._saved_structure is saved_structure
+        assert state._saved_resolved is saved_values
     assert state.is_raw_dirty
     assert state.dirty_fields == {'member.text', 'member.lower', 'member.upper'}
 
@@ -83,24 +88,33 @@ def test_unrelated_members_replace_all_live_metadata_but_not_saved_epoch():
     assert state.to_saved_resolved_object().member == RangeMember(lower=3)
     assert not state.is_raw_dirty
     assert not state.dirty_fields
+    assert state._saved_structure is not saved_structure
+    assert set(state._saved_structure.declarations) == set(state.parameters)
 
 
-@pytest.mark.parametrize('value,children', [
-    (RangeMember(), {'lower', 'upper'}),
-    (EmptyMember(), set()),
-    (None, set()),
-    (17, set()),
-    (TextMember('return'), {'text'}),
+@pytest.mark.parametrize('value,children,container', [
+    (RangeMember(), {'lower', 'upper'}, True),
+    (EmptyMember(), set(), True),
+    (None, set(), False),
+    (17, set(), False),
+    (TextMember('return'), {'text'}, True),
 ])
-def test_member_shape_round_trip_from_different_prior_shapes(value, children):
+def test_member_shape_round_trip_from_different_prior_shapes(value, children, container):
     state = ObjectState(MemberRoot(), exclude_params=['excluded'])
     state.update_parameter('member', RangeMember())
     state.update_parameter('member', None)
     state.update_parameter('member', value)
     assert_epoch(state, value, children)
+    assert state.parameter_structure.is_container_parameter('member') == container
     assert state.to_saved_resolved_object().member == TextMember()
     assert state.get_saved_resolved_value('member.text') == 'original'
     assert state.is_raw_dirty
+    state.mark_saved()
+    assert state.get_saved_resolved_value('member') == value
+    assert type(state.get_saved_resolved_value('member')) is type(value)
+    assert state.to_saved_resolved_object().member == value
+    assert not state.is_raw_dirty
+    assert not state.dirty_fields
 
 
 def test_failed_native_ancestor_preparation_changes_nothing():
