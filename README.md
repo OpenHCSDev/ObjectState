@@ -1,6 +1,6 @@
 # objectstate
 
-**Generic lazy dataclass configuration framework with dual-axis inheritance**
+**Editable, resolvable state for any object (dataclasses, callables and other parameterized objects), with lazy resolution and dual-axis inheritance**
 
 [![PyPI version](https://badge.fury.io/py/objectstate.svg)](https://badge.fury.io/py/objectstate)
 [![Documentation Status](https://readthedocs.org/projects/objectstate/badge/?version=latest)](https://objectstate.readthedocs.io/en/latest/?badge=latest)
