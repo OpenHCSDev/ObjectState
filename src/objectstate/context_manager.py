@@ -20,6 +20,7 @@ import contextvars
 import functools
 import logging
 import threading
+from collections import deque
 from collections.abc import Sequence
 from contextlib import ExitStack, contextmanager
 from typing import Any, Dict, get_type_hints
@@ -755,59 +756,37 @@ def _declared_config_fields(dataclass_type: type) -> tuple[tuple[str, type], ...
 
 
 def extract_all_configs(context_obj) -> Dict[type, Any]:
+    """Read every declared nested configuration, retaining its nominal identity.
+
+    Each stored object is visited once. Repeated paths to the same object are
+    shared; different objects claiming the same config type still refuse.
+    Stored values are read without invoking lazy resolution in the layer being built.
     """
-    Extract all config instances from a context object using type-driven approach.
-
-    A context layer keeps its own result (``ContextLayer.configs``); this function
-    itself keeps nothing.
-
-    This function leverages dataclass field type annotations to efficiently extract
-    config instances, avoiding string matching and runtime attribute scanning.
-
-    Args:
-        context_obj: Object to extract configs from (orchestrator, merged config, etc.)
-
-    Returns:
-        Dict mapping nominal config types to config instances.
-    """
-    if context_obj is None:
-        return {}
-
     configs: Dict[type, Any] = {}
-
-    # Include the context object itself if it's a dataclass
-    if is_dataclass(context_obj):
-        _record_config_instance(configs, context_obj, source="context object")
-
-    # Type-driven extraction: Use dataclass field annotations to find config fields
-    if is_dataclass(type(context_obj)):
-        for field_name, declared_type in _declared_config_fields(type(context_obj)):
-            # Read the stored value: a None field holds no config in this object,
-            # and resolving it here would ask the context that is being read.
-            field_value = object.__getattribute__(context_obj, field_name)
-            if field_value is None:
-                continue
-            if not _is_compatible_config_type(field_value, declared_type):
-                raise TypeError(
-                    f"{type(context_obj).__name__}.{field_name} declares "
-                    f"{declared_type.__name__}, got {type(field_value).__name__}."
-                )
-            _record_config_instance(
-                configs,
-                field_value,
-                source=f"{type(context_obj).__name__}.{field_name}",
-            )
-
-    # For non-dataclass objects (orchestrators, etc.), extract dataclass attributes
-    else:
-        _extract_from_object_attributes_typed(context_obj, configs)
-
-    if logger.isEnabledFor(logging.DEBUG):
-        logger.debug(
-            "Extracted %d configs: %s",
-            len(configs),
-            [config_type.__name__ for config_type in configs],
-        )
+    pending = deque([(context_obj, "context object")])
+    visited: set[int] = set()
+    while pending:
+        current, source = pending.popleft()
+        if current is None or id(current) in visited:
+            continue
+        visited.add(id(current))
+        if is_dataclass(current):
+            _record_config_instance(configs, current, source=source)
+            for field_name, declared_type in _declared_config_fields(type(current)):
+                value = object.__getattribute__(current, field_name)
+                if value is None:
+                    continue
+                if not _is_compatible_config_type(value, declared_type):
+                    raise TypeError(
+                        f"{type(current).__name__}.{field_name} declares "
+                        f"{declared_type.__name__}, got {type(value).__name__}."
+                    )
+                pending.append((value, f"{source}.{field_name}"))
+        else:
+            children: Dict[type, Any] = {}
+            _extract_from_object_attributes_typed(current, children)
+            pending.extend((child, f"{source}.{kind.__name__}")
+                           for kind, child in children.items())
     return configs
 
 

@@ -194,3 +194,40 @@ def test_extract_all_configs_accepts_concrete_value_for_lazy_declared_owner() ->
         ParentConfig: parent,
         ChildConfig: concrete,
     }
+
+
+def test_extract_all_configs_visits_nested_and_shared_records() -> None:
+    @dataclass
+    class Leaf:
+        value: str = "original"
+
+    @dataclass
+    class Branch:
+        first: Leaf
+        shared: Leaf
+
+    @dataclass
+    class Root:
+        branch: Branch
+
+    leaf = Leaf()
+    root = Root(Branch(leaf, leaf))
+    assert extract_all_configs(root) == {Root: root, Branch: root.branch, Leaf: leaf}
+
+
+def test_extract_all_configs_refuses_collision_below_a_direct_child() -> None:
+    @dataclass
+    class Leaf:
+        value: str
+
+    @dataclass
+    class Branch:
+        first: Leaf
+        second: Leaf
+
+    @dataclass
+    class Root:
+        branch: Branch
+
+    with pytest.raises(ValueError, match="second Leaf instance"):
+        extract_all_configs(Root(Branch(Leaf("first"), Leaf("second"))))
