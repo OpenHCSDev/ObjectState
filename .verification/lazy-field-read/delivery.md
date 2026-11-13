@@ -1,0 +1,3 @@
+FieldProxy follows ParameterStructure's existing admitted paths instead of re-reading dataclass annotations during each attribute access. Containers remain proxies; only leaves resolve through ObjectState. get_resolved_value uses the same extracted child topology instead of scanning every resolved key. No extra value cache.
+
+Native application succeeded. One direct native ObjectState control read a nested leaf, edited it through update_parameter, then read its updated value. First attempt omitted set_base_config_type and failed during setup; corrected application initialization passed. No suite, profile, or speed measurement. Toad must consume state.fields instead of reconstructing an object.
