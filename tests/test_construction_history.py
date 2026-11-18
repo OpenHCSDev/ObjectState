@@ -487,7 +487,7 @@ def test_a_snapshot_walks_only_the_scopes_it_captures():
     with the edited scope is captured with it. Time travel forgets what scopes reached."""
     shared = [1, 2]
     edited = register(Config(items=shared), "edited")
-    sharing = register(Config(items=shared), "sharing")
+    register(Config(items=shared), "sharing")
     independent = [register(Config(value=number), f"independent-{number}") for number in range(5)]
     baseline = ObjectStateRegistry._snapshots[record("baseline")]
     reached = {
@@ -513,6 +513,8 @@ def test_a_state_opened_under_saved_ancestors_resolves_its_saved_epoch_as_its_li
     assert child._saved_resolved == child._live_resolved
     assert child._saved_resolved["items"] is not child._live_resolved["items"]
     parent.update_parameter("value", 5)
-    late = ObjectState(LazyDataclassFactory.make_lazy_simple(Config)(), scope_id="clean-parent::late")
+    late = ObjectState(
+        LazyDataclassFactory.make_lazy_simple(Config)(), scope_id="clean-parent::late"
+    )
     assert late._live_resolved["value"] == 5
     assert late._saved_resolved["value"] == 4

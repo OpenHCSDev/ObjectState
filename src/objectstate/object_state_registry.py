@@ -235,7 +235,7 @@ class ObjectStateRegistry:
     # they belong to. A scope left clean since keeps that capture in the next snapshot and
     # reaches the same objects, so a snapshot walks only the scopes it captures to find
     # which clean ones share an object with them (`_record_snapshot_internal`).
-    _snapshot_reach: Dict[str, "SnapshotReach"] = {}
+    _snapshot_reach: dict[str, "SnapshotReach"] = {}
 
     # Time-travel completion callbacks - UI subscribes to reopen windows for dirty states
     # Callbacks receive (dirty_states, triggering_scope) where:
@@ -1284,7 +1284,7 @@ class ObjectStateRegistry:
             )
 
         def walked(values: StateSnapshot) -> SnapshotReach:
-            memo: Dict[int, Any] = {}
+            memo: dict[int, Any] = {}
             copy.deepcopy(values, memo)
             return SnapshotReach(
                 frozenset(memo) - {id(memo), id(values), id(values.construction)},
