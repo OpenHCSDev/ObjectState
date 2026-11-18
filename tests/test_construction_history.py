@@ -479,3 +479,42 @@ def test_failed_attachment_rolls_back_complete_graph_and_loaded_history(tmp_path
     assert path.read_bytes() == file_bytes
 
 
+
+
+def test_a_snapshot_walks_only_the_scopes_it_captures():
+    """An edit walks and copies the edited scope; an independent clean scope keeps its
+    capture and the objects it reached then, unwalked, while one that shares an object
+    with the edited scope is captured with it. Time travel forgets what scopes reached."""
+    shared = [1, 2]
+    edited = register(Config(items=shared), "edited")
+    register(Config(items=shared), "sharing")
+    independent = [register(Config(value=number), f"independent-{number}") for number in range(5)]
+    baseline = ObjectStateRegistry._snapshots[record("baseline")]
+    reached = {
+        state.scope_id: ObjectStateRegistry._snapshot_reach[state.scope_id] for state in independent
+    }
+    edited.update_parameter("value", 3)
+    after = ObjectStateRegistry.get_branch_history()[-1]
+    for state in independent:
+        assert after.all_states[state.scope_id] is baseline.all_states[state.scope_id]
+        assert ObjectStateRegistry._snapshot_reach[state.scope_id] is reached[state.scope_id]
+    assert after.all_states["sharing"] is not baseline.all_states["sharing"]
+    assert after.all_states["edited"].parameters["value"] == 3
+    assert ObjectStateRegistry.time_travel_to_snapshot(baseline.id)
+    assert ObjectStateRegistry._snapshot_reach == {}
+
+
+def test_a_state_opened_under_saved_ancestors_resolves_its_saved_epoch_as_its_live_one():
+    """Under ancestors holding their saved values, the saved epoch reads what the live one
+    reads: it is the live snapshot, copied, so a live value changed in place is dirty. An
+    ancestor with unsaved values gives the saved epoch its own resolution."""
+    parent = register(Config(value=4, items=[1]), "clean-parent")
+    child = register(LazyDataclassFactory.make_lazy_simple(Config)(), "clean-parent::child")
+    assert child._saved_resolved == child._live_resolved
+    assert child._saved_resolved["items"] is not child._live_resolved["items"]
+    parent.update_parameter("value", 5)
+    late = ObjectState(
+        LazyDataclassFactory.make_lazy_simple(Config)(), scope_id="clean-parent::late"
+    )
+    assert late._live_resolved["value"] == 5
+    assert late._saved_resolved["value"] == 4

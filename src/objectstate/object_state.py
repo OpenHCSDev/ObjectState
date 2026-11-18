@@ -246,7 +246,7 @@ class ObjectState:
         #
         # If we used copy.deepcopy(_live_resolved), we'd bake in ancestor's unsaved
         # edits, causing inverted dirty state when ancestor is saved/reset.
-        self._saved_resolved = self._compute_resolved_snapshot(use_saved=True)
+        self._saved_resolved = self._saved_resolved_snapshot()
 
         # DEBUG: Log live vs saved at registration
         logger.debug(f"🔵 INIT_RESOLVED: scope={self.scope_id!r} obj_type={type(self.object_instance).__name__}")
@@ -2051,6 +2051,34 @@ class ObjectState:
 
     # ==================== SAVED STATE / DIRTY TRACKING ====================
 
+    def _saved_resolved_snapshot(self) -> dict[str, Any]:
+        """The saved epoch's resolved values: the live ones while the two epochs read the
+        same values, resolved on their own otherwise.
+
+        The saved epoch reads this state's saved parameters and each registered ancestor's
+        saved object; the live epoch reads the current ones. While this state and every
+        ancestor hold exactly their saved parameters, both epochs read the same values and
+        resolve alike, so a state opened or saved under clean ancestors (every view opened
+        over saved settings) resolves its fields once instead of once per epoch.
+        """
+        if self._saved_epoch_is_live():
+            # The saved sources first: bringing the live snapshot up to date resolves the
+            # saved one again when its sources are not yet the ones recorded.
+            self._resolved_from[True] = self._resolution_sources(sync_delegates=False)[True]
+            self._ensure_live_resolved(notify_flash=False)
+            # Copied as the saved parameters are: a live value changed in place stays dirty.
+            return self._copy_parameters_for_saved_baseline(self._live_resolved)
+        return self._compute_resolved_snapshot(use_saved=True)
+
+    def _saved_epoch_is_live(self) -> bool:
+        if self.is_raw_dirty:
+            return False
+        return not any(
+            state.is_raw_dirty
+            for _, state in ObjectStateRegistry.registered_ancestors(self.scope_id)
+            if state is not self
+        )
+
     def _compute_resolved_snapshot(self, use_saved: bool = False) -> dict[str, Any]:
         """Resolve editor fields using the selected live or saved ancestor epoch."""
         if not isinstance(self.parameters, dict):
@@ -2243,7 +2271,7 @@ class ObjectState:
         # Compute new saved resolved using SAVED ancestor baselines (use_saved=True)
         # This ensures saved baseline is computed relative to other saved baselines
         logger.debug(f"🔧 mark_saved: Computing new saved_resolved for scope={self.scope_id!r}")
-        new_saved_resolved = self._compute_resolved_snapshot(use_saved=True)
+        new_saved_resolved = self._saved_resolved_snapshot()
         logger.debug(f"🔧 mark_saved: New saved_resolved computed, keys={list(new_saved_resolved.keys())[:5]}...")
 
         # Update saved resolved baseline

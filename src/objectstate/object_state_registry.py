@@ -42,6 +42,22 @@ RegistryMutationSignature: TypeAlias = Tuple[
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class SnapshotReach:
+    """The objects one scope's values reached when ``capture`` was taken of them.
+
+    ``held`` keeps those objects alive while this is kept, so an identity in
+    ``identities`` stays theirs and is never another object's reused id.
+    """
+
+    identities: frozenset
+    held: list
+    capture: object = None
+
+    def of(self, capture: object) -> "SnapshotReach":
+        return SnapshotReach(self.identities, self.held, capture)
+
+
 class ObjectStateRegistrySubscription:
     """Idempotent ownership handle for one registry callback registration."""
 
@@ -215,6 +231,11 @@ class ObjectStateRegistry:
     _on_unregister_callbacks: List[Callable[[str, 'ObjectState'], None]] = []
     _deferred_invalidations: Set[DeferredFieldInvalidation] = set()
     _snapshot_dirty_scopes: Set[str] = set()
+    # The objects each scope's values reached when it was last captured, with the capture
+    # they belong to. A scope left clean since keeps that capture in the next snapshot and
+    # reaches the same objects, so a snapshot walks only the scopes it captures to find
+    # which clean ones share an object with them (`_record_snapshot_internal`).
+    _snapshot_reach: dict[str, "SnapshotReach"] = {}
 
     # Time-travel completion callbacks - UI subscribes to reopen windows for dirty states
     # Callbacks receive (dirty_states, triggering_scope) where:
@@ -585,6 +606,7 @@ class ObjectStateRegistry:
         cls._deferred_invalidations.clear()
         _live_invalidation_deferrals.set(0)
         cls._snapshot_dirty_scopes.clear()
+        cls._snapshot_reach.clear()
         cls._snapshots.clear()
         cls._timelines.clear()
         cls._current_head = None
@@ -1248,8 +1270,10 @@ class ObjectStateRegistry:
 
         for state in cls._states.values():
             state.validate_metadata_contracts("snapshot")
-        capture_values = {
-            key: StateSnapshot(
+
+        def capture_values(key: str) -> StateSnapshot:
+            state = cls._states[key]
+            return StateSnapshot(
                 saved_resolved=state._saved_resolved,
                 live_resolved=state._live_resolved,
                 parameters=state.parameters,
@@ -1258,27 +1282,46 @@ class ObjectStateRegistry:
                 construction=state.construction_binding(),
                 meta=state.copy_metadata_for_snapshot(),
             )
-            for key, state in cls._states.items()
-        }
+
+        def walked(values: StateSnapshot) -> SnapshotReach:
+            memo: dict[int, Any] = {}
+            copy.deepcopy(values, memo)
+            return SnapshotReach(
+                frozenset(memo) - {id(memo), id(values), id(values.construction)},
+                memo.get(id(memo), []),
+            )
+
         # A changed scope also invalidates immutable snapshots that share a
         # copied object with it. Independent clean scopes retain structural
         # sharing; connected scopes are copied together with one graph memo.
-        alias_scopes: Dict[int, Set[str]] = {}
-        for key, values in capture_values.items():
-            memo: Dict[int, Any] = {}
-            copy.deepcopy(values, memo)
-            for identity in memo:
-                if identity not in (id(memo), id(values), id(values.construction)):
-                    alias_scopes.setdefault(identity, set()).add(key)
-        pending = list(snapshot_candidate_keys)
-        while pending:
-            key = pending.pop()
-            for scopes in alias_scopes.values():
-                if key in scopes:
-                    additional = scopes - snapshot_candidate_keys
-                    snapshot_candidate_keys.update(additional)
-                    pending.extend(additional)
-        captured = copy.deepcopy({key: capture_values[key] for key in snapshot_candidate_keys})
+        # Only the scopes being captured are walked: a clean scope reaches what
+        # it reached when its kept capture was taken.
+        values_of = {key: capture_values(key) for key in snapshot_candidate_keys}
+        reach = {key: walked(values) for key, values in values_of.items()}
+        for key in current_state_keys - snapshot_candidate_keys:
+            kept = cls._snapshot_reach.get(key)
+            if kept is not None and kept.capture is all_states.get(key):
+                reach[key] = kept
+            else:
+                values_of[key] = capture_values(key)
+                reach[key] = cls._snapshot_reach[key] = walked(values_of[key]).of(all_states[key])
+        shared = set().union(*(reach[key].identities for key in snapshot_candidate_keys))
+        clean = current_state_keys - snapshot_candidate_keys
+        joined = True
+        while joined:
+            joined = {key for key in clean if not reach[key].identities.isdisjoint(shared)}
+            clean -= joined
+            snapshot_candidate_keys |= joined
+            for key in joined:
+                shared |= reach[key].identities
+        captured = copy.deepcopy({
+            key: values_of[key] if key in values_of else capture_values(key)
+            for key in snapshot_candidate_keys
+        })
+        for key in snapshot_candidate_keys:
+            cls._snapshot_reach[key] = reach[key].of(captured[key])
+        for key in set(cls._snapshot_reach) - current_state_keys:
+            del cls._snapshot_reach[key]
 
         with TimeTravelProfiler.phase(
             "objectstate.snapshot_capture_states",
@@ -1967,6 +2010,8 @@ class ObjectStateRegistry:
         }
         cls._current_head = snapshot_id
         cls._in_time_travel = True
+        # Restored scopes hold copies of the snapshot's values, not what they reached before.
+        cls._snapshot_reach.clear()
         try:
             with TimeTravelProfiler.phase(
                 "objectstate.reconcile_scopes",
